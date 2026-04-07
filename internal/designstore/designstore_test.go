@@ -1,4 +1,4 @@
-package planstore
+package designstore
 
 import (
 	"os"
@@ -35,26 +35,54 @@ func TestLooksLikeReadyToImplement(t *testing.T) {
 func TestSave_CreatesFile(t *testing.T) {
 	tmp := t.TempDir()
 	ts := time.Date(2026, 4, 3, 14, 30, 22, 123456789, time.UTC)
-	path, err := Save(tmp, "", "my-task", "# Plan\n", ts)
+	path, err := Save(tmp, "", "sess_123", "my-task", "# Design\n", ts)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.HasPrefix(filepath.Base(path), "my-task_20260403-143022_") || !strings.HasSuffix(path, ".md") {
 		t.Fatalf("unexpected name: %s", filepath.Base(path))
 	}
+	if !strings.Contains(path, filepath.Join("designs", "sess_123")) {
+		t.Fatalf("expected session subdirectory in path: %s", path)
+	}
 	b, err := os.ReadFile(path)
-	if err != nil || string(b) != "# Plan\n" {
+	if err != nil || string(b) != "# Design\n" {
 		t.Fatalf("content: %v %q", err, b)
+	}
+}
+
+func TestSave_NoSessionID(t *testing.T) {
+	tmp := t.TempDir()
+	ts := time.Date(2026, 4, 3, 14, 30, 22, 123456789, time.UTC)
+	path, err := Save(tmp, "", "", "my-task", "# Design\n", ts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(tmp, ".codient", "designs")
+	if !strings.HasPrefix(filepath.Dir(path), want) {
+		t.Fatalf("expected designs root, got dir %s", filepath.Dir(path))
 	}
 }
 
 func TestDir_DefaultUnderWorkspace(t *testing.T) {
 	tmp := t.TempDir()
-	d, err := Dir(tmp, "")
+	d, err := Dir(tmp, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := filepath.Join(tmp, ".codient", "plans")
+	want := filepath.Join(tmp, ".codient", "designs")
+	if filepath.Clean(d) != filepath.Clean(want) {
+		t.Fatalf("got %q want %q", d, want)
+	}
+}
+
+func TestDir_WithSessionID(t *testing.T) {
+	tmp := t.TempDir()
+	d, err := Dir(tmp, "", "my-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(tmp, ".codient", "designs", "my-session")
 	if filepath.Clean(d) != filepath.Clean(want) {
 		t.Fatalf("got %q want %q", d, want)
 	}

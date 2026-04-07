@@ -13,8 +13,8 @@ func TestBuildAgentSystemPrompt_IncludesRunCommandHelp(t *testing.T) {
 		Workspace:     "/tmp/w",
 		ExecAllowlist: []string{"go", "git"},
 	}
-	reg := buildRegistry(cfg, prompt.ModeAgent)
-	s := buildAgentSystemPrompt(cfg, reg, prompt.ModeAgent, "", "")
+	reg := buildRegistry(cfg, prompt.ModeBuild, nil)
+	s := buildAgentSystemPrompt(cfg, reg, prompt.ModeBuild, "", "", "", "")
 	if !strings.Contains(s, "run_command") {
 		t.Fatalf("missing run_command: %s", s)
 	}
@@ -24,12 +24,15 @@ func TestBuildAgentSystemPrompt_IncludesRunCommandHelp(t *testing.T) {
 	if !strings.Contains(s, `"go","test"`) {
 		t.Fatalf("missing example: %s", s)
 	}
+	if !strings.Contains(s, "run_shell") {
+		t.Fatalf("missing run_shell: %s", s)
+	}
 }
 
 func TestBuildAgentSystemPrompt_UserSystemAppended(t *testing.T) {
 	cfg := &config.Config{}
-	reg := buildRegistry(cfg, prompt.ModeAgent)
-	s := buildAgentSystemPrompt(cfg, reg, prompt.ModeAgent, "Be concise.", "")
+	reg := buildRegistry(cfg, prompt.ModeBuild, nil)
+	s := buildAgentSystemPrompt(cfg, reg, prompt.ModeBuild, "Be concise.", "", "", "")
 	if !strings.Contains(s, "Be concise.") {
 		t.Fatalf("got %s", s)
 	}
@@ -37,7 +40,7 @@ func TestBuildAgentSystemPrompt_UserSystemAppended(t *testing.T) {
 
 func TestBuildRegistry_Plan_NoEcho(t *testing.T) {
 	cfg := &config.Config{Workspace: t.TempDir()}
-	reg := buildRegistry(cfg, prompt.ModePlan)
+	reg := buildRegistry(cfg, prompt.ModePlan, nil)
 	for _, n := range reg.Names() {
 		if n == "echo" {
 			t.Fatal("plan mode must not register echo")
@@ -50,9 +53,9 @@ func TestBuildRegistry_Ask_IgnoresExecAllowlist(t *testing.T) {
 		Workspace:     t.TempDir(),
 		ExecAllowlist: []string{"go"},
 	}
-	reg := buildRegistry(cfg, prompt.ModeAsk)
+	reg := buildRegistry(cfg, prompt.ModeAsk, nil)
 	for _, n := range reg.Names() {
-		if n == "run_command" || n == "write_file" {
+		if n == "run_command" || n == "run_shell" || n == "write_file" {
 			t.Fatalf("unexpected %q in ask mode", n)
 		}
 	}

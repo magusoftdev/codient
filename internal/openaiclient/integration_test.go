@@ -1,6 +1,6 @@
 //go:build integration
 
-package lmstudio_test
+package openaiclient_test
 
 import (
 	"context"
@@ -13,16 +13,16 @@ import (
 	"github.com/openai/openai-go/v3/shared"
 
 	"codient/internal/config"
-	"codient/internal/lmstudio"
+	"codient/internal/openaiclient"
 )
 
-// Live tests against a running OpenAI-compatible server (e.g. LM Studio).
+// Live tests against a running OpenAI-compatible server.
 //
 // Run:
 //
-//	CODIENT_INTEGRATION=1 LMSTUDIO_MODEL=<id> go test -tags=integration ./internal/lmstudio/...
+//	CODIENT_INTEGRATION=1 go test -tags=integration ./internal/openaiclient/...
 //
-// Optional: LMSTUDIO_BASE_URL (see config.Load).
+// Requires a model configured via /config (or ~/.codient/config.json).
 
 func TestIntegration_PingModels(t *testing.T) {
 	if os.Getenv("CODIENT_INTEGRATION") != "1" {
@@ -32,7 +32,7 @@ func TestIntegration_PingModels(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c := lmstudio.New(cfg)
+	c := openaiclient.New(cfg)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if err := c.PingModels(ctx); err != nil {
@@ -51,7 +51,7 @@ func TestIntegration_ListModelsIncludesConfiguredModel(t *testing.T) {
 	if err := cfg.RequireModel(); err != nil {
 		t.Fatal(err)
 	}
-	c := lmstudio.New(cfg)
+	c := openaiclient.New(cfg)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	ids, err := c.ListModels(ctx)
@@ -81,7 +81,7 @@ func TestIntegration_ChatCompletionNonEmpty(t *testing.T) {
 	if err := cfg.RequireModel(); err != nil {
 		t.Fatal(err)
 	}
-	c := lmstudio.New(cfg)
+	c := openaiclient.New(cfg)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	res, err := c.ChatCompletion(ctx, openai.ChatCompletionNewParams{

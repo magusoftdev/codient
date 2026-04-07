@@ -73,50 +73,59 @@ func (r *Registry) OpenAITools() []openai.ChatCompletionToolUnionParam {
 	return out
 }
 
-// Run executes a tool by name. Unknown names return a structured error string for the model.
+// Run executes a tool by name. Unknown names return a structured error string for the model
+// that includes the list of available tools to help it self-correct.
 func (r *Registry) Run(ctx context.Context, name string, args json.RawMessage) (string, error) {
 	r.mu.RLock()
 	t, ok := r.by[name]
+	names := r.order
 	r.mu.RUnlock()
 	if !ok {
-		return "", fmt.Errorf("unknown tool %q", name)
+		if strings.TrimSpace(name) == "" {
+			return "", fmt.Errorf("tool call has an empty name; available tools: %s", strings.Join(names, ", "))
+		}
+		return "", fmt.Errorf("unknown tool %q; available tools: %s", name, strings.Join(names, ", "))
 	}
 	return t.Run(ctx, args)
 }
 
 // Default returns a registry with safe builtins and, when workspace is non-empty,
-// coding tools scoped to that directory (set CODIENT_WORKSPACE or CODIENT_READ_FILE_ROOT).
+// coding tools scoped to that directory (set CODIENT_WORKSPACE).
 // exec enables run_command when non-nil and Allowlist is non-empty (CODIENT_EXEC_ALLOWLIST).
-func Default(workspace string, exec *ExecOptions) *Registry {
+// fetch enables fetch_url when non-nil and AllowHosts is non-empty (CODIENT_FETCH_ALLOW_HOSTS).
+// search enables web_search when non-nil and configured (CODIENT_SEARCH_API_KEY or CODIENT_SEARCH_URL).
+func Default(workspace string, exec *ExecOptions, fetch *FetchOptions, search *SearchOptions) *Registry {
 	r := NewRegistry()
 	registerBuiltinTools(r, true)
 	root := strings.TrimSpace(workspace)
 	if root != "" {
-		registerWorkspaceTools(r, root, exec)
+		registerWorkspaceTools(r, root, exec, fetch, search)
 	}
 	return r
 }
 
 // DefaultReadOnly is like Default but omits write_file and run_command: read/search/list/grep
 // only (plus echo and get_time). Use for Ask mode.
-func DefaultReadOnly(workspace string) *Registry {
+// fetch enables fetch_url when non-nil and AllowHosts is non-empty.
+// search enables web_search when non-nil and configured.
+func DefaultReadOnly(workspace string, fetch *FetchOptions, search *SearchOptions) *Registry {
 	r := NewRegistry()
 	registerBuiltinTools(r, true)
 	root := strings.TrimSpace(workspace)
 	if root != "" {
-		registerWorkspaceReadTools(r, root)
+		registerWorkspaceReadTools(r, root, fetch, search)
 	}
 	return r
 }
 
 // DefaultReadOnlyPlan is like DefaultReadOnly but omits echo so the model cannot substitute
-// a one-line echo for a written plan. Use for Plan mode.
-func DefaultReadOnlyPlan(workspace string) *Registry {
+// a one-line echo for a written design. Use for Plan mode.
+func DefaultReadOnlyPlan(workspace string, fetch *FetchOptions, search *SearchOptions) *Registry {
 	r := NewRegistry()
 	registerBuiltinTools(r, false)
 	root := strings.TrimSpace(workspace)
 	if root != "" {
-		registerWorkspaceReadTools(r, root)
+		registerWorkspaceReadTools(r, root, fetch, search)
 	}
 	return r
 }
@@ -159,12 +168,12 @@ func registerBuiltinTools(r *Registry, withEcho bool) {
 	})
 }
 
-func registerWorkspaceTools(r *Registry, root string, exec *ExecOptions) {
-	registerWorkspaceReadTools(r, root)
+func registerWorkspaceTools(r *Registry, root string, exec *ExecOptions, fetch *FetchOptions, search *SearchOptions) {
+	registerWorkspaceReadTools(r, root, fetch, search)
 	registerWorkspaceMutatingTools(r, root, exec)
 }
 
-func registerWorkspaceReadTools(r *Registry, root string) {
+func registerWorkspaceReadTools(r *Registry, root string, fetch *FetchOptions, search *SearchOptions) {
 	r.Register(Tool{
 		Name: "read_file",
 		Description: "Reads a UTF-8 text file under the workspace root (CODIENT_WORKSPACE). " +
@@ -350,6 +359,81 @@ func registerWorkspaceReadTools(r *Registry, root string) {
 			return grepWorkspace(ctx, root, p.PathPrefix, p.Pattern, p.Literal, p.Glob, max)
 		},
 	})
+
+	r.Register(Tool{
+		Name: "path_stat",
+		Description: "Returns metadata for a path under the workspace without reading file contents: " +
+			"exists, file/directory/symlink, size, mode, mod_time. Use before read_file when you only need presence or size.",
+		Parameters: shared.FunctionParameters{
+			"type": "object",
+			"properties": map[string]any{
+				"path": map[string]any{
+					"type":        "string",
+					"description": "Path relative to workspace root.",
+				},
+			},
+			"required":             []string{"path"},
+			"additionalProperties": false,
+		},
+		Run: func(_ context.Context, args json.RawMessage) (string, error) {
+			var p struct {
+				Path string `json:"path"`
+			}
+			if err := json.Unmarshal(args, &p); err != nil {
+				return "", fmt.Errorf("invalid arguments: %w", err)
+			}
+			return pathStatWorkspace(root, p.Path)
+		},
+	})
+
+	r.Register(Tool{
+		Name: "glob_files",
+		Description: "Lists files under a subdirectory matching a glob pattern. " +
+			"If pattern contains '/', it is matched against the path relative to under (forward slashes). " +
+			"Otherwise the pattern matches each file's basename only (recursive). " +
+			"Example basename patterns: *_test.go, *.md. Results capped by max_results.",
+		Parameters: shared.FunctionParameters{
+			"type": "object",
+			"properties": map[string]any{
+				"under": map[string]any{
+					"type":        "string",
+					"description": "Directory relative to workspace (default \".\").",
+				},
+				"pattern": map[string]any{
+					"type":        "string",
+					"description": "Glob pattern (see tool description).",
+				},
+				"max_results": map[string]any{
+					"type":        "integer",
+					"description": "Maximum paths to return (default 200).",
+				},
+			},
+			"required":             []string{"pattern"},
+			"additionalProperties": false,
+		},
+		Run: func(_ context.Context, args json.RawMessage) (string, error) {
+			var p struct {
+				Under       string `json:"under"`
+				Pattern     string `json:"pattern"`
+				MaxResults  *int   `json:"max_results"`
+			}
+			if err := json.Unmarshal(args, &p); err != nil {
+				return "", fmt.Errorf("invalid arguments: %w", err)
+			}
+			under := p.Under
+			if strings.TrimSpace(under) == "" {
+				under = "."
+			}
+			mr := defaultGlobMaxResults
+			if p.MaxResults != nil && *p.MaxResults > 0 {
+				mr = *p.MaxResults
+			}
+			return globFilesWorkspace(root, under, p.Pattern, mr)
+		},
+	})
+
+	registerFetchURL(r, fetch)
+	registerWebSearch(r, search)
 }
 
 func registerWorkspaceMutatingTools(r *Registry, root string, exec *ExecOptions) {
@@ -397,8 +481,213 @@ func registerWorkspaceMutatingTools(r *Registry, root string, exec *ExecOptions)
 		},
 	})
 
-	if exec != nil && len(exec.Allowlist) > 0 {
+	r.Register(Tool{
+		Name: "ensure_dir",
+		Description: "Creates a directory under the workspace (and parent directories as needed). " +
+			"Uses the same path rules as write_file; portable across Windows, macOS, and Linux—prefer this over shell mkdir.",
+		Parameters: shared.FunctionParameters{
+			"type": "object",
+			"properties": map[string]any{
+				"path": map[string]any{
+					"type":        "string",
+					"description": "Directory path relative to workspace root (e.g. \"cmd\" or \"internal/pkg/widget\").",
+				},
+			},
+			"required":             []string{"path"},
+			"additionalProperties": false,
+		},
+		Run: func(_ context.Context, args json.RawMessage) (string, error) {
+			var p struct {
+				Path string `json:"path"`
+			}
+			if err := json.Unmarshal(args, &p); err != nil {
+				return "", fmt.Errorf("invalid arguments: %w", err)
+			}
+			if err := ensureDirWorkspace(root, p.Path); err != nil {
+				return "", err
+			}
+			return fmt.Sprintf("created directory %s", strings.TrimSpace(p.Path)), nil
+		},
+	})
+
+	r.Register(Tool{
+		Name: "str_replace",
+		Description: "Targeted edit: replace an exact string in a file. " +
+			"Provide enough context in old_string to make the match unique. " +
+			"Fails when old_string matches 0 or >1 locations (unless replace_all is true). " +
+			"Prefer this over write_file for editing existing files.",
+		Parameters: shared.FunctionParameters{
+			"type": "object",
+			"properties": map[string]any{
+				"path": map[string]any{
+					"type":        "string",
+					"description": "Path relative to workspace root.",
+				},
+				"old_string": map[string]any{
+					"type":        "string",
+					"description": "Exact text to find (include surrounding lines for uniqueness).",
+				},
+				"new_string": map[string]any{
+					"type":        "string",
+					"description": "Replacement text.",
+				},
+				"replace_all": map[string]any{
+					"type":        "boolean",
+					"description": "Replace all occurrences (default false).",
+				},
+			},
+			"required":             []string{"path", "old_string", "new_string"},
+			"additionalProperties": false,
+		},
+		Run: func(_ context.Context, args json.RawMessage) (string, error) {
+			var p struct {
+				Path       string `json:"path"`
+				OldString  string `json:"old_string"`
+				NewString  string `json:"new_string"`
+				ReplaceAll bool   `json:"replace_all"`
+			}
+			if err := json.Unmarshal(args, &p); err != nil {
+				return "", fmt.Errorf("invalid arguments: %w", err)
+			}
+			return strReplaceWorkspace(root, p.Path, p.OldString, p.NewString, p.ReplaceAll)
+		},
+	})
+
+	r.Register(Tool{
+		Name: "patch_file",
+		Description: "Apply a unified diff to an existing UTF-8 file. " +
+			"More compact than write_file for multi-site edits on large files. " +
+			"The diff parameter is the unified diff body (@@ hunk headers plus context / + / - lines). " +
+			"Context lines must match the current file. " +
+			"Prefer str_replace for single-site edits; use patch_file when changing " +
+			"multiple locations in one call or when the edit spans many lines.",
+		Parameters: shared.FunctionParameters{
+			"type": "object",
+			"properties": map[string]any{
+				"path": map[string]any{
+					"type":        "string",
+					"description": "Path relative to workspace root.",
+				},
+				"diff": map[string]any{
+					"type":        "string",
+					"description": "Unified diff body (hunk headers + context/add/remove lines).",
+				},
+			},
+			"required":             []string{"path", "diff"},
+			"additionalProperties": false,
+		},
+		Run: func(_ context.Context, args json.RawMessage) (string, error) {
+			var p struct {
+				Path string `json:"path"`
+				Diff string `json:"diff"`
+			}
+			if err := json.Unmarshal(args, &p); err != nil {
+				return "", fmt.Errorf("invalid arguments: %w", err)
+			}
+			return patchFileWorkspace(root, p.Path, p.Diff)
+		},
+	})
+
+	r.Register(Tool{
+		Name: "remove_path",
+		Description: "Deletes a file or empty/non-empty directory tree under the workspace (same semantics as rm -rf). " +
+			"Paths are relative to the workspace root.",
+		Parameters: shared.FunctionParameters{
+			"type": "object",
+			"properties": map[string]any{
+				"path": map[string]any{
+					"type":        "string",
+					"description": "File or directory relative to workspace root.",
+				},
+			},
+			"required":             []string{"path"},
+			"additionalProperties": false,
+		},
+		Run: func(_ context.Context, args json.RawMessage) (string, error) {
+			var p struct {
+				Path string `json:"path"`
+			}
+			if err := json.Unmarshal(args, &p); err != nil {
+				return "", fmt.Errorf("invalid arguments: %w", err)
+			}
+			if err := removePathWorkspace(root, p.Path); err != nil {
+				return "", err
+			}
+			return fmt.Sprintf("removed %s", p.Path), nil
+		},
+	})
+
+	r.Register(Tool{
+		Name: "move_path",
+		Description: "Moves or renames a file or directory within the workspace (from -> to). " +
+			"Destination parent directories are created when needed.",
+		Parameters: shared.FunctionParameters{
+			"type": "object",
+			"properties": map[string]any{
+				"from": map[string]any{
+					"type":        "string",
+					"description": "Source path relative to workspace.",
+				},
+				"to": map[string]any{
+					"type":        "string",
+					"description": "Destination path relative to workspace.",
+				},
+			},
+			"required":             []string{"from", "to"},
+			"additionalProperties": false,
+		},
+		Run: func(_ context.Context, args json.RawMessage) (string, error) {
+			var p struct {
+				From string `json:"from"`
+				To   string `json:"to"`
+			}
+			if err := json.Unmarshal(args, &p); err != nil {
+				return "", fmt.Errorf("invalid arguments: %w", err)
+			}
+			if err := movePathWorkspace(root, p.From, p.To); err != nil {
+				return "", err
+			}
+			return fmt.Sprintf("moved %s -> %s", p.From, p.To), nil
+		},
+	})
+
+	r.Register(Tool{
+		Name: "copy_path",
+		Description: "Copies a file or directory tree within the workspace (from -> to). " +
+			"Symlinks are not supported. Existing destination files are overwritten.",
+		Parameters: shared.FunctionParameters{
+			"type": "object",
+			"properties": map[string]any{
+				"from": map[string]any{
+					"type":        "string",
+					"description": "Source path relative to workspace.",
+				},
+				"to": map[string]any{
+					"type":        "string",
+					"description": "Destination path relative to workspace.",
+				},
+			},
+			"required":             []string{"from", "to"},
+			"additionalProperties": false,
+		},
+		Run: func(_ context.Context, args json.RawMessage) (string, error) {
+			var p struct {
+				From string `json:"from"`
+				To   string `json:"to"`
+			}
+			if err := json.Unmarshal(args, &p); err != nil {
+				return "", fmt.Errorf("invalid arguments: %w", err)
+			}
+			if err := copyPathWorkspace(root, p.From, p.To); err != nil {
+				return "", err
+			}
+			return fmt.Sprintf("copied %s -> %s", p.From, p.To), nil
+		},
+	})
+
+	if exec != nil && (len(exec.Allowlist) > 0 || exec.Session != nil) {
 		registerRunCommand(r, root, exec)
+		registerRunShell(r, root, exec)
 	}
 }
 
@@ -413,7 +702,11 @@ func registerRunCommand(r *Registry, root string, exec *ExecOptions) {
 	r.Register(Tool{
 		Name: "run_command",
 		Description: "Runs a subprocess with working directory under the workspace. " +
-			"argv[0] must be a bare command name on CODIENT_EXEC_ALLOWLIST (no paths). " +
+			"argv[0] must be a command name on the allowlist; a leading ./ or .\\ prefix is accepted " +
+			"and resolves the binary relative to the working directory. " +
+			"For shell builtins (mkdir, redirects, pipelines) use run_shell instead. " +
+			"Default allowlist includes go, git, and the platform shell; override with CODIENT_EXEC_ALLOWLIST; disable with CODIENT_EXEC_DISABLE=1. " +
+			"If a command is not allowlisted, the user may be prompted to allow it for this session. " +
 			"Stdout and stderr are combined. Respects CODIENT_EXEC_TIMEOUT_SEC and output size limits.",
 		Parameters: shared.FunctionParameters{
 			"type": "object",
@@ -421,7 +714,7 @@ func registerRunCommand(r *Registry, root string, exec *ExecOptions) {
 				"argv": map[string]any{
 					"type":        "array",
 					"items":       map[string]any{"type": "string"},
-					"description": "Program name first (no slashes), then arguments.",
+					"description": "Program name first (bare name or ./name for workspace-relative), then arguments.",
 				},
 				"cwd": map[string]any{
 					"type":        "string",
@@ -439,7 +732,59 @@ func registerRunCommand(r *Registry, root string, exec *ExecOptions) {
 			if err := json.Unmarshal(args, &p); err != nil {
 				return "", fmt.Errorf("invalid arguments: %w", err)
 			}
-			return runCommand(ctx, root, p.Cwd, p.Argv, allow, timeout, maxOut)
+			if exec.Session != nil {
+				return runCommandWithSession(ctx, exec, root, p.Cwd, p.Argv, timeout, maxOut)
+			}
+			return runCommand(ctx, root, p.Cwd, p.Argv, allow, timeout, maxOut, exec.ProgressWriter)
+		},
+	})
+}
+
+func registerRunShell(r *Registry, root string, exec *ExecOptions) {
+	allow := allowSet(exec.Allowlist)
+	timeout := time.Duration(exec.TimeoutSeconds) * time.Second
+	maxOut := exec.MaxOutputBytes
+	if maxOut < 1 {
+		maxOut = 256 * 1024
+	}
+
+	r.Register(Tool{
+		Name: "run_shell",
+		Description: "Runs one shell command line under the workspace (Windows: cmd /c; Unix: sh -c). " +
+			"Use this for shell builtins (mkdir, rmdir), pipelines, environment variable expansion, and scripts. " +
+			"Prefer run_command for a single external program (e.g. go, git). " +
+			"The shell binary (cmd or sh) must be allowlisted; same session rules as run_command.",
+		Parameters: shared.FunctionParameters{
+			"type": "object",
+			"properties": map[string]any{
+				"command": map[string]any{
+					"type":        "string",
+					"description": "Full command line passed to the shell (e.g. \"mkdir internal\" or \"go test ./...\").",
+				},
+				"cwd": map[string]any{
+					"type":        "string",
+					"description": "Working directory relative to workspace (default \".\").",
+				},
+			},
+			"required":             []string{"command"},
+			"additionalProperties": false,
+		},
+		Run: func(ctx context.Context, args json.RawMessage) (string, error) {
+			var p struct {
+				Command string `json:"command"`
+				Cwd     string `json:"cwd"`
+			}
+			if err := json.Unmarshal(args, &p); err != nil {
+				return "", fmt.Errorf("invalid arguments: %w", err)
+			}
+			argv, err := shellArgv(p.Command)
+			if err != nil {
+				return "", err
+			}
+			if exec.Session != nil {
+				return runCommandWithSession(ctx, exec, root, p.Cwd, argv, timeout, maxOut)
+			}
+			return runCommand(ctx, root, p.Cwd, argv, allow, timeout, maxOut, exec.ProgressWriter)
 		},
 	})
 }

@@ -93,6 +93,9 @@ func grepStdlib(searchRoot, pattern string, literal bool, glob string, maxMatche
 			return errGrepLimit
 		}
 		if d.IsDir() {
+			if shouldSkipDir(d.Name()) {
+				return fs.SkipDir
+			}
 			return nil
 		}
 		if globPat != "" {

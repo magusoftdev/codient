@@ -35,8 +35,8 @@ func terminalWordWrap() int {
 }
 
 // PrepareAssistantText applies plan-mode normalization (Question heading, option layout)
-// without rendering. Use for REPL state (e.g. PlanStdinPrompt) when the reply was
-// already printed via streaming.
+// without rendering. Use for REPL state (e.g. detecting blocking questions) when the
+// reply was already printed via streaming.
 func PrepareAssistantText(text string, planMode bool) string {
 	text = strings.TrimRight(text, "\n")
 	if planMode {

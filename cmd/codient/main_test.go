@@ -62,14 +62,14 @@ func TestStreamWriterForTurn_PlanRichOnlyAfterBlockingQuestion(t *testing.T) {
 	if w := streamWriterForTurn(true, true, prompt.ModePlan, false, waiting); w == nil {
 		t.Fatal("plan+plain after question: expected streaming")
 	}
-	if w := streamWriterForTurn(true, true, prompt.ModeAgent, true, waiting); w == nil {
-		t.Fatal("agent+rich: expected streaming")
+	if w := streamWriterForTurn(true, true, prompt.ModeBuild, true, waiting); w == nil {
+		t.Fatal("build+rich: expected streaming")
 	}
 }
 
 func TestWritePlanDraftPreamble_AfterBlockingQuestion(t *testing.T) {
 	var buf bytes.Buffer
-	writePlanDraftPreamble(&buf, prompt.ModeAgent, "x **Waiting for your answer**")
+	writePlanDraftPreamble(&buf, prompt.ModeBuild, "x **Waiting for your answer**")
 	if buf.Len() != 0 {
 		t.Fatalf("non-plan: expected no preamble, got %q", buf.String())
 	}

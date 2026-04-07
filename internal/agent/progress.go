@@ -17,7 +17,11 @@ func progressArgsHint(name string, sum map[string]any) string {
 		if argv, ok := sum["argv"].([]string); ok && len(argv) > 0 {
 			return fmt.Sprintf("%q", strings.Join(argv, " "))
 		}
-	case "read_file", "write_file":
+	case "run_shell":
+		if s, ok := sum["command_prefix"].(string); ok && s != "" {
+			return truncateRunes(s, 80)
+		}
+	case "read_file", "write_file", "str_replace", "patch_file", "ensure_dir", "path_stat", "remove_path":
 		if p, ok := sum["path"].(string); ok && p != "" {
 			s := "path=" + p
 			if name == "write_file" {
@@ -26,6 +30,32 @@ func progressArgsHint(name string, sum map[string]any) string {
 				}
 			}
 			return s
+		}
+	case "move_path", "copy_path":
+		var parts []string
+		if f, ok := sum["from"].(string); ok && f != "" {
+			parts = append(parts, "from="+f)
+		}
+		if t, ok := sum["to"].(string); ok && t != "" {
+			parts = append(parts, "to="+t)
+		}
+		return strings.Join(parts, " ")
+	case "glob_files":
+		var parts []string
+		if u, ok := sum["under"].(string); ok && strings.TrimSpace(u) != "" && u != "." {
+			parts = append(parts, "under="+u)
+		}
+		if pat, ok := sum["pattern"].(string); ok && pat != "" {
+			parts = append(parts, "pattern="+truncateRunes(pat, 60))
+		}
+		return strings.Join(parts, " ")
+	case "fetch_url":
+		if u, ok := sum["url"].(string); ok && u != "" {
+			return "url=" + truncateRunes(u, 80)
+		}
+	case "web_search":
+		if q, ok := sum["query"].(string); ok && q != "" {
+			return "query=" + truncateRunes(q, 80)
 		}
 	case "grep":
 		var parts []string
@@ -55,7 +85,7 @@ func progressArgsHint(name string, sum map[string]any) string {
 	}
 	// Fallback: omit noisy keys
 	var parts []string
-	for _, k := range []string{"path", "under", "substring", "suffix", "message"} {
+	for _, k := range []string{"path", "under", "substring", "suffix", "message", "url", "from", "to", "pattern"} {
 		if v, ok := sum[k]; ok {
 			parts = append(parts, fmt.Sprintf("%s=%v", k, v))
 		}

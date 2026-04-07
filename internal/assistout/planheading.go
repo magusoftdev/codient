@@ -7,15 +7,13 @@ import (
 
 var (
 	reMarkdownQuestionHeading = regexp.MustCompile(`(?mi)^#{1,6}\s*question\b`)
-	// Mid-line packed options: "A) … B) …" or "**A)** … **B)** …"
-	rePlanPackedBoldOption  = regexp.MustCompile(`([^\n])\s+(\*\*[BCD]\)\*\*)`)
-	rePlanPackedPlainOption = regexp.MustCompile(`([^\n])\s+([BCD]\))(\s)`)
-	// Model mistake: "## B) …" renders as huge blue headings in the terminal.
-	rePlanLineOptionHeading = regexp.MustCompile(`^(\s*)#{1,6}\s+([ABCD]\)\s.*)$`)
-	rePlanLinePlainOption   = regexp.MustCompile(`^(\s*)([ABCD]\)\s.*)$`)
-	rePlanLineBoldOption    = regexp.MustCompile(`^(\s*)(\*\*[ABCD]\)\*\*\s*.+)$`)
-	rePlanLineListedOption  = regexp.MustCompile(`^(\s*)[-*•]\s*((?:\*\*)?[ABCD]\)(?:\*\*)?\s.*)$`)
-	rePlanLineEmptyMarker   = regexp.MustCompile(`^\s*[-*•]\s*$`)
+	rePlanPackedBoldOption    = regexp.MustCompile(`([^\n])\s+(\*\*[BCD]\)\*\*)`)
+	rePlanPackedPlainOption     = regexp.MustCompile(`([^\n])\s+([BCD]\))(\s)`)
+	rePlanLineOptionHeading     = regexp.MustCompile(`^(\s*)#{1,6}\s+([ABCD]\)\s.*)$`)
+	rePlanLinePlainOption       = regexp.MustCompile(`^(\s*)([ABCD]\)\s.*)$`)
+	rePlanLineBoldOption        = regexp.MustCompile(`^(\s*)(\*\*[ABCD]\)\*\*\s*.+)$`)
+	rePlanLineListedOption      = regexp.MustCompile(`^(\s*)[-*•]\s*((?:\*\*)?[ABCD]\)(?:\*\*)?\s.*)$`)
+	rePlanLineEmptyMarker       = regexp.MustCompile(`^\s*[-*•]\s*$`)
 )
 
 const (
@@ -79,7 +77,6 @@ func NormalizePlanQuestionOptionLines(s string) string {
 		return s
 	}
 	prefix, suffix := s[:idx], s[idx:]
-	// Bold **B)** / **C)** / **D)** first so plain regex does not touch inside **…**
 	for {
 		next := rePlanPackedBoldOption.ReplaceAllString(prefix, "$1\n\n$2")
 		if next == prefix {

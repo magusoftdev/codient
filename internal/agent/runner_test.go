@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"strings"
 	"testing"
 
@@ -33,6 +34,92 @@ func (m *mockLLM) ChatCompletion(ctx context.Context, params openai.ChatCompleti
 		return nil, err
 	}
 	return &out, nil
+}
+
+// assertStreamUnusedLLM records whether ChatCompletionStream was invoked. The agent must use
+// non-streaming ChatCompletion when the request includes tools and StreamWithTools is false
+// (local servers often drop tool_calls over SSE).
+type assertStreamUnusedLLM struct {
+	t           *testing.T
+	model       string
+	script      []string
+	calls       int
+	streamCalls int
+}
+
+func (m *assertStreamUnusedLLM) Model() string { return m.model }
+
+func (m *assertStreamUnusedLLM) ChatCompletion(ctx context.Context, params openai.ChatCompletionNewParams) (*openai.ChatCompletion, error) {
+	if m.calls >= len(m.script) {
+		return nil, context.Canceled
+	}
+	raw := m.script[m.calls]
+	m.calls++
+	var out openai.ChatCompletion
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (m *assertStreamUnusedLLM) ChatCompletionStream(ctx context.Context, params openai.ChatCompletionNewParams, w io.Writer) (*openai.ChatCompletion, error) {
+	m.streamCalls++
+	m.t.Fatalf("ChatCompletionStream should not run for tool requests when StreamWithTools is false (would drop tool_calls on many local servers)")
+	return nil, context.Canceled
+}
+
+func TestRunner_WithStreamWriterUsesChatCompletionWhenToolsPresent(t *testing.T) {
+	toolRound := `{
+  "id": "x",
+  "object": "chat.completion",
+  "created": 1,
+  "model": "m",
+  "choices": [{
+    "index": 0,
+    "message": {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [{
+        "id": "call_1",
+        "type": "function",
+        "function": {
+          "name": "echo",
+          "arguments": "{\"message\":\"tool-out\"}"
+        }
+      }]
+    },
+    "finish_reason": "tool_calls"
+  }]
+}`
+	final := `{
+  "id": "y",
+  "object": "chat.completion",
+  "created": 2,
+  "model": "m",
+  "choices": [{
+    "index": 0,
+    "message": {
+      "role": "assistant",
+      "content": "done"
+    },
+    "finish_reason": "stop"
+  }]
+}`
+	llm := &assertStreamUnusedLLM{t: t, model: "m", script: []string{toolRound, final}}
+	reg := tools.NewRegistry()
+	reg.Register(mustEchoTool(t))
+	cfg := &config.Config{MaxToolSteps: 5, StreamWithTools: false}
+	r := &Runner{LLM: llm, Cfg: cfg, Tools: reg}
+	out, _, err := r.Run(context.Background(), "", "call echo", io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != "done" {
+		t.Fatalf("got %q", out)
+	}
+	if llm.streamCalls != 0 {
+		t.Fatalf("expected no streaming calls, got %d", llm.streamCalls)
+	}
 }
 
 func TestRunner_DirectReply(t *testing.T) {
@@ -229,6 +316,70 @@ func TestRunner_SystemPrompt(t *testing.T) {
 	}
 }
 
+type captureLLM struct {
+	model  string
+	script []string
+	calls  int
+	// MsgJSON is the JSON encoding of params.Messages for each ChatCompletion call.
+	MsgJSON []json.RawMessage
+}
+
+func (c *captureLLM) Model() string { return c.model }
+
+func (c *captureLLM) ChatCompletion(ctx context.Context, params openai.ChatCompletionNewParams) (*openai.ChatCompletion, error) {
+	if c.calls >= len(c.script) {
+		return nil, context.Canceled
+	}
+	rawMsgs, _ := json.Marshal(params.Messages)
+	c.MsgJSON = append(c.MsgJSON, rawMsgs)
+	raw := c.script[c.calls]
+	c.calls++
+	var out openai.ChatCompletion
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func mustWriteFileTool(t *testing.T) tools.Tool {
+	t.Helper()
+	return tools.Tool{
+		Name:        "write_file",
+		Description: "write",
+		Parameters: shared.FunctionParameters{
+			"type": "object",
+			"properties": map[string]any{
+				"path":    map[string]any{"type": "string"},
+				"content": map[string]any{"type": "string"},
+			},
+			"required":             []string{"path", "content"},
+			"additionalProperties": false,
+		},
+		Run: func(_ context.Context, args json.RawMessage) (string, error) {
+			return "wrote f (overwrite)", nil
+		},
+	}
+}
+
+func mustReadFileTool(t *testing.T) tools.Tool {
+	t.Helper()
+	return tools.Tool{
+		Name:        "read_file",
+		Description: "read",
+		Parameters: shared.FunctionParameters{
+			"type": "object",
+			"properties": map[string]any{
+				"path": map[string]any{"type": "string"},
+			},
+			"required":             []string{"path"},
+			"additionalProperties": false,
+		},
+		Run: func(_ context.Context, args json.RawMessage) (string, error) {
+			return "ok", nil
+		},
+	}
+}
+
 func mustEchoTool(t *testing.T) tools.Tool {
 	t.Helper()
 	return tools.Tool{
@@ -251,5 +402,184 @@ func mustEchoTool(t *testing.T) tools.Tool {
 			}
 			return p.Message, nil
 		},
+	}
+}
+
+func TestRunner_AutoCheckInjectsOnFailure(t *testing.T) {
+	toolRound := `{
+  "id": "x",
+  "object": "chat.completion",
+  "created": 1,
+  "model": "m",
+  "choices": [{
+    "index": 0,
+    "message": {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [{
+        "id": "call_1",
+        "type": "function",
+        "function": {
+          "name": "write_file",
+          "arguments": "{\"path\":\"f.txt\",\"content\":\"x\"}"
+        }
+      }]
+    },
+    "finish_reason": "tool_calls"
+  }]
+}`
+	final := `{
+  "id": "y",
+  "object": "chat.completion",
+  "created": 2,
+  "model": "m",
+  "choices": [{
+    "index": 0,
+    "message": {
+      "role": "assistant",
+      "content": "fixed"
+    },
+    "finish_reason": "stop"
+  }]
+}`
+	llm := &captureLLM{model: "m", script: []string{toolRound, final}}
+	reg := tools.NewRegistry()
+	reg.Register(mustWriteFileTool(t))
+	cfg := &config.Config{MaxToolSteps: 5}
+	r := &Runner{
+		LLM: llm, Cfg: cfg, Tools: reg,
+		AutoCheck: func(context.Context) AutoCheckOutcome {
+			return AutoCheckOutcome{Inject: "[auto-check] BUILD FAIL", Progress: "auto-check: test · exit=1"}
+		},
+	}
+	_, _, err := r.Run(context.Background(), "", "edit", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(llm.MsgJSON) < 2 {
+		t.Fatalf("expected 2 LLM calls, got %d", len(llm.MsgJSON))
+	}
+	if !strings.Contains(string(llm.MsgJSON[1]), "[auto-check] BUILD FAIL") {
+		t.Fatalf("second request should include auto-check inject: %s", string(llm.MsgJSON[1]))
+	}
+}
+
+func TestRunner_AutoCheckSilentOnSuccess(t *testing.T) {
+	toolRound := `{
+  "id": "x",
+  "object": "chat.completion",
+  "created": 1,
+  "model": "m",
+  "choices": [{
+    "index": 0,
+    "message": {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [{
+        "id": "call_1",
+        "type": "function",
+        "function": {
+          "name": "write_file",
+          "arguments": "{\"path\":\"f.txt\",\"content\":\"x\"}"
+        }
+      }]
+    },
+    "finish_reason": "tool_calls"
+  }]
+}`
+	final := `{
+  "id": "y",
+  "object": "chat.completion",
+  "created": 2,
+  "model": "m",
+  "choices": [{
+    "index": 0,
+    "message": {
+      "role": "assistant",
+      "content": "done"
+    },
+    "finish_reason": "stop"
+  }]
+}`
+	llm := &captureLLM{model: "m", script: []string{toolRound, final}}
+	reg := tools.NewRegistry()
+	reg.Register(mustWriteFileTool(t))
+	cfg := &config.Config{MaxToolSteps: 5}
+	r := &Runner{
+		LLM: llm, Cfg: cfg, Tools: reg,
+		AutoCheck: func(context.Context) AutoCheckOutcome {
+			return AutoCheckOutcome{Progress: "auto-check: ok"}
+		},
+	}
+	_, _, err := r.Run(context.Background(), "", "edit", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(llm.MsgJSON) < 2 {
+		t.Fatalf("expected 2 LLM calls, got %d", len(llm.MsgJSON))
+	}
+	if strings.Contains(string(llm.MsgJSON[1]), "[auto-check]") {
+		t.Fatalf("should not inject on success: %s", string(llm.MsgJSON[1]))
+	}
+}
+
+func TestRunner_AutoCheckSkipsReadOnly(t *testing.T) {
+	toolRound := `{
+  "id": "x",
+  "object": "chat.completion",
+  "created": 1,
+  "model": "m",
+  "choices": [{
+    "index": 0,
+    "message": {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [{
+        "id": "call_1",
+        "type": "function",
+        "function": {
+          "name": "read_file",
+          "arguments": "{\"path\":\"f.txt\"}"
+        }
+      }]
+    },
+    "finish_reason": "tool_calls"
+  }]
+}`
+	final := `{
+  "id": "y",
+  "object": "chat.completion",
+  "created": 2,
+  "model": "m",
+  "choices": [{
+    "index": 0,
+    "message": {
+      "role": "assistant",
+      "content": "done"
+    },
+    "finish_reason": "stop"
+  }]
+}`
+	llm := &captureLLM{model: "m", script: []string{toolRound, final}}
+	reg := tools.NewRegistry()
+	reg.Register(mustReadFileTool(t))
+	cfg := &config.Config{MaxToolSteps: 5}
+	var runs int
+	r := &Runner{
+		LLM: llm, Cfg: cfg, Tools: reg,
+		AutoCheck: func(context.Context) AutoCheckOutcome {
+			runs++
+			return AutoCheckOutcome{Inject: "should not run"}
+		},
+	}
+	out, _, err := r.Run(context.Background(), "", "read", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runs != 0 {
+		t.Fatalf("auto-check should not run for read-only tools, runs=%d", runs)
+	}
+	if out != "done" {
+		t.Fatalf("got %q", out)
 	}
 }

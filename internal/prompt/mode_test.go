@@ -9,12 +9,13 @@ func TestParseMode(t *testing.T) {
 		in   string
 		want Mode
 	}{
-		{"", ModeAgent},
-		{"  ", ModeAgent},
-		{"agent", ModeAgent},
-		{"AGENT", ModeAgent},
+		{"", ModeBuild},
+		{"  ", ModeBuild},
+		{"build", ModeBuild},
+		{"BUILD", ModeBuild},
 		{"ask", ModeAsk},
 		{"Plan", ModePlan},
+		{"design", ModePlan},
 	}
 	for _, tc := range tests {
 		got, err := ParseMode(tc.in)

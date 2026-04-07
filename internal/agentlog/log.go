@@ -115,9 +115,47 @@ func SummarizeArgs(name string, argsJSON []byte) map[string]any {
 		if cwd, ok := raw["cwd"].(string); ok {
 			m["cwd"] = cwd
 		}
-	case "read_file":
+	case "run_shell":
+		if cmd, ok := raw["command"].(string); ok {
+			m["command_len"] = len(cmd)
+			if len(cmd) > 120 {
+				m["command_prefix"] = cmd[:120]
+			} else {
+				m["command_prefix"] = cmd
+			}
+		}
+		if cwd, ok := raw["cwd"].(string); ok {
+			m["cwd"] = cwd
+		}
+	case "ensure_dir":
 		if p, ok := raw["path"].(string); ok {
 			m["path"] = p
+		}
+	case "read_file", "path_stat", "remove_path":
+		if p, ok := raw["path"].(string); ok {
+			m["path"] = p
+		}
+	case "move_path", "copy_path":
+		if p, ok := raw["from"].(string); ok {
+			m["from"] = p
+		}
+		if p, ok := raw["to"].(string); ok {
+			m["to"] = p
+		}
+	case "glob_files":
+		if p, ok := raw["under"].(string); ok {
+			m["under"] = p
+		}
+		if p, ok := raw["pattern"].(string); ok {
+			m["pattern"] = p
+		}
+	case "fetch_url":
+		if u, ok := raw["url"].(string); ok {
+			m["url"] = u
+		}
+	case "web_search":
+		if q, ok := raw["query"].(string); ok {
+			m["query"] = q
 		}
 	case "write_file":
 		if p, ok := raw["path"].(string); ok {
@@ -125,6 +163,23 @@ func SummarizeArgs(name string, argsJSON []byte) map[string]any {
 		}
 		if c, ok := raw["content"].(string); ok {
 			m["content_len"] = len(c)
+		}
+	case "str_replace":
+		if p, ok := raw["path"].(string); ok {
+			m["path"] = p
+		}
+		if old, ok := raw["old_string"].(string); ok {
+			m["old_string_len"] = len(old)
+		}
+		if nw, ok := raw["new_string"].(string); ok {
+			m["new_string_len"] = len(nw)
+		}
+	case "patch_file":
+		if p, ok := raw["path"].(string); ok {
+			m["path"] = p
+		}
+		if d, ok := raw["diff"].(string); ok {
+			m["diff_len"] = len(d)
 		}
 	case "grep":
 		if p, ok := raw["pattern"].(string); ok {

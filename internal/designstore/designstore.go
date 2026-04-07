@@ -1,5 +1,5 @@
-// Package planstore writes implementation plans to disk with unique filenames.
-package planstore
+// Package designstore writes implementation designs to disk with unique filenames.
+package designstore
 
 import (
 	"os"
@@ -52,13 +52,14 @@ func slugify(s string, maxBytes int) string {
 	return s
 }
 
-// LooksLikeReadyToImplement is true when the assistant ended with a handoff plan (saved as a plan artifact).
+// LooksLikeReadyToImplement is true when the assistant ended with a handoff design (saved as an artifact).
 func LooksLikeReadyToImplement(markdown string) bool {
 	return strings.Contains(strings.ToLower(markdown), "ready to implement")
 }
 
-// Dir resolves the directory to store plans: override if set, else <workspace>/.codient/plans (workspace defaults to cwd).
-func Dir(workspace, override string) (string, error) {
+// Dir resolves the directory to store designs.
+// When sessionID is non-empty, designs are stored in a per-session subdirectory.
+func Dir(workspace, override, sessionID string) (string, error) {
 	if o := strings.TrimSpace(override); o != "" {
 		return filepath.Abs(o)
 	}
@@ -70,12 +71,17 @@ func Dir(workspace, override string) (string, error) {
 		}
 		base = wd
 	}
-	return filepath.Abs(filepath.Join(base, ".codient", "plans"))
+	dir := filepath.Join(base, ".codient", "designs")
+	if sid := strings.TrimSpace(sessionID); sid != "" {
+		dir = filepath.Join(dir, sid)
+	}
+	return filepath.Abs(dir)
 }
 
-// Save writes markdown to a new file named {slug}_{date}_{unixNano}.md. slug should come from TaskSlug.
-func Save(workspace, dirOverride, slug, markdown string, t time.Time) (absPath string, err error) {
-	dir, err := Dir(workspace, dirOverride)
+// Save writes markdown to a new file named {slug}_{date}_{unixNano}.md.
+// sessionID scopes the file into a per-session subdirectory.
+func Save(workspace, dirOverride, sessionID, slug, markdown string, t time.Time) (absPath string, err error) {
+	dir, err := Dir(workspace, dirOverride, sessionID)
 	if err != nil {
 		return "", err
 	}

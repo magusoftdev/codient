@@ -1,8 +1,8 @@
-// Package lmstudio wraps the OpenAI-compatible LM Studio HTTP API (openai-go client + helpers).
+// Package openaiclient wraps an OpenAI-compatible HTTP API (openai-go client + helpers).
 //
-// LLM_MAX_CONCURRENT in the agent layer limits how many in-flight HTTP requests hit LM Studio;
-// LM Studio's own "max concurrent predictions" is a separate server-side limit—tune both together.
-package lmstudio
+// LLM_MAX_CONCURRENT in the agent layer limits how many in-flight HTTP requests hit the server;
+// the server's own concurrency limits are separate—tune both together.
+package openaiclient
 
 import (
 	"context"
@@ -49,7 +49,7 @@ func (s *semaphore) release() {
 	<-s.ch
 }
 
-// New builds an OpenAI API client pointed at LM Studio and a concurrency limiter for chat calls.
+// New builds an OpenAI API client for the configured base URL and a concurrency limiter for chat calls.
 func New(cfg *config.Config) *Client {
 	base := strings.TrimRight(cfg.BaseURL, "/")
 	oa := openai.NewClient(
@@ -155,6 +155,109 @@ func (c *Client) ChatCompletionStream(ctx context.Context, params openai.ChatCom
 	}
 	out := acc.ChatCompletion
 	return &out, nil
+}
+
+// ProbeContextWindow tries to discover the loaded model's context window in tokens.
+// It queries the LM Studio native REST API (GET /api/v1/models) which is separate from
+// the OpenAI-compatible /v1/models. If the server is not LM Studio or the endpoint is
+// unavailable, returns (0, nil) so the caller falls back to CODIENT_CONTEXT_WINDOW.
+func (c *Client) ProbeContextWindow(ctx context.Context, modelID string) (int, error) {
+	nativeBase := c.nativeBaseURL()
+	if nativeBase == "" {
+		return 0, nil
+	}
+	endpoint := nativeBase + "/api/v1/models"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return 0, nil
+	}
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return 0, nil
+	}
+	defer res.Body.Close()
+	if res.StatusCode != 200 {
+		return 0, nil
+	}
+	body, err := io.ReadAll(io.LimitReader(res.Body, 512*1024))
+	if err != nil {
+		return 0, nil
+	}
+	return parseContextFromNativeModels(body, modelID), nil
+}
+
+// nativeBaseURL derives the LM Studio native API root from the OpenAI-compat base.
+// e.g. "http://127.0.0.1:1234/v1" -> "http://127.0.0.1:1234"
+func (c *Client) nativeBaseURL() string {
+	b := c.base
+	if strings.HasSuffix(b, "/v1") {
+		return strings.TrimSuffix(b, "/v1")
+	}
+	if strings.Contains(b, "/v1/") {
+		return b[:strings.LastIndex(b, "/v1/")]
+	}
+	return b
+}
+
+// nativeModelsResponse mirrors the LM Studio GET /api/v1/models shape (relevant fields only).
+type nativeModelsResponse struct {
+	Models []nativeModel `json:"models"`
+}
+
+type nativeModel struct {
+	Key             string           `json:"key"`
+	MaxContextLen   int              `json:"max_context_length"`
+	LoadedInstances []loadedInstance `json:"loaded_instances"`
+}
+
+type loadedInstance struct {
+	ID     string         `json:"id"`
+	Config instanceConfig `json:"config"`
+}
+
+type instanceConfig struct {
+	ContextLength int `json:"context_length"`
+}
+
+func parseContextFromNativeModels(data []byte, modelID string) int {
+	var resp nativeModelsResponse
+	if json.Unmarshal(data, &resp) != nil {
+		return 0
+	}
+	modelID = strings.TrimSpace(modelID)
+	for _, m := range resp.Models {
+		if !modelKeyMatches(m.Key, modelID) {
+			continue
+		}
+		for _, inst := range m.LoadedInstances {
+			if inst.Config.ContextLength > 0 {
+				return inst.Config.ContextLength
+			}
+		}
+		if m.MaxContextLen > 0 {
+			return m.MaxContextLen
+		}
+	}
+	// Also try matching loaded instance IDs directly.
+	for _, m := range resp.Models {
+		for _, inst := range m.LoadedInstances {
+			if inst.ID == modelID && inst.Config.ContextLength > 0 {
+				return inst.Config.ContextLength
+			}
+		}
+	}
+	return 0
+}
+
+func modelKeyMatches(key, modelID string) bool {
+	if key == modelID {
+		return true
+	}
+	if strings.EqualFold(key, modelID) {
+		return true
+	}
+	return false
 }
 
 // ModelsResponse is a minimal parse of GET /v1/models for CLI listing.

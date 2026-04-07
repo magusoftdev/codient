@@ -1,4 +1,4 @@
-package lmstudio
+package openaiclient
 
 import (
 	"bytes"
@@ -54,6 +54,110 @@ func TestPingModels_ErrorStatus(t *testing.T) {
 	c := New(testConfig(srv.URL+"/v1", "m"))
 	if err := c.PingModels(context.Background()); err == nil {
 		t.Fatal("expected error")
+	}
+}
+
+func TestProbeContextWindow_LoadedInstance(t *testing.T) {
+	nativeJSON := `{
+		"models": [{
+			"key": "my-model",
+			"max_context_length": 32768,
+			"loaded_instances": [{
+				"id": "my-model",
+				"config": {"context_length": 8192, "eval_batch_size": 512}
+			}]
+		}]
+	}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/models" {
+			_, _ = w.Write([]byte(nativeJSON))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	c := New(testConfig(srv.URL+"/v1", "my-model"))
+	n, err := c.ProbeContextWindow(context.Background(), "my-model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 8192 {
+		t.Fatalf("got %d, want 8192", n)
+	}
+}
+
+func TestProbeContextWindow_FallsBackToMaxContext(t *testing.T) {
+	nativeJSON := `{
+		"models": [{
+			"key": "offline-model",
+			"max_context_length": 32768,
+			"loaded_instances": []
+		}]
+	}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/models" {
+			_, _ = w.Write([]byte(nativeJSON))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	c := New(testConfig(srv.URL+"/v1", "offline-model"))
+	n, err := c.ProbeContextWindow(context.Background(), "offline-model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 32768 {
+		t.Fatalf("got %d, want 32768", n)
+	}
+}
+
+func TestParseContextFromNativeModels(t *testing.T) {
+	data := []byte(`{
+		"models": [
+			{
+				"key": "my-model",
+				"max_context_length": 32768,
+				"loaded_instances": [
+					{"id": "my-model", "config": {"context_length": 4096}}
+				]
+			},
+			{
+				"key": "other-model",
+				"max_context_length": 8192,
+				"loaded_instances": []
+			}
+		]
+	}`)
+	if n := parseContextFromNativeModels(data, "my-model"); n != 4096 {
+		t.Fatalf("loaded instance: got %d, want 4096", n)
+	}
+	if n := parseContextFromNativeModels(data, "other-model"); n != 8192 {
+		t.Fatalf("max_context_length fallback: got %d, want 8192", n)
+	}
+	if n := parseContextFromNativeModels(data, "nonexistent"); n != 0 {
+		t.Fatalf("unknown model: got %d, want 0", n)
+	}
+	if n := parseContextFromNativeModels([]byte("not json"), "x"); n != 0 {
+		t.Fatalf("bad JSON: got %d, want 0", n)
+	}
+}
+
+func TestProbeContextWindow_NonLMStudio(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	c := New(testConfig(srv.URL+"/v1", "m"))
+	n, err := c.ProbeContextWindow(context.Background(), "m")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("got %d, want 0 for non-LM-Studio server", n)
 	}
 }
 

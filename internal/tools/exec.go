@@ -1,22 +1,90 @@
 package tools
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
+)
+
+// ExecPromptChoice is the user's response when a command is not on the session allowlist.
+type ExecPromptChoice int
+
+const (
+	// ExecPromptDeny rejects the command; run_command returns an error.
+	ExecPromptDeny ExecPromptChoice = iota
+	// ExecPromptAllowSession adds the command name to the session allowlist and proceeds.
+	ExecPromptAllowSession
+	// ExecPromptAllowAll permits all commands for the rest of the session (no further prompts).
+	ExecPromptAllowAll
 )
 
 // ExecOptions configures the run_command tool. Pass nil to Default to disable it.
 type ExecOptions struct {
 	Allowlist      []string
+	Session        *SessionExecAllow
 	TimeoutSeconds int
 	MaxOutputBytes int
+	// ProgressWriter, when non-nil, receives live subprocess output lines
+	// (prefixed with "  | ") while the command runs. Typically stderr.
+	ProgressWriter io.Writer
+	// PromptOnDenied is called when a command is not allowlisted. If nil, denial is a hard error.
+	PromptOnDenied func(ctx context.Context, deniedKey string, argv []string) ExecPromptChoice
+	promptMu       sync.Mutex
+}
+
+// LineStreamer is an io.Writer that captures all bytes into an internal buffer
+// (for the final tool result) and simultaneously emits complete lines with a
+// "  | " prefix to an optional progress writer (for live human-readable output).
+type LineStreamer struct {
+	buf      bytes.Buffer
+	progress io.Writer
+	partial  []byte
+}
+
+// NewLineStreamer returns a writer that tees to progress with line prefixes.
+// If progress is nil, it behaves as a plain bytes.Buffer.
+func NewLineStreamer(progress io.Writer) *LineStreamer {
+	return &LineStreamer{progress: progress}
+}
+
+func (ls *LineStreamer) Write(p []byte) (int, error) {
+	ls.buf.Write(p)
+	if ls.progress == nil {
+		return len(p), nil
+	}
+	ls.partial = append(ls.partial, p...)
+	for {
+		idx := bytes.IndexByte(ls.partial, '\n')
+		if idx < 0 {
+			break
+		}
+		line := ls.partial[:idx]
+		ls.partial = ls.partial[idx+1:]
+		fmt.Fprintf(ls.progress, "  | %s\n", line)
+	}
+	return len(p), nil
+}
+
+// Flush emits any remaining partial line to the progress writer.
+func (ls *LineStreamer) Flush() {
+	if ls.progress != nil && len(ls.partial) > 0 {
+		fmt.Fprintf(ls.progress, "  | %s\n", ls.partial)
+		ls.partial = nil
+	}
+}
+
+// Bytes returns the full captured output.
+func (ls *LineStreamer) Bytes() []byte {
+	return ls.buf.Bytes()
 }
 
 func allowSet(allow []string) map[string]struct{} {
@@ -33,33 +101,136 @@ func allowSet(allow []string) map[string]struct{} {
 	return m
 }
 
-// normalizeCmdKey maps argv[0] to an allowlist key (basename, lower, strip .exe on Windows).
-func normalizeCmdKey(argv0 string) string {
-	base := filepath.Base(strings.TrimSpace(argv0))
-	s := strings.ToLower(base)
-	if runtime.GOOS == "windows" {
-		s = strings.TrimSuffix(s, ".exe")
-		s = strings.TrimSuffix(s, ".bat")
-		s = strings.TrimSuffix(s, ".cmd")
+// stripDotSlash removes a leading "./" or ".\" from a command name so that
+// invocations like "./myapp.exe" are treated as "myapp.exe" resolved relative
+// to the working directory. Returns the cleaned name and whether a prefix was stripped.
+func stripDotSlash(name string) (string, bool) {
+	if strings.HasPrefix(name, "./") || strings.HasPrefix(name, ".\\") {
+		return name[2:], true
 	}
-	return s
+	return name, false
 }
 
-func runCommand(ctx context.Context, workspaceRoot, cwdRel string, argv []string, allow map[string]struct{}, timeout time.Duration, maxOut int) (string, error) {
+// resolveExec finds the executable path. When dotRel is true the binary is
+// resolved relative to workDir (the model wrote "./foo"); otherwise exec.LookPath
+// searches PATH as usual.
+func resolveExec(name string, dotRel bool, workDir string) (string, error) {
+	if dotRel && workDir != "" {
+		p := filepath.Join(workDir, name)
+		if _, err := os.Stat(p); err != nil {
+			return "", fmt.Errorf("cannot find %q in working directory: %w", name, err)
+		}
+		return p, nil
+	}
+	look, err := exec.LookPath(name)
+	if err != nil {
+		return "", lookPathErr(name, err)
+	}
+	return look, nil
+}
+
+// ensureExecAllowedAndResolve checks the session allowlist (prompting before any LookPath
+// so unknown commands still trigger a permission prompt). A leading "./" or ".\" on
+// argv[0] is stripped and the binary is resolved relative to workDir instead of PATH.
+// Returns the resolved executable path.
+func ensureExecAllowedAndResolve(ctx context.Context, opt *ExecOptions, argv []string, workDir string) (look string, err error) {
+	if opt == nil || opt.Session == nil {
+		return "", fmt.Errorf("internal: session exec options required")
+	}
 	if len(argv) == 0 {
 		return "", fmt.Errorf("argv must be non-empty")
 	}
-	if strings.ContainsAny(argv[0], `/\`) {
-		return "", fmt.Errorf("argv[0] must be a command name without path separators (got %q)", argv[0])
-	}
-	key := normalizeCmdKey(argv[0])
-	if key == "" {
-		return "", fmt.Errorf("empty command name")
-	}
-	if _, ok := allow[key]; !ok {
-		return "", fmt.Errorf("command %q is not on CODIENT_EXEC_ALLOWLIST", key)
-	}
+	name, dotRel := stripDotSlash(argv[0])
+	sa := opt.Session
+	for {
+		if sa.AllowAll() {
+			return resolveExec(name, dotRel, workDir)
+		}
+		if strings.ContainsAny(name, `/\`) {
+			return "", fmt.Errorf("argv[0] must be a command name without path separators (got %q)", argv[0])
+		}
+		k0 := NormalizeCmdKey(name)
 
+		if !sa.IsAllowed(k0) {
+			if opt.PromptOnDenied == nil {
+				return "", fmt.Errorf("command %q is not on the exec allowlist", k0)
+			}
+			opt.promptMu.Lock()
+			choice := opt.PromptOnDenied(ctx, k0, argv)
+			opt.promptMu.Unlock()
+			switch choice {
+			case ExecPromptDeny:
+				return "", fmt.Errorf("user denied permission to run %q", k0)
+			case ExecPromptAllowSession:
+				sa.Add(k0)
+				continue
+			case ExecPromptAllowAll:
+				sa.SetAllowAll()
+				return resolveExec(name, dotRel, workDir)
+			default:
+				return "", fmt.Errorf("user denied permission to run %q", k0)
+			}
+		}
+
+		look, err := resolveExec(name, dotRel, workDir)
+		if err != nil {
+			return "", err
+		}
+		rk := NormalizeCmdKey(look)
+		if sa.IsAllowed(rk) {
+			return look, nil
+		}
+		if opt.PromptOnDenied == nil {
+			return "", fmt.Errorf("resolved binary %q is not on the exec allowlist", rk)
+		}
+		opt.promptMu.Lock()
+		choice := opt.PromptOnDenied(ctx, rk, argv)
+		opt.promptMu.Unlock()
+		switch choice {
+		case ExecPromptDeny:
+			return "", fmt.Errorf("user denied permission to run %q", rk)
+		case ExecPromptAllowSession:
+			sa.Add(rk)
+			continue
+		case ExecPromptAllowAll:
+			sa.SetAllowAll()
+			return look, nil
+		default:
+			return "", fmt.Errorf("user denied permission to run %q", rk)
+		}
+	}
+}
+
+func lookPathErr(name string, err error) error {
+	return fmt.Errorf("cannot find executable %q: %w%s", name, err, lookPathHint(name))
+}
+
+func lookPathHint(name string) string {
+	if runtime.GOOS != "windows" {
+		return ""
+	}
+	switch strings.ToLower(NormalizeCmdKey(name)) {
+	case "mkdir", "rmdir", "cd", "dir", "copy", "move", "del", "type", "cls":
+		return " — on Windows this is usually a shell builtin, not a standalone program in PATH; " +
+			"prefer write_file (parent directories are created automatically) or use cmd.exe with /c (e.g. cmd /c mkdir ...)"
+	default:
+		return ""
+	}
+}
+
+// shellArgv builds argv for run_shell: Windows uses cmd /c; Unix uses sh -c.
+func shellArgv(line string) ([]string, error) {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return nil, fmt.Errorf("command is empty")
+	}
+	if runtime.GOOS == "windows" {
+		return []string{"cmd", "/c", line}, nil
+	}
+	return []string{"sh", "-c", line}, nil
+}
+
+func runCommandWithSession(ctx context.Context, opt *ExecOptions, workspaceRoot, cwdRel string, argv []string, timeout time.Duration, maxOut int) (string, error) {
 	cwd := strings.TrimSpace(cwdRel)
 	if cwd == "" {
 		cwd = "."
@@ -68,16 +239,14 @@ func runCommand(ctx context.Context, workspaceRoot, cwdRel string, argv []string
 	if err != nil {
 		return "", err
 	}
-
-	look, err := exec.LookPath(argv[0])
+	look, err := ensureExecAllowedAndResolve(ctx, opt, argv, workDir)
 	if err != nil {
-		return "", fmt.Errorf("look path %q: %w", argv[0], err)
+		return "", err
 	}
-	resolvedKey := normalizeCmdKey(look)
-	if _, ok := allow[resolvedKey]; !ok {
-		return "", fmt.Errorf("resolved binary %q is not allowlisted", resolvedKey)
-	}
+	return executeSubprocess(ctx, workDir, look, argv, timeout, maxOut, opt.ProgressWriter)
+}
 
+func executeSubprocess(ctx context.Context, workDir, look string, argv []string, timeout time.Duration, maxOut int, progress io.Writer) (string, error) {
 	runCtx := ctx
 	var cancel context.CancelFunc
 	if timeout > 0 {
@@ -89,7 +258,19 @@ func runCommand(ctx context.Context, workspaceRoot, cwdRel string, argv []string
 	cmd.Dir = workDir
 	cmd.Env = execEnv()
 
-	out, err := cmd.CombinedOutput()
+	var out []byte
+	var err error
+	if progress != nil {
+		ls := NewLineStreamer(progress)
+		cmd.Stdout = ls
+		cmd.Stderr = ls
+		err = cmd.Run()
+		ls.Flush()
+		out = ls.Bytes()
+	} else {
+		out, err = cmd.CombinedOutput()
+	}
+
 	exitCode := 0
 	if err != nil {
 		if errors.Is(runCtx.Err(), context.DeadlineExceeded) {
@@ -119,6 +300,45 @@ func runCommand(ctx context.Context, workspaceRoot, cwdRel string, argv []string
 	b.Write(out)
 	b.WriteString(trunc)
 	return b.String(), nil
+}
+
+func runCommand(ctx context.Context, workspaceRoot, cwdRel string, argv []string, allow map[string]struct{}, timeout time.Duration, maxOut int, progress io.Writer) (string, error) {
+	if len(argv) == 0 {
+		return "", fmt.Errorf("argv must be non-empty")
+	}
+	name, dotRel := stripDotSlash(argv[0])
+	if strings.ContainsAny(name, `/\`) {
+		return "", fmt.Errorf("argv[0] must be a command name without path separators (got %q)", argv[0])
+	}
+	key := NormalizeCmdKey(name)
+	if key == "" {
+		return "", fmt.Errorf("empty command name")
+	}
+	if _, ok := allow[key]; !ok {
+		return "", fmt.Errorf("command %q is not on CODIENT_EXEC_ALLOWLIST", key)
+	}
+
+	cwd := strings.TrimSpace(cwdRel)
+	if cwd == "" {
+		cwd = "."
+	}
+	workDir, err := absUnderRoot(workspaceRoot, cwd)
+	if err != nil {
+		return "", err
+	}
+
+	look, err := resolveExec(name, dotRel, workDir)
+	if err != nil {
+		return "", err
+	}
+	if !dotRel {
+		resolvedKey := NormalizeCmdKey(look)
+		if _, ok := allow[resolvedKey]; !ok {
+			return "", fmt.Errorf("resolved binary %q is not allowlisted", resolvedKey)
+		}
+	}
+
+	return executeSubprocess(ctx, workDir, look, argv, timeout, maxOut, progress)
 }
 
 func execEnv() []string {

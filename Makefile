@@ -4,7 +4,7 @@ BIN_DIR := bin
 EXE     := $(shell $(GO) env GOEXE)
 BIN     := $(BIN_DIR)/codient$(EXE)
 
-.PHONY: all help build install clean test test-short test-race test-integration vet fmt mod-tidy check run
+.PHONY: all help build install clean test test-unit test-short test-race test-integration test-integration-strict vet fmt mod-tidy check run
 
 all: build
 
@@ -14,14 +14,16 @@ help:
 	@echo "  make build          Same as all"
 	@echo "  make install        go install ./cmd/codient"
 	@echo "  make run ARGS='…'   go run ./cmd/codient -- …"
-	@echo "  make test           go test ./..."
+	@echo "  make test           full suite: unit + live integration (needs model + API; see test-unit for CI)"
+	@echo "  make test-unit      unit tests only (go test ./...; no live LLM)"
 	@echo "  make test-short     go test -short ./..."
 	@echo "  make test-race      go test -race ./..."
-	@echo "  make test-integration  live API tests (-tags=integration, sets CODIENT_INTEGRATION=1)"
+	@echo "  make test-integration        live API tests (CODIENT_INTEGRATION=1 only)"
+	@echo "  make test-integration-strict live + strict tool tests (+ CODIENT_INTEGRATION_STRICT_TOOLS=1)"
 	@echo "  make vet            go vet ./..."
 	@echo "  make fmt            go fmt ./..."
 	@echo "  make mod-tidy       go mod tidy"
-	@echo "  make check          vet + test"
+	@echo "  make check          vet + test-unit (no live integration; safe for CI)"
 	@echo "  make clean          remove $(BIN_DIR)/"
 
 build:
@@ -33,7 +35,11 @@ install:
 clean:
 	$(RM) -r $(BIN_DIR)
 
+# Full test run: integration-tagged tests + env for strict tools and run_command (requires configured model and server).
 test:
+	CODIENT_INTEGRATION=1 CODIENT_INTEGRATION_STRICT_TOOLS=1 CODIENT_INTEGRATION_RUN_COMMAND=1 $(GO) test -tags=integration -count=1 -timeout 90m ./...
+
+test-unit:
 	$(GO) test ./...
 
 test-short:
@@ -45,6 +51,9 @@ test-race:
 test-integration:
 	CODIENT_INTEGRATION=1 $(GO) test -tags=integration -count=1 ./...
 
+test-integration-strict:
+	CODIENT_INTEGRATION=1 CODIENT_INTEGRATION_STRICT_TOOLS=1 $(GO) test -tags=integration -count=1 ./...
+
 vet:
 	$(GO) vet ./...
 
@@ -54,7 +63,7 @@ fmt:
 mod-tidy:
 	$(GO) mod tidy
 
-check: vet test
+check: vet test-unit
 
 run:
 	$(GO) run ./cmd/codient -- $(ARGS)

@@ -47,7 +47,7 @@ func TestWriteWelcome_Plain(t *testing.T) {
 		Model:     "m1",
 	})
 	s := buf.String()
-	if !strings.Contains(s, "codient") || !strings.Contains(s, "REPL") || !strings.Contains(s, "plan") {
+	if !strings.Contains(s, "codient") || !strings.Contains(s, "Session") || !strings.Contains(s, "plan") {
 		t.Fatalf("unexpected welcome: %q", s)
 	}
 }
@@ -55,20 +55,26 @@ func TestWriteWelcome_Plain(t *testing.T) {
 func TestWriteWelcome_Quiet(t *testing.T) {
 	t.Setenv("CODIENT_QUIET", "1")
 	var buf bytes.Buffer
-	WriteWelcome(&buf, WelcomeParams{Plain: true, Mode: "agent"})
+	WriteWelcome(&buf, WelcomeParams{Plain: true, Mode: "build"})
 	if buf.Len() != 0 {
 		t.Fatalf("expected empty, got %q", buf.String())
 	}
 }
 
-func TestPlanStdinPrompt_Plain(t *testing.T) {
-	if !strings.HasPrefix(PlanStdinPrompt(true, ""), "Message:") {
-		t.Fatalf("first line: %q", PlanStdinPrompt(true, ""))
+func TestSessionPrompt_Plain(t *testing.T) {
+	p := SessionPrompt(true, "build")
+	if !strings.HasPrefix(p, "[build] > ") {
+		t.Fatalf("unexpected prompt: %q", p)
 	}
-	if !strings.HasPrefix(PlanStdinPrompt(true, "x **Waiting for your answer**"), "Answer:") {
-		t.Fatalf("wait: %q", PlanStdinPrompt(true, "x **Waiting for your answer**"))
+	p = SessionPrompt(true, "plan")
+	if !strings.HasPrefix(p, "[plan] > ") {
+		t.Fatalf("unexpected prompt: %q", p)
 	}
-	if !strings.HasPrefix(PlanStdinPrompt(true, "Ready to implement only."), "Follow-up") {
-		t.Fatalf("follow-up: %q", PlanStdinPrompt(true, "Ready to implement only."))
+}
+
+func TestPlanAnswerPrefix_Plain(t *testing.T) {
+	p := PlanAnswerPrefix(true)
+	if !strings.HasPrefix(p, "Answer:") {
+		t.Fatalf("unexpected prefix: %q", p)
 	}
 }

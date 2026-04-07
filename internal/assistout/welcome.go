@@ -11,11 +11,13 @@ import (
 
 // WelcomeParams configures the startup banner written to stderr.
 type WelcomeParams struct {
-	Plain     bool
-	Repl      bool
-	Mode      string // agent | ask | plan
-	Workspace string
-	Model     string
+	Plain          bool
+	Repl           bool
+	Mode           string // build | ask | plan
+	Workspace      string
+	Model          string
+	SessionResumed bool   // true when loading an existing session from disk
+	SessionID      string // shown when resuming
 }
 
 // WriteWelcome prints a short colorful banner. Skipped when CODIENT_QUIET=1.
@@ -25,17 +27,17 @@ func WriteWelcome(w io.Writer, p WelcomeParams) {
 	}
 	mode := strings.TrimSpace(p.Mode)
 	if mode == "" {
-		mode = "agent"
+		mode = "build"
 	}
 	run := "Run"
 	if p.Repl {
-		run = "REPL"
+		run = "Session"
 	}
 	ws := truncateWelcomePath(strings.TrimSpace(p.Workspace), 58)
 	model := truncateWelcomePath(strings.TrimSpace(p.Model), 52)
 
 	if p.Plain || !stderrInteractive() {
-		fmt.Fprintf(w, "codient — local LM coding agent\n")
+		fmt.Fprintf(w, "codient — local coding agent\n")
 		fmt.Fprintf(w, "  %s · mode %s\n", run, mode)
 		if ws != "" {
 			fmt.Fprintf(w, "  %s\n", ws)
@@ -59,7 +61,7 @@ func WriteWelcome(w io.Writer, p WelcomeParams) {
 	dim := lipgloss.NewStyle().
 		Foreground(lipgloss.AdaptiveColor{Light: "#525252", Dark: "#94A3B8"})
 
-	line1 := fmt.Sprintf("  %s  %s  %s", title, mark, dim.Render("local LM coding agent"))
+	line1 := fmt.Sprintf("  %s  %s  %s", title, mark, dim.Render("local coding agent"))
 	line2 := dim.Render(fmt.Sprintf("%s · mode %s", run, mode))
 	lines := []string{line1, "  " + line2}
 	if ws != "" {

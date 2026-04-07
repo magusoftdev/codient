@@ -10,26 +10,27 @@ import (
 type Mode string
 
 const (
-	ModeAgent Mode = "agent"
+	ModeBuild Mode = "build"
 	ModeAsk   Mode = "ask"
 	ModePlan  Mode = "plan"
 )
 
-// ParseMode normalizes and validates a mode string. Empty string means agent.
+// ParseMode normalizes and validates a mode string. Empty string means build.
 func ParseMode(s string) (Mode, error) {
 	switch strings.ToLower(strings.TrimSpace(s)) {
-	case "", "agent":
-		return ModeAgent, nil
+	case "", "build":
+		return ModeBuild, nil
 	case "ask":
 		return ModeAsk, nil
-	case "plan":
+	case "plan", "design":
+		// "design" is accepted for backward compatibility (sessions, CODIENT_MODE).
 		return ModePlan, nil
 	default:
-		return "", fmt.Errorf("invalid mode %q (want agent, ask, or plan)", s)
+		return "", fmt.Errorf("invalid mode %q (want build, ask, or plan)", s)
 	}
 }
 
-// ResolveMode uses flagValue when non-empty; otherwise CODIENT_MODE; default agent.
+// ResolveMode uses flagValue when non-empty; otherwise CODIENT_MODE; default build.
 func ResolveMode(flagValue string) (Mode, error) {
 	s := strings.TrimSpace(flagValue)
 	if s == "" {

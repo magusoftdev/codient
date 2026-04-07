@@ -1,26 +1,27 @@
-// Command codient is a CLI for local LM Studio agents (OpenAI-compatible API, openai-go client).
+// Command codient is a CLI coding agent using an OpenAI-compatible chat API (openai-go client).
 package main
 
 import (
-	"bufio"
 	"context"
 	"flag"
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"strings"
 	"time"
 
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/shared"
 
-	"codient/internal/agent"
 	"codient/internal/agentlog"
 	"codient/internal/assistout"
 	"codient/internal/config"
-	"codient/internal/lmstudio"
-	"codient/internal/planstore"
+	"codient/internal/designstore"
+	"codient/internal/openaiclient"
+	"codient/internal/projectinfo"
 	"codient/internal/prompt"
+	"codient/internal/tools"
 )
 
 func main() {
@@ -29,26 +30,28 @@ func main() {
 
 func run() int {
 	var (
-		system      = flag.String("system", "", "optional system prompt (merged into default tool-capabilities prompt)")
-		promptFlag  = flag.String("prompt", "", "user message: without -repl, stdin is used if flag empty; with -repl, non-empty -prompt is the first turn, then further lines are read from stdin")
-		stream      = flag.Bool("stream", false, "single-turn streamed completion without tools (writes to stdout)")
-		listModels  = flag.Bool("list-models", false, "print model ids from GET /v1/models and exit")
-		listTools   = flag.Bool("list-tools", false, "print registered tool names for current env and exit")
-		ping        = flag.Bool("ping", false, "check GET /v1/models and exit")
-		timeout     = flag.Duration("timeout", 10*time.Minute, "per-invocation context timeout")
-		goal        = flag.String("goal", "", "optional high-level objective; merged into task directive on first turn only (see also AGENTS.md / .codient/instructions.md under workspace, 32KiB cap)")
-		taskFile    = flag.String("task-file", "", "optional path to a task description file (capped at 32KiB); merged into task directive on first turn only")
-		repl        = flag.Bool("repl", false, "multi-turn REPL: read user lines from stdin until exit or EOF (one system prompt, session history)")
-		logPath     = flag.String("log", "", "append JSONL agent events to this file (overrides CODIENT_LOG if set)")
-		progress    = flag.Bool("progress", false, "print agent progress to stderr (default: on when -log/CODIENT_LOG is set or stderr is a TTY; off if CODIENT_PROGRESS=0)")
-		modeFlag    = flag.String("mode", "", "agent|ask|plan: tool + prompt policy (default agent; when empty, use CODIENT_MODE)")
-		plainOut    = flag.Bool("plain", false, "print assistant replies as raw text (no markdown/ANSI); or set CODIENT_PLAIN=1; auto when stdout is not a TTY")
-		streamReply = flag.Bool("stream-reply", true, "stream assistant tokens to stdout (TTY; in -mode plan with markdown, only the post-answer full plan is buffered for glamour; CODIENT_STREAM_REPLY=0/1)")
-		planSaveDir = flag.String("plan-save-dir", "", "directory for saved implementation plans (default: <workspace>/.codient/plans; overrides CODIENT_PLAN_SAVE_DIR)")
+		system        = flag.String("system", "", "optional system prompt (merged into default tool-capabilities prompt)")
+		promptFlag    = flag.String("prompt", "", "user message: without REPL, stdin is used if flag empty; with REPL, non-empty -prompt is the first turn")
+		stream        = flag.Bool("stream", false, "single-turn streamed completion without tools (writes to stdout)")
+		listModels    = flag.Bool("list-models", false, "print model ids from GET /v1/models and exit")
+		listTools     = flag.Bool("list-tools", false, "print registered tool names for current env and exit")
+		ping          = flag.Bool("ping", false, "check GET /v1/models and exit")
+		timeout       = flag.Duration("timeout", 10*time.Minute, "per-invocation context timeout")
+		goal          = flag.String("goal", "", "optional high-level objective; merged into task directive on first turn only")
+		taskFile      = flag.String("task-file", "", "optional path to a task description file (capped at 32KiB); merged into task directive on first turn only")
+		repl          = flag.Bool("repl", false, "multi-turn REPL (default when stdin is a TTY; kept for backward compatibility)")
+		newSession    = flag.Bool("new-session", false, "start a fresh session instead of resuming the latest")
+		logPath       = flag.String("log", "", "append JSONL agent events to this file (overrides CODIENT_LOG if set)")
+		progress      = flag.Bool("progress", false, "print agent progress to stderr")
+		modeFlag      = flag.String("mode", "", "build|ask|plan: tool + prompt policy (default build; when empty, use CODIENT_MODE)")
+		plainOut      = flag.Bool("plain", false, "print assistant replies as raw text (no markdown/ANSI); or set CODIENT_PLAIN=1")
+		streamReply   = flag.Bool("stream-reply", true, "stream assistant tokens to stdout")
+		designSaveDir = flag.String("design-save-dir", "", "directory for saved implementation designs (default: <workspace>/.codient/designs)")
+		workspace     = flag.String("workspace", "", "root directory for workspace tools (overrides CODIENT_WORKSPACE and cwd default)")
+		a2aFlag       = flag.Bool("a2a", false, "start an A2A (Agent-to-Agent) protocol server instead of the CLI")
+		a2aAddr       = flag.String("a2a-addr", ":8080", "listen address for the A2A server")
 	)
 	flag.Parse()
-
-	richAssistant := assistantOutputRich(*plainOut)
 
 	agentMode, err := prompt.ResolveMode(*modeFlag)
 	if err != nil {
@@ -63,16 +66,22 @@ func run() int {
 	progressOut := resolveProgressOut(*progress, effectiveLog != "")
 
 	cfg, err := config.Load()
+	if err == nil && strings.TrimSpace(*workspace) != "" {
+		cfg.Workspace = strings.TrimSpace(*workspace)
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "config: %v\n", err)
 		return 2
 	}
-
+	// For quick commands and single-turn mode, use a wall-clock timeout.
+	// For the REPL session, use a signal-based context so the user can
+	// step away without hitting "context deadline exceeded".
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()
 
-	client := lmstudio.New(cfg)
+	client := openaiclient.New(cfg)
 
+	// Quick commands that don't need a full session.
 	if *ping {
 		if err := client.PingModels(ctx); err != nil {
 			fmt.Fprintf(os.Stderr, "ping: %v\n", err)
@@ -81,7 +90,6 @@ func run() int {
 		fmt.Println("ok")
 		return 0
 	}
-
 	if *listModels {
 		ids, err := client.ListModels(ctx)
 		if err != nil {
@@ -93,18 +101,41 @@ func run() int {
 		}
 		return 0
 	}
-
 	if *listTools {
-		reg := buildRegistry(cfg, agentMode)
+		reg := buildRegistry(cfg, agentMode, nil)
 		for _, n := range reg.Names() {
 			fmt.Println(n)
 		}
 		return 0
 	}
+	if *a2aFlag {
+		cancel()
+		a2aCtx, a2aCancel := signal.NotifyContext(context.Background(), os.Interrupt)
+		defer a2aCancel()
+		var agentLog *agentlog.Logger
+		if effectiveLog != "" {
+			logFile, err := os.OpenFile(effectiveLog, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "log: %v\n", err)
+				return 2
+			}
+			defer logFile.Close()
+			agentLog = agentlog.New(logFile)
+		}
+		return runA2AServer(a2aCtx, cfg, *a2aAddr, agentLog)
+	}
 
-	if *repl && *stream {
-		fmt.Fprintf(os.Stderr, "codient: -repl and -stream are incompatible\n")
-		return 2
+	if *stream {
+		user, err := resolvePrompt(*promptFlag)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "prompt: %v\n", err)
+			return 2
+		}
+		if strings.TrimSpace(user) == "" {
+			fmt.Fprintf(os.Stderr, "provide -prompt or pipe a message on stdin\n")
+			return 2
+		}
+		return runBareStream(ctx, client, *system, user)
 	}
 
 	var logFile *os.File
@@ -120,187 +151,90 @@ func run() int {
 		agentLog = agentlog.New(logFile)
 	}
 
-	if *repl {
-		if err := cfg.RequireModel(); err != nil {
-			fmt.Fprintf(os.Stderr, "config: %v\n", err)
-			return 2
-		}
-		assistout.WriteWelcome(os.Stderr, assistout.WelcomeParams{
-			Plain:     stderrPromptPlain(*plainOut),
-			Repl:      true,
-			Mode:      string(agentMode),
-			Workspace: cfg.EffectiveWorkspace(),
-			Model:     cfg.Model,
-		})
-		reg := buildRegistry(cfg, agentMode)
-		if os.Getenv("CODIENT_VERBOSE") == "1" {
-			fmt.Fprintf(os.Stderr, "codient: workspace=%q mode=%s tools=%s\n", cfg.EffectiveWorkspace(), agentMode, strings.Join(reg.Names(), ", "))
-		}
-		repoInstr, err := prompt.LoadRepoInstructions(cfg.EffectiveWorkspace())
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "repo instructions: %v\n", err)
-			return 2
-		}
-		systemPrompt := buildAgentSystemPrompt(cfg, reg, agentMode, *system, repoInstr)
-		ar := &agent.Runner{LLM: client, Cfg: cfg, Tools: reg, Log: agentLog, Progress: progressOut}
-		fmt.Fprintf(os.Stderr, "codient REPL mode=%s (empty line ignored, type exit to quit). Workspace: %s\n", agentMode, cfg.EffectiveWorkspace())
-		if agentMode == prompt.ModePlan {
-			fmt.Fprintf(os.Stderr, "plan: chat history is only this session (new process = fresh context; -log is not replayed). Answer: when blocking; Follow-up or exit otherwise. Hand off with codient -mode agent when Ready to implement.\n")
-			fmt.Fprintf(os.Stderr, "plan: replies that include \"Ready to implement\" are saved as markdown under the workspace (.codient/plans/ by default); CODIENT_PLAN_SAVE=0 disables.\n")
-		}
-		if strings.TrimSpace(*promptFlag) == "" && agentMode != prompt.ModePlan {
-			fmt.Fprintf(os.Stderr, "codient: type a message and press Enter (or pass -prompt for the first turn).\n")
-		}
-
-		var history []openai.ChatCompletionMessageParamUnion
-		sc := bufio.NewScanner(os.Stdin)
-		turn := 0
-		lastAssistantReply := ""
-		var planTaskSlug string
-
-		// -prompt is the first REPL user message; without it we block on stdin (looks like a hang if the user only passed -prompt).
-		if seed := strings.TrimSpace(*promptFlag); seed != "" {
-			planTaskSlug = planstore.TaskSlug(*goal, *taskFile, seed)
-			user, err := applyTaskToFirstTurnIfNeeded(turn, seed, *goal, *taskFile)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "task: %v\n", err)
-				return 2
-			}
-			turn++
-			streamTo := streamWriterForTurn(*streamReply, assistout.StdoutIsInteractive(), agentMode, richAssistant, lastAssistantReply)
-			reply, newHist, streamed, err := ar.RunConversation(ctx, systemPrompt, history, user, streamTo)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "agent: %v\n", err)
-				return 1
-			}
-			history = newHist
-			if err := finishAssistantTurn(os.Stdout, reply, richAssistant, agentMode == prompt.ModePlan, streamed); err != nil {
-				fmt.Fprintf(os.Stderr, "write: %v\n", err)
-				return 1
-			}
-			maybeSavePlan(os.Stderr, cfg.EffectiveWorkspace(), *planSaveDir, agentMode, reply, planTaskSlug)
-			lastAssistantReply = assistout.PrepareAssistantText(reply, agentMode == prompt.ModePlan)
-		}
-
-		for {
-			if agentMode == prompt.ModePlan {
-				fmt.Fprint(os.Stderr, assistout.PlanStdinPrompt(stderrPromptPlain(*plainOut), lastAssistantReply))
-			}
-			if !sc.Scan() {
-				break
-			}
-			line := strings.TrimSpace(sc.Text())
-			if line == "" {
-				continue
-			}
-			if strings.EqualFold(line, "exit") || strings.EqualFold(line, "quit") {
-				break
-			}
-			user, err := applyTaskToFirstTurnIfNeeded(turn, line, *goal, *taskFile)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "task: %v\n", err)
-				return 2
-			}
-			if planTaskSlug == "" {
-				planTaskSlug = planstore.TaskSlug(*goal, *taskFile, line)
-			}
-			turn++
-			writePlanDraftPreamble(os.Stdout, agentMode, lastAssistantReply)
-			streamTo := streamWriterForTurn(*streamReply, assistout.StdoutIsInteractive(), agentMode, richAssistant, lastAssistantReply)
-			reply, newHist, streamed, err := ar.RunConversation(ctx, systemPrompt, history, user, streamTo)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "agent: %v\n", err)
-				return 1
-			}
-			history = newHist
-			if err := finishAssistantTurn(os.Stdout, reply, richAssistant, agentMode == prompt.ModePlan, streamed); err != nil {
-				fmt.Fprintf(os.Stderr, "write: %v\n", err)
-				return 1
-			}
-			maybeSavePlan(os.Stderr, cfg.EffectiveWorkspace(), *planSaveDir, agentMode, reply, planTaskSlug)
-			lastAssistantReply = assistout.PrepareAssistantText(reply, agentMode == prompt.ModePlan)
-		}
-		if err := sc.Err(); err != nil {
-			fmt.Fprintf(os.Stderr, "stdin: %v\n", err)
-			return 2
-		}
-		return 0
-	}
-
-	user, err := resolvePrompt(*promptFlag)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "prompt: %v\n", err)
-		return 2
-	}
-	user = strings.TrimSpace(user)
-	if user == "" {
-		fmt.Fprintf(os.Stderr, "provide -prompt or pipe a message on stdin\n")
-		return 2
-	}
-
-	if err := cfg.RequireModel(); err != nil {
-		fmt.Fprintf(os.Stderr, "config: %v\n", err)
-		return 2
-	}
-
-	if *stream {
-		msgs := make([]openai.ChatCompletionMessageParamUnion, 0, 2)
-		if strings.TrimSpace(*system) != "" {
-			msgs = append(msgs, openai.SystemMessage(strings.TrimSpace(*system)))
-		}
-		msgs = append(msgs, openai.UserMessage(user))
-		params := openai.ChatCompletionNewParams{
-			Model:    shared.ChatModel(client.Model()),
-			Messages: msgs,
-		}
-		if err := client.StreamChatCompletion(ctx, params, os.Stdout); err != nil {
-			fmt.Fprintf(os.Stderr, "\nstream: %v\n", err)
-			return 1
-		}
-		fmt.Fprintln(os.Stdout)
-		return 0
-	}
-
-	assistout.WriteWelcome(os.Stderr, assistout.WelcomeParams{
-		Plain:     stderrPromptPlain(*plainOut),
-		Repl:      false,
-		Mode:      string(agentMode),
-		Workspace: cfg.EffectiveWorkspace(),
-		Model:     cfg.Model,
-	})
-
-	reg := buildRegistry(cfg, agentMode)
-	if os.Getenv("CODIENT_VERBOSE") == "1" {
-		fmt.Fprintf(os.Stderr, "codient: workspace=%q mode=%s tools=%s\n", cfg.EffectiveWorkspace(), agentMode, strings.Join(reg.Names(), ", "))
-	}
+	// Build the full agent session.
 	repoInstr, err := prompt.LoadRepoInstructions(cfg.EffectiveWorkspace())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "repo instructions: %v\n", err)
 		return 2
 	}
-	systemPrompt := buildAgentSystemPrompt(cfg, reg, agentMode, *system, repoInstr)
-	rawUser := user
-	user, err = applyTaskToFirstTurnIfNeeded(0, user, *goal, *taskFile)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "task: %v\n", err)
+	projectCtx := projectinfo.Detect(cfg.EffectiveWorkspace())
+	var execAllow *tools.SessionExecAllow
+	if len(cfg.ExecAllowlist) > 0 {
+		execAllow = tools.NewSessionExecAllow(cfg.ExecAllowlist)
+	}
+	s := &session{
+		cfg:              cfg,
+		client:           client,
+		agentLog:         agentLog,
+		progressOut:      progressOut,
+		mode:             agentMode,
+		richOutput:       assistantOutputRich(*plainOut),
+		streamReply:      *streamReply,
+		designSaveDir:    *designSaveDir,
+		goal:             *goal,
+		taskFile:         *taskFile,
+		userSystem:       *system,
+		repoInstructions: repoInstr,
+		projectContext:   projectCtx,
+		execAllow:        execAllow,
+	}
+	s.registry = buildRegistry(cfg, agentMode, s)
+	s.systemPrompt = buildAgentSystemPrompt(cfg, s.registry, agentMode, *system, repoInstr, projectCtx, effectiveAutoCheckCmd(cfg))
+
+	// Determine whether to enter the REPL session.
+	// REPL is the default when stdin is a TTY (interactive), or when -repl is explicit.
+	stdinIsTTY := stdinIsInteractive()
+	useREPL := *repl || (stdinIsTTY && strings.TrimSpace(*promptFlag) == "")
+
+	if useREPL {
+		// Override the timeout context with a signal-based one for the REPL.
+		// The session can last indefinitely; only Ctrl+C should cancel it.
+		cancel()
+		replCtx, replCancel := signal.NotifyContext(context.Background(), os.Interrupt)
+		defer replCancel()
+		return s.runSession(replCtx, *promptFlag, *newSession)
+	}
+
+	// Single-turn mode (piped input or explicit -prompt without -repl).
+	if err := cfg.RequireModel(); err != nil {
+		fmt.Fprintf(os.Stderr, "config: %v\n", err)
 		return 2
 	}
-	if agentMode == prompt.ModePlan {
-		fmt.Fprintf(os.Stderr, "codient: for interactive planning (one clarifying question per turn with A/B/C options), use: codient -repl -mode plan [-prompt \"…\"]\n")
-		fmt.Fprintf(os.Stderr, "plan: replies that include \"Ready to implement\" are saved under the workspace (.codient/plans/ by default); CODIENT_PLAN_SAVE=0 disables.\n")
-	}
-	ar := &agent.Runner{LLM: client, Cfg: cfg, Tools: reg, Log: agentLog, Progress: progressOut}
-	streamTo := streamWriterForTurn(*streamReply, assistout.StdoutIsInteractive(), agentMode, richAssistant, "")
-	reply, streamed, err := ar.Run(ctx, systemPrompt, user, streamTo)
+	user, err := resolvePrompt(*promptFlag)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "agent: %v\n", err)
+		fmt.Fprintf(os.Stderr, "prompt: %v\n", err)
+		return 2
+	}
+	if strings.TrimSpace(user) == "" {
+		fmt.Fprintf(os.Stderr, "provide -prompt or pipe a message on stdin\n")
+		return 2
+	}
+	return s.runSingleTurn(ctx, user)
+}
+
+func stdinIsInteractive() bool {
+	stat, err := os.Stdin.Stat()
+	if err != nil {
+		return false
+	}
+	return (stat.Mode() & os.ModeCharDevice) != 0
+}
+
+func runBareStream(ctx context.Context, client *openaiclient.Client, system, user string) int {
+	msgs := make([]openai.ChatCompletionMessageParamUnion, 0, 2)
+	if strings.TrimSpace(system) != "" {
+		msgs = append(msgs, openai.SystemMessage(strings.TrimSpace(system)))
+	}
+	msgs = append(msgs, openai.UserMessage(user))
+	params := openai.ChatCompletionNewParams{
+		Model:    shared.ChatModel(client.Model()),
+		Messages: msgs,
+	}
+	if err := client.StreamChatCompletion(ctx, params, os.Stdout); err != nil {
+		fmt.Fprintf(os.Stderr, "\nstream: %v\n", err)
 		return 1
 	}
-	if err := finishAssistantTurn(os.Stdout, reply, richAssistant, agentMode == prompt.ModePlan, streamed); err != nil {
-		fmt.Fprintf(os.Stderr, "write: %v\n", err)
-		return 1
-	}
-	maybeSavePlan(os.Stderr, cfg.EffectiveWorkspace(), *planSaveDir, agentMode, reply, planstore.TaskSlug(*goal, *taskFile, rawUser))
+	fmt.Fprintln(os.Stdout)
 	return 0
 }
 
@@ -315,9 +249,6 @@ func assistantOutputRich(plainFlag bool) bool {
 	return assistout.StdoutIsInteractive()
 }
 
-// resolveProgressOut chooses stderr for agent progress lines (model rounds, tool calls).
-// Default is on when logging to a file is requested or stderr is an interactive terminal;
-// CODIENT_PROGRESS=0 suppresses all progress (including -progress); CODIENT_PROGRESS=1 or -progress forces it on.
 func resolveProgressOut(progressFlag, logRequested bool) io.Writer {
 	if strings.TrimSpace(os.Getenv("CODIENT_PROGRESS")) == "0" {
 		return nil
@@ -338,8 +269,6 @@ func resolveProgressOut(progressFlag, logRequested bool) io.Writer {
 	return nil
 }
 
-// resolveStreamReply enables streaming when stdout is a TTY and the flag allows it.
-// CODIENT_STREAM_REPLY=0 forces off; =1 forces on (e.g. when piping to a file but still want streaming).
 func resolveStreamReply(flag bool, stdoutTTY bool) bool {
 	switch strings.TrimSpace(os.Getenv("CODIENT_STREAM_REPLY")) {
 	case "0":
@@ -350,9 +279,6 @@ func resolveStreamReply(flag bool, stdoutTTY bool) bool {
 	return flag && stdoutTTY
 }
 
-// streamWriterForTurn returns stdout for token streaming when enabled. For plan mode with
-// rich markdown, streaming is disabled only for the turn right after a blocking Question
-// (so the full plan can be rendered once with glamour); all other turns stream as usual.
 func streamWriterForTurn(streamReplyFlag bool, stdoutTTY bool, mode prompt.Mode, richAssistant bool, lastAssistantReply string) io.Writer {
 	if !resolveStreamReply(streamReplyFlag, stdoutTTY) {
 		return nil
@@ -363,8 +289,6 @@ func streamWriterForTurn(streamReplyFlag bool, stdoutTTY bool, mode prompt.Mode,
 	return os.Stdout
 }
 
-// writePlanDraftPreamble prints a blank line and status line before generating the full
-// plan after the user answered a blocking Question (plan mode REPL).
 func writePlanDraftPreamble(w io.Writer, mode prompt.Mode, lastAssistantReply string) {
 	if mode != prompt.ModePlan || !assistout.ReplySignalsPlanWait(lastAssistantReply) {
 		return
@@ -373,7 +297,6 @@ func writePlanDraftPreamble(w io.Writer, mode prompt.Mode, lastAssistantReply st
 	fmt.Fprintln(w, "Building the implementation plan…")
 }
 
-// finishAssistantTurn renders the reply when it was not already streamed as raw text.
 func finishAssistantTurn(w io.Writer, reply string, useMarkdown, planMode, streamed bool) error {
 	if streamed {
 		_, err := fmt.Fprintln(w)
@@ -382,31 +305,30 @@ func finishAssistantTurn(w io.Writer, reply string, useMarkdown, planMode, strea
 	return assistout.WriteAssistant(w, reply, useMarkdown, planMode)
 }
 
-func resolvePlanSaveDir(flag string) string {
-	if s := strings.TrimSpace(os.Getenv("CODIENT_PLAN_SAVE_DIR")); s != "" {
+func resolveDesignSaveDir(flag string) string {
+	if s := strings.TrimSpace(os.Getenv("CODIENT_DESIGN_SAVE_DIR")); s != "" {
 		return s
 	}
 	return strings.TrimSpace(flag)
 }
 
-// maybeSavePlan persists a completed implementation plan (plan mode, contains "Ready to implement").
-func maybeSavePlan(stderr io.Writer, workspace, planSaveDirFlag string, mode prompt.Mode, reply string, taskSlug string) {
+func maybeSaveDesign(stderr io.Writer, workspace, designSaveDirFlag, sessionID string, mode prompt.Mode, reply string, taskSlug string) {
 	if mode != prompt.ModePlan {
 		return
 	}
-	if strings.TrimSpace(os.Getenv("CODIENT_PLAN_SAVE")) == "0" {
+	if strings.TrimSpace(os.Getenv("CODIENT_DESIGN_SAVE")) == "0" {
 		return
 	}
 	text := assistout.PrepareAssistantText(reply, true)
-	if !planstore.LooksLikeReadyToImplement(text) {
+	if !designstore.LooksLikeReadyToImplement(text) {
 		return
 	}
-	path, err := planstore.Save(workspace, resolvePlanSaveDir(planSaveDirFlag), taskSlug, text, time.Now())
+	path, err := designstore.Save(workspace, resolveDesignSaveDir(designSaveDirFlag), sessionID, taskSlug, text, time.Now())
 	if err != nil {
-		fmt.Fprintf(stderr, "codient: saving plan: %v\n", err)
+		fmt.Fprintf(stderr, "codient: saving design: %v\n", err)
 		return
 	}
-	fmt.Fprintf(stderr, "codient: wrote plan to %s\n", path)
+	fmt.Fprintf(stderr, "codient: wrote design to %s\n", path)
 }
 
 func resolvePrompt(flagPrompt string) (string, error) {

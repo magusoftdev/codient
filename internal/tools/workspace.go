@@ -19,6 +19,19 @@ const (
 
 var errHitLimit = errors.New("hit listing or search limit")
 
+// skipDirs is the set of directory names filtered from listings, searches, and grep.
+var skipDirs = map[string]struct{}{
+	".git": {}, "node_modules": {}, "__pycache__": {},
+	".venv": {}, "venv": {}, ".tox": {},
+	".next": {}, "dist": {}, ".cache": {},
+	".idea": {}, ".vscode": {}, ".codient": {},
+}
+
+func shouldSkipDir(name string) bool {
+	_, ok := skipDirs[name]
+	return ok
+}
+
 // absUnderRoot resolves rel inside root and ensures the result stays under root.
 func absUnderRoot(root, rel string) (abs string, err error) {
 	absRoot, err := filepath.Abs(root)
@@ -95,13 +108,6 @@ func readFileWorkspace(root, rel string, maxBytes int64, startLine, endLine int)
 	return s, nil
 }
 
-func max(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
-}
-
 func listDirWorkspace(root, rel string, maxDepth, maxEntries int) (string, error) {
 	if maxDepth < 0 {
 		maxDepth = defaultListMaxDepth
@@ -137,6 +143,9 @@ func listDirWorkspace(root, rel string, maxDepth, maxEntries int) (string, error
 		for _, e := range entries {
 			if len(out) >= maxEntries {
 				return errHitLimit
+			}
+			if e.IsDir() && shouldSkipDir(e.Name()) {
+				continue
 			}
 			full := filepath.Join(dirAbs, e.Name())
 			rp, err := filepath.Rel(abs, full)
@@ -207,6 +216,9 @@ func searchFilesWorkspace(root string, under, substring, suffix string, maxResul
 			return errHitLimit
 		}
 		if d.IsDir() {
+			if shouldSkipDir(d.Name()) {
+				return fs.SkipDir
+			}
 			return nil
 		}
 		rel, relErr := filepath.Rel(absRoot, path)
@@ -238,6 +250,38 @@ func searchFilesWorkspace(root string, under, substring, suffix string, maxResul
 	return strings.TrimSuffix(b.String(), "\n"), nil
 }
 
+func strReplaceWorkspace(root, rel, oldStr, newStr string, replaceAll bool) (string, error) {
+	abs, err := absUnderRoot(root, rel)
+	if err != nil {
+		return "", err
+	}
+	data, err := os.ReadFile(abs)
+	if err != nil {
+		return "", err
+	}
+	content := string(data)
+	count := strings.Count(content, oldStr)
+	if count == 0 {
+		return "", fmt.Errorf("old_string not found in %s", rel)
+	}
+	if count > 1 && !replaceAll {
+		return "", fmt.Errorf("old_string has %d matches in %s; use replace_all or provide more context to make it unique", count, rel)
+	}
+	if replaceAll {
+		content = strings.ReplaceAll(content, oldStr, newStr)
+	} else {
+		content = strings.Replace(content, oldStr, newStr, 1)
+	}
+	if err := os.WriteFile(abs, []byte(content), 0o644); err != nil {
+		return "", err
+	}
+	verb := "replaced 1 occurrence"
+	if replaceAll {
+		verb = fmt.Sprintf("replaced %d occurrences", count)
+	}
+	return fmt.Sprintf("%s in %s", verb, rel), nil
+}
+
 func writeFileWorkspace(root, rel, content, mode string) error {
 	abs, err := absUnderRoot(root, rel)
 	if err != nil {
@@ -262,4 +306,14 @@ func writeFileWorkspace(root, rel, content, mode string) error {
 	default:
 		return fmt.Errorf("invalid mode %q (use create or overwrite)", mode)
 	}
+}
+
+// ensureDirWorkspace creates a directory (and any parents) under root using os.MkdirAll.
+// rel is a path relative to the workspace; works the same on all operating systems.
+func ensureDirWorkspace(root, rel string) error {
+	abs, err := absUnderRoot(root, rel)
+	if err != nil {
+		return err
+	}
+	return os.MkdirAll(abs, 0o755)
 }
