@@ -718,9 +718,10 @@ func (s *session) handleConfig(ctx context.Context, args string) error {
 	s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, effectiveAutoCheckCmd(s.cfg))
 
 	pc := &config.PersistentConfig{
-		BaseURL: s.cfg.BaseURL,
-		APIKey:  s.cfg.APIKey,
-		Model:   s.cfg.Model,
+		BaseURL:       s.cfg.BaseURL,
+		APIKey:        s.cfg.APIKey,
+		Model:         s.cfg.Model,
+		SearchBaseURL: s.cfg.SearchBaseURL,
 	}
 	if err := config.SavePersistentConfig(pc); err != nil {
 		return fmt.Errorf("save config: %w", err)

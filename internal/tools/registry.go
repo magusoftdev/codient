@@ -93,7 +93,7 @@ func (r *Registry) Run(ctx context.Context, name string, args json.RawMessage) (
 // coding tools scoped to that directory (set CODIENT_WORKSPACE).
 // exec enables run_command when non-nil and Allowlist is non-empty (CODIENT_EXEC_ALLOWLIST).
 // fetch enables fetch_url when non-nil and AllowHosts is non-empty (CODIENT_FETCH_ALLOW_HOSTS).
-// search enables web_search when non-nil and configured (CODIENT_SEARCH_API_KEY or CODIENT_SEARCH_URL).
+// search enables web_search when non-nil and configured (CODIENT_SEARCH_URL or persisted search_url).
 func Default(workspace string, exec *ExecOptions, fetch *FetchOptions, search *SearchOptions) *Registry {
 	r := NewRegistry()
 	registerBuiltinTools(r, true)
