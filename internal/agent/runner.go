@@ -57,6 +57,11 @@ type Runner struct {
 	// AutoCheck runs once after a tool batch that successfully used a mutating tool.
 	// If Inject is non-empty, it is appended as a user message before the next LLM call.
 	AutoCheck func(ctx context.Context) AutoCheckOutcome
+	// PostReplyCheck, when non-nil, is called when the model produces a text reply
+	// (no tool calls). If it returns a non-empty string, that string is injected as
+	// a user message and the loop continues instead of returning. The field is nilled
+	// after firing once to prevent infinite loops.
+	PostReplyCheck func(ctx context.Context, reply string) string
 }
 
 // Run carries out one user turn (no prior conversation history).
@@ -237,6 +242,17 @@ func (r *Runner) RunConversation(ctx context.Context, system string, history []o
 				content := msg.Content
 				if containsTextToolCalls(content) {
 					content = stripTextToolCallFragments(content)
+				}
+				if r.PostReplyCheck != nil {
+					if inject := r.PostReplyCheck(ctx, content); inject != "" {
+						r.PostReplyCheck = nil
+						msgs = append(msgs, openai.AssistantMessage(content))
+						msgs = append(msgs, openai.UserMessage(inject))
+						if r.Progress != nil {
+							fmt.Fprintf(r.Progress, "  verifying suggestions…\n")
+						}
+						continue
+					}
 				}
 				msgs = append(msgs, openai.AssistantMessage(content))
 				newHist := msgs[sysOffset:]

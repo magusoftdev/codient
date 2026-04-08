@@ -552,3 +552,142 @@ func TestRunner_AutoCheckSkipsReadOnly(t *testing.T) {
 		t.Fatalf("got %q", out)
 	}
 }
+
+func TestRunner_PostReplyCheckInjects(t *testing.T) {
+	first := `{
+  "id": "a",
+  "object": "chat.completion",
+  "created": 1,
+  "model": "m",
+  "choices": [{
+    "index": 0,
+    "message": {
+      "role": "assistant",
+      "content": "initial suggestions"
+    },
+    "finish_reason": "stop"
+  }]
+}`
+	second := `{
+  "id": "b",
+  "object": "chat.completion",
+  "created": 2,
+  "model": "m",
+  "choices": [{
+    "index": 0,
+    "message": {
+      "role": "assistant",
+      "content": "verified summary"
+    },
+    "finish_reason": "stop"
+  }]
+}`
+	llm := &captureLLM{model: "m", script: []string{first, second}}
+	reg := tools.NewRegistry()
+	cfg := &config.Config{}
+	r := &Runner{
+		LLM: llm, Cfg: cfg, Tools: reg,
+		PostReplyCheck: func(_ context.Context, reply string) string {
+			if strings.Contains(reply, "initial") {
+				return "[verify] check your suggestions"
+			}
+			return ""
+		},
+	}
+	out, _, err := r.Run(context.Background(), "", "suggest improvements", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != "verified summary" {
+		t.Fatalf("expected final reply from second call, got %q", out)
+	}
+	if llm.calls != 2 {
+		t.Fatalf("expected 2 LLM calls, got %d", llm.calls)
+	}
+	if !strings.Contains(string(llm.MsgJSON[1]), "[verify] check your suggestions") {
+		t.Fatalf("second request should contain injected verification message: %s", string(llm.MsgJSON[1]))
+	}
+}
+
+func TestRunner_PostReplyCheckFiresOnce(t *testing.T) {
+	first := `{
+  "id": "a",
+  "object": "chat.completion",
+  "created": 1,
+  "model": "m",
+  "choices": [{
+    "index": 0,
+    "message": {
+      "role": "assistant",
+      "content": "suggestions"
+    },
+    "finish_reason": "stop"
+  }]
+}`
+	second := `{
+  "id": "b",
+  "object": "chat.completion",
+  "created": 2,
+  "model": "m",
+  "choices": [{
+    "index": 0,
+    "message": {
+      "role": "assistant",
+      "content": "final answer"
+    },
+    "finish_reason": "stop"
+  }]
+}`
+	llm := &captureLLM{model: "m", script: []string{first, second}}
+	reg := tools.NewRegistry()
+	cfg := &config.Config{}
+	var calls int
+	r := &Runner{
+		LLM: llm, Cfg: cfg, Tools: reg,
+		PostReplyCheck: func(_ context.Context, _ string) string {
+			calls++
+			return "verify"
+		},
+	}
+	out, _, err := r.Run(context.Background(), "", "suggest", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatalf("PostReplyCheck should fire exactly once, got %d", calls)
+	}
+	if out != "final answer" {
+		t.Fatalf("expected second reply, got %q", out)
+	}
+}
+
+func TestRunner_PostReplyCheckNilNoop(t *testing.T) {
+	js := `{
+  "id": "x",
+  "object": "chat.completion",
+  "created": 1,
+  "model": "m",
+  "choices": [{
+    "index": 0,
+    "message": {
+      "role": "assistant",
+      "content": "direct answer"
+    },
+    "finish_reason": "stop"
+  }]
+}`
+	llm := &mockLLM{model: "m", script: []string{js}}
+	reg := tools.NewRegistry()
+	cfg := &config.Config{}
+	r := &Runner{LLM: llm, Cfg: cfg, Tools: reg}
+	out, _, err := r.Run(context.Background(), "", "question", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != "direct answer" {
+		t.Fatalf("got %q", out)
+	}
+	if llm.calls != 1 {
+		t.Fatalf("expected 1 LLM call, got %d", llm.calls)
+	}
+}

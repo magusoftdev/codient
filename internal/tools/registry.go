@@ -471,6 +471,9 @@ func registerWorkspaceMutatingTools(r *Registry, root string, exec *ExecOptions)
 			if err := json.Unmarshal(args, &p); err != nil {
 				return "", fmt.Errorf("invalid arguments: %w", err)
 			}
+			if p.Content == "" {
+				return "", fmt.Errorf("content is empty; write_file requires non-empty content")
+			}
 			mode := strings.TrimSpace(p.Mode)
 			if mode == "" {
 				mode = "overwrite"

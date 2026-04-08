@@ -123,6 +123,8 @@ func sectionDebuggingReadOnly() string {
 
 - Prefer **evidence** from reads and grep over speculation.
 - If hypotheses need verification that would require running tests or builds, state what command the user (or Build mode) should run and what outcome would confirm or refute the hypothesis.
+- Before suggesting an improvement or addition, **verify the codebase does not already implement it** — use grep or search_files to check. Recommending something that already exists wastes the user's time and undermines trust.
+- When answering broad questions (e.g. improvement suggestions, architecture review), verify each claim with a **targeted tool call** rather than relying on memory of files read earlier in the session.
 - If stuck, summarize what you checked and ask the user for one concrete piece of information.`
 }
 
@@ -191,7 +193,10 @@ func sectionCodeChanges() string {
 		"- For **edits to existing files**, prefer **str_replace** for single-site changes or **patch_file** (unified diff) for multi-site edits; use **write_file** only for new files or when rewriting most of a file.\n" +
 		"- Before editing an **existing** file, **read** the relevant sections so you do not clobber context.\n" +
 		"- Keep changes **runnable**: fix imports, respect existing style, and run checks (e.g. `go test`) via **run_command**; use **ensure_dir** to create directories portably; use **run_shell** only when you need shell features (pipelines, env vars).\n" +
-		"- Avoid unnecessary churn or unrelated refactors."
+		"- Avoid unnecessary churn or unrelated refactors.\n" +
+		"- After creating a new function, type, or package, use **grep** or **search_files** to verify it is referenced from at least one existing code path. Code that exists only alongside its own tests is dead code—either wire it into the system or do not create it.\n" +
+		"- Never use **run_command** or **run_shell** to create or write source code files. If **write_file** returns an error or produces unexpected results, read the file back and diagnose the issue. Shell escaping makes multi-line code unreliable—do not attempt it.\n" +
+		"- Before writing tests for a function, **read its implementation** to understand its exact behavior. Do not guess at expected values—verify them from the code or by running the function first."
 }
 
 func sectionDebugging() string {

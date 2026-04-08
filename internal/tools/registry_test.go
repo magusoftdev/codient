@@ -136,6 +136,24 @@ func TestWriteFileToolViaRegistry(t *testing.T) {
 	}
 }
 
+func TestWriteFileRejectsEmptyContent(t *testing.T) {
+	dir := t.TempDir()
+	r := Default(dir, nil, nil, nil)
+	_, err := r.Run(context.Background(), "write_file", json.RawMessage(`{
+		"path": "empty.go",
+		"content": ""
+	}`))
+	if err == nil {
+		t.Fatal("expected error for empty content")
+	}
+	if !strings.Contains(err.Error(), "content is empty") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, "empty.go")); statErr == nil {
+		t.Fatal("file should not have been created")
+	}
+}
+
 func TestDefaultWorkspaceToolsRegistered(t *testing.T) {
 	dir := t.TempDir()
 	r := Default(dir, nil, nil, nil)

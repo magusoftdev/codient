@@ -89,6 +89,9 @@ func (s *session) executeTurn(ctx context.Context, runner *agent.Runner, user st
 	}
 	fmt.Fprint(os.Stderr, "\n")
 	runner.ProgressFromUserTurn = true
+	if s.mode == prompt.ModeAsk || s.mode == prompt.ModePlan {
+		runner.PostReplyCheck = makePostReplyCheck()
+	}
 	writePlanDraftPreamble(os.Stdout, s.mode, s.lastReply)
 	streamTo := streamWriterForTurn(s.streamReply, assistout.StdoutIsInteractive(), s.mode, s.richOutput, s.lastReply)
 	reply, newHist, streamed, runErr := runner.RunConversation(ctx, s.systemPrompt, s.history, user, streamTo)
@@ -100,6 +103,48 @@ func (s *session) executeTurn(ctx context.Context, runner *agent.Runner, user st
 		return "", fmt.Errorf("write: %w", err)
 	}
 	return reply, nil
+}
+
+const postReplyVerificationPrompt = `You just provided suggestions. Before I accept them, verify each one using tool calls:
+
+1. For each suggestion, use grep or read_file to confirm the codebase does NOT already implement it.
+2. If a suggestion references specific code, confirm the code actually exists as described.
+3. Drop any suggestion that is already implemented or whose premise is wrong.
+
+After verification, respond with ONLY a summary of the confirmed suggestions and the evidence you found for each. Do not mention or list the suggestions you dropped.`
+
+// makePostReplyCheck returns a PostReplyCheck function for Ask/Plan modes.
+// It fires only when the reply appears to contain a list of suggestions
+// (3+ numbered items, bullets, or markdown headers).
+func makePostReplyCheck() func(context.Context, string) string {
+	return func(_ context.Context, reply string) string {
+		if !looksLikeSuggestionList(reply) {
+			return ""
+		}
+		return postReplyVerificationPrompt
+	}
+}
+
+// looksLikeSuggestionList returns true when reply contains 3+ lines that
+// start with a numbered item, bullet, or markdown header — the shape of a
+// suggestion list that benefits from verification.
+func looksLikeSuggestionList(s string) bool {
+	count := 0
+	for _, line := range strings.Split(s, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if len(trimmed) == 0 {
+			continue
+		}
+		if trimmed[0] == '-' || trimmed[0] == '*' || strings.HasPrefix(trimmed, "## ") || strings.HasPrefix(trimmed, "### ") {
+			count++
+		} else if len(trimmed) >= 2 && trimmed[0] >= '1' && trimmed[0] <= '9' && (trimmed[1] == '.' || (len(trimmed) >= 3 && trimmed[1] >= '0' && trimmed[1] <= '9' && trimmed[2] == '.')) {
+			count++
+		}
+		if count >= 3 {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *session) warnIfNotGitRepo() {
