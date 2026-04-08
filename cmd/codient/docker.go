@@ -170,3 +170,36 @@ func waitForSearxng(baseURL string, timeout time.Duration) error {
 	}
 	return fmt.Errorf("SearXNG did not respond at %s within %s", baseURL, timeout)
 }
+
+// searxngDiscoveryURLs returns ordered unique base URLs to probe for an existing SearXNG instance.
+func searxngDiscoveryURLs(configured string) []string {
+	var out []string
+	add := func(u string) {
+		u = strings.TrimRight(strings.TrimSpace(u), "/")
+		if u == "" {
+			return
+		}
+		for _, existing := range out {
+			if existing == u {
+				return
+			}
+		}
+		out = append(out, u)
+	}
+
+	add(configured)
+
+	if dockerAvailable() {
+		if running, port := searxngContainerRunning(); running {
+			if port < 1 {
+				port = defaultSearxngPort
+			}
+			add(fmt.Sprintf("http://127.0.0.1:%d", port))
+		}
+	}
+
+	add("http://127.0.0.1:8888")
+	add("http://127.0.0.1:8080")
+
+	return out
+}

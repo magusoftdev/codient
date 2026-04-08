@@ -128,6 +128,26 @@ func TestWaitForSearxng_EventuallyReady(t *testing.T) {
 	}
 }
 
+func TestSearxngDiscoveryURLs_OrderAndDedupe(t *testing.T) {
+	t.Setenv("CODIENT_STATE_DIR", t.TempDir())
+	t.Setenv("PATH", t.TempDir())
+
+	got := searxngDiscoveryURLs("http://127.0.0.1:8888")
+	if len(got) < 2 {
+		t.Fatalf("expected at least defaults, got %v", got)
+	}
+	if got[0] != "http://127.0.0.1:8888" {
+		t.Fatalf("configured URL should be first, got %v", got)
+	}
+	seen := map[string]bool{}
+	for _, u := range got {
+		if seen[u] {
+			t.Fatalf("duplicate URL %q in %v", u, got)
+		}
+		seen[u] = true
+	}
+}
+
 func TestSearxngAssetsDir_ContentsMatchEmbedded(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("CODIENT_STATE_DIR", dir)

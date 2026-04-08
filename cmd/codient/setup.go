@@ -11,6 +11,7 @@ import (
 
 	"codient/internal/config"
 	"codient/internal/openaiclient"
+	"codient/internal/tools"
 )
 
 // runSetupWizard walks the user through configuring their API connection
@@ -81,7 +82,7 @@ func (s *session) runSetupWizard(ctx context.Context, sc *bufio.Scanner) bool {
 	}
 
 	s.setupPerModeModels(sc, models)
-	s.setupWebSearch(sc)
+	s.setupWebSearch(ctx, sc)
 
 	if err := saveCurrentConfig(s.cfg); err != nil {
 		fmt.Fprintf(os.Stderr, "  Warning: could not save config: %v\n", err)
@@ -176,12 +177,20 @@ func pickModelFromList(sc *bufio.Scanner, models []string, label, defaultModel s
 	return defaultModel
 }
 
-func (s *session) setupWebSearch(sc *bufio.Scanner) {
+func (s *session) setupWebSearch(ctx context.Context, sc *bufio.Scanner) {
+	for _, u := range searxngDiscoveryURLs(s.cfg.SearchBaseURL) {
+		if tools.ProbeSearxng(ctx, u) {
+			s.cfg.SearchBaseURL = u
+			fmt.Fprintf(os.Stderr, "\n  SearXNG is already available at %s. Web search enabled.\n\n", u)
+			return
+		}
+	}
+
 	fmt.Fprintf(os.Stderr, "\n  Web search (optional) lets the agent look up documentation and API references.\n")
 	fmt.Fprintf(os.Stderr, "  It requires a SearXNG instance (runs in Docker).\n\n")
 
 	if s.cfg.SearchBaseURL != "" {
-		fmt.Fprintf(os.Stderr, "  Currently configured: %s\n\n", s.cfg.SearchBaseURL)
+		fmt.Fprintf(os.Stderr, "  Configured URL %s did not respond; you can fix it below.\n\n", s.cfg.SearchBaseURL)
 	}
 
 	fmt.Fprintf(os.Stderr, "  [1] Auto-install SearXNG via Docker (recommended)\n")
@@ -224,8 +233,11 @@ func (s *session) setupWebSearchDocker(sc *bufio.Scanner) {
 	}
 
 	if running, port := searxngContainerRunning(); running {
-		url := fmt.Sprintf("http://localhost:%d", port)
-		fmt.Fprintf(os.Stderr, "\n  SearXNG is already running at %s.\n", url)
+		if port < 1 {
+			port = defaultSearxngPort
+		}
+		url := fmt.Sprintf("http://127.0.0.1:%d", port)
+		fmt.Fprintf(os.Stderr, "\n  SearXNG container is running; using %s.\n", url)
 		s.cfg.SearchBaseURL = url
 		fmt.Fprintf(os.Stderr, "  Web search enabled (%s).\n", s.cfg.SearchBaseURL)
 		return

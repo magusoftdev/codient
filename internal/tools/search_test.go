@@ -73,6 +73,36 @@ func TestSearxngSearch_EmptyQuery(t *testing.T) {
 	}
 }
 
+func TestProbeSearxng_OK(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"results":[]}`))
+	}))
+	defer srv.Close()
+
+	if !ProbeSearxng(context.Background(), srv.URL) {
+		t.Fatal("expected true for valid SearXNG JSON response")
+	}
+}
+
+func TestProbeSearxng_EmptyURL(t *testing.T) {
+	if ProbeSearxng(context.Background(), "  ") {
+		t.Fatal("expected false for empty URL")
+	}
+}
+
+func TestProbeSearxng_InvalidJSON(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`not json`))
+	}))
+	defer srv.Close()
+
+	if ProbeSearxng(context.Background(), srv.URL) {
+		t.Fatal("expected false for invalid JSON")
+	}
+}
+
 func TestSearxngSearch_HTTPError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)

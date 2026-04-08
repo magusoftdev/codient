@@ -78,13 +78,21 @@ func (c *Client) Model() string {
 	return string(c.model)
 }
 
+// setAuthHeaders sets both OpenAI-style (Authorization: Bearer) and Anthropic-style
+// (x-api-key + anthropic-version) headers so manual HTTP requests work with either provider.
+func (c *Client) setAuthHeaders(req *http.Request) {
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	req.Header.Set("x-api-key", c.apiKey)
+	req.Header.Set("anthropic-version", "2023-06-01")
+}
+
 // PingModels GETs /v1/models relative to the configured base URL (health / discovery).
 func (c *Client) PingModels(ctx context.Context) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+"/models", nil)
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	c.setAuthHeaders(req)
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return err
@@ -179,7 +187,7 @@ func (c *Client) ProbeContextWindow(ctx context.Context, modelID string) (int, e
 	if err != nil {
 		return 0, nil
 	}
-	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	c.setAuthHeaders(req)
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return 0, nil
@@ -281,7 +289,7 @@ func (c *Client) ListModels(ctx context.Context) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	c.setAuthHeaders(req)
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return nil, err

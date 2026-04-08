@@ -94,6 +94,20 @@ func registerWebSearch(r *Registry, opts *SearchOptions, fetch *FetchOptions) {
 	})
 }
 
+// ProbeSearxng reports whether baseURL hosts a SearXNG instance that serves the JSON search API
+// (same contract as web_search). Use this to skip setup when SearXNG is already running.
+func ProbeSearxng(ctx context.Context, baseURL string) bool {
+	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	if baseURL == "" {
+		return false
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	_, err := searxngSearch(ctx, baseURL, "codient", 1, 5*time.Second)
+	return err == nil
+}
+
 func searxngSearch(ctx context.Context, baseURL, query string, n int, timeout time.Duration) (string, error) {
 	query = strings.TrimSpace(query)
 	if query == "" {
