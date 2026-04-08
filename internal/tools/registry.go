@@ -433,7 +433,7 @@ func registerWorkspaceReadTools(r *Registry, root string, fetch *FetchOptions, s
 	})
 
 	registerFetchURL(r, fetch)
-	registerWebSearch(r, search)
+	registerWebSearch(r, search, fetch)
 }
 
 func registerWorkspaceMutatingTools(r *Registry, root string, exec *ExecOptions) {

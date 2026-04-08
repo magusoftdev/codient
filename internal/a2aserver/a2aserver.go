@@ -200,14 +200,16 @@ func registryForMode(cfg *config.Config, mode prompt.Mode) *tools.Registry {
 }
 
 func fetchOpts(cfg *config.Config) *tools.FetchOptions {
-	if len(cfg.FetchAllowHosts) == 0 {
+	opts := &tools.FetchOptions{
+		AllowHosts:         append([]string(nil), cfg.FetchAllowHosts...),
+		MaxBytes:           cfg.FetchMaxBytes,
+		TimeoutSec:         cfg.FetchTimeoutSec,
+		IncludePreapproved: cfg.FetchPreapproved,
+	}
+	if len(opts.AllowHosts) == 0 && !opts.IncludePreapproved {
 		return nil
 	}
-	return &tools.FetchOptions{
-		AllowHosts: cfg.FetchAllowHosts,
-		MaxBytes:   cfg.FetchMaxBytes,
-		TimeoutSec: cfg.FetchTimeoutSec,
-	}
+	return opts
 }
 
 func searchOpts(cfg *config.Config) *tools.SearchOptions {

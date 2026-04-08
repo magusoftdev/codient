@@ -141,28 +141,6 @@ func TestDetect_GitHubActions(t *testing.T) {
 	assertContains(t, got, "GitHub Actions")
 }
 
-func TestDetect_OptOut(t *testing.T) {
-	dir := t.TempDir()
-	writeFile(t, filepath.Join(dir, "go.mod"), "module x\n\ngo 1.22\n")
-	t.Setenv("CODIENT_PROJECT_CONTEXT", "off")
-
-	got := Detect(dir)
-	if got != "" {
-		t.Fatalf("expected empty with opt-out, got %q", got)
-	}
-}
-
-func TestDetect_OptOut_CaseInsensitive(t *testing.T) {
-	dir := t.TempDir()
-	writeFile(t, filepath.Join(dir, "go.mod"), "module x\n\ngo 1.22\n")
-	t.Setenv("CODIENT_PROJECT_CONTEXT", "OFF")
-
-	got := Detect(dir)
-	if got != "" {
-		t.Fatalf("expected empty with opt-out, got %q", got)
-	}
-}
-
 func TestDetect_MaxOutput(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "go.mod"), "module "+strings.Repeat("a", 2000)+"\n\ngo 1.22\n")

@@ -29,23 +29,10 @@ func TestResolvePrompt_EmptyFlag(t *testing.T) {
 	}
 }
 
-func TestResolveProgressOut_FlagAndEnv(t *testing.T) {
-	t.Setenv("CODIENT_PROGRESS", "")
+func TestResolveProgressOut_Flag(t *testing.T) {
 	if w := resolveProgressOut(true, false); w != os.Stderr {
 		t.Fatalf("progress flag: got %v want stderr", w)
 	}
-	t.Setenv("CODIENT_PROGRESS", "1")
-	if w := resolveProgressOut(false, false); w != os.Stderr {
-		t.Fatalf("CODIENT_PROGRESS=1: got %v want stderr", w)
-	}
-	t.Setenv("CODIENT_PROGRESS", "0")
-	if w := resolveProgressOut(true, true); w != nil {
-		t.Fatalf("CODIENT_PROGRESS=0 should disable even with -progress and log; got %v", w)
-	}
-	if w := resolveProgressOut(false, true); w != nil {
-		t.Fatalf("CODIENT_PROGRESS=0 should disable log default; got %v", w)
-	}
-	t.Setenv("CODIENT_PROGRESS", "")
 	if w := resolveProgressOut(false, true); w != os.Stderr {
 		t.Fatalf("log requested: got %v want stderr", w)
 	}
@@ -87,7 +74,6 @@ func TestWritePlanDraftPreamble_AfterBlockingQuestion(t *testing.T) {
 }
 
 func TestResolveProgressOut_StderrTTYFallback(t *testing.T) {
-	t.Setenv("CODIENT_PROGRESS", "")
 	st, err := os.Stderr.Stat()
 	if err != nil {
 		t.Fatal(err)

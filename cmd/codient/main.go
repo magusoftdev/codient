@@ -41,38 +41,59 @@ func run() int {
 		taskFile      = flag.String("task-file", "", "optional path to a task description file (capped at 32KiB); merged into task directive on first turn only")
 		repl          = flag.Bool("repl", false, "multi-turn REPL (default when stdin is a TTY; kept for backward compatibility)")
 		newSession    = flag.Bool("new-session", false, "start a fresh session instead of resuming the latest")
-		logPath       = flag.String("log", "", "append JSONL agent events to this file (overrides CODIENT_LOG if set)")
+		logPath       = flag.String("log", "", "append JSONL agent events to this file")
 		progress      = flag.Bool("progress", false, "print agent progress to stderr")
-		modeFlag      = flag.String("mode", "", "build|ask|plan: tool + prompt policy (default build; when empty, use CODIENT_MODE)")
-		plainOut      = flag.Bool("plain", false, "print assistant replies as raw text (no markdown/ANSI); or set CODIENT_PLAIN=1")
+		modeFlag      = flag.String("mode", "", "build|ask|plan: tool + prompt policy (default build)")
+		plainOut      = flag.Bool("plain", false, "print assistant replies as raw text (no markdown/ANSI)")
 		streamReply   = flag.Bool("stream-reply", true, "stream assistant tokens to stdout")
 		designSaveDir = flag.String("design-save-dir", "", "directory for saved implementation designs (default: <workspace>/.codient/designs)")
-		workspace     = flag.String("workspace", "", "root directory for workspace tools (overrides CODIENT_WORKSPACE and cwd default)")
+		workspace     = flag.String("workspace", "", "root directory for workspace tools (overrides config and cwd default)")
 		a2aFlag       = flag.Bool("a2a", false, "start an A2A (Agent-to-Agent) protocol server instead of the CLI")
 		a2aAddr       = flag.String("a2a-addr", ":8080", "listen address for the A2A server")
 	)
 	flag.Parse()
 
-	agentMode, err := prompt.ResolveMode(*modeFlag)
+	cfg, err := config.Load()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "config: %v\n", err)
+		return 2
+	}
+
+	// CLI flags override config file values when explicitly set.
+	explicit := make(map[string]bool)
+	flag.Visit(func(f *flag.Flag) { explicit[f.Name] = true })
+
+	if explicit["workspace"] {
+		cfg.Workspace = strings.TrimSpace(*workspace)
+	}
+	if explicit["mode"] {
+		cfg.Mode = *modeFlag
+	}
+	if explicit["plain"] {
+		cfg.Plain = *plainOut
+	}
+	if explicit["progress"] {
+		cfg.Progress = *progress
+	}
+	if explicit["stream-reply"] {
+		cfg.StreamReply = *streamReply
+	}
+	if explicit["log"] {
+		cfg.LogPath = *logPath
+	}
+	if explicit["design-save-dir"] {
+		cfg.DesignSaveDir = *designSaveDir
+	}
+
+	agentMode, err := prompt.ParseMode(cfg.Mode)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "mode: %v\n", err)
 		return 2
 	}
 
-	effectiveLog := strings.TrimSpace(*logPath)
-	if effectiveLog == "" {
-		effectiveLog = strings.TrimSpace(os.Getenv("CODIENT_LOG"))
-	}
-	progressOut := resolveProgressOut(*progress, effectiveLog != "")
+	effectiveLog := strings.TrimSpace(cfg.LogPath)
+	progressOut := resolveProgressOut(cfg.Progress, effectiveLog != "")
 
-	cfg, err := config.Load()
-	if err == nil && strings.TrimSpace(*workspace) != "" {
-		cfg.Workspace = strings.TrimSpace(*workspace)
-	}
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "config: %v\n", err)
-		return 2
-	}
 	// For quick commands and single-turn mode, use a wall-clock timeout.
 	// For the REPL session, use a signal-based context so the user can
 	// step away without hitting "context deadline exceeded".
@@ -157,7 +178,7 @@ func run() int {
 		fmt.Fprintf(os.Stderr, "repo instructions: %v\n", err)
 		return 2
 	}
-	projectCtx := projectinfo.Detect(cfg.EffectiveWorkspace())
+	projectCtx := resolveProjectContext(cfg)
 	var execAllow *tools.SessionExecAllow
 	if len(cfg.ExecAllowlist) > 0 {
 		execAllow = tools.NewSessionExecAllow(cfg.ExecAllowlist)
@@ -168,9 +189,9 @@ func run() int {
 		agentLog:         agentLog,
 		progressOut:      progressOut,
 		mode:             agentMode,
-		richOutput:       assistantOutputRich(*plainOut),
-		streamReply:      *streamReply,
-		designSaveDir:    *designSaveDir,
+		richOutput:       assistantOutputRich(cfg.Plain),
+		streamReply:      cfg.StreamReply,
+		designSaveDir:    cfg.DesignSaveDir,
 		goal:             *goal,
 		taskFile:         *taskFile,
 		userSystem:       *system,
@@ -238,22 +259,15 @@ func runBareStream(ctx context.Context, client *openaiclient.Client, system, use
 	return 0
 }
 
-func stderrPromptPlain(plainFlag bool) bool {
-	return plainFlag || strings.TrimSpace(os.Getenv("CODIENT_PLAIN")) == "1"
-}
-
-func assistantOutputRich(plainFlag bool) bool {
-	if plainFlag || strings.TrimSpace(os.Getenv("CODIENT_PLAIN")) == "1" {
+func assistantOutputRich(plain bool) bool {
+	if plain {
 		return false
 	}
 	return assistout.StdoutIsInteractive()
 }
 
-func resolveProgressOut(progressFlag, logRequested bool) io.Writer {
-	if strings.TrimSpace(os.Getenv("CODIENT_PROGRESS")) == "0" {
-		return nil
-	}
-	if progressFlag || strings.TrimSpace(os.Getenv("CODIENT_PROGRESS")) == "1" {
+func resolveProgressOut(progressCfg, logRequested bool) io.Writer {
+	if progressCfg {
 		return os.Stderr
 	}
 	if logRequested {
@@ -269,18 +283,12 @@ func resolveProgressOut(progressFlag, logRequested bool) io.Writer {
 	return nil
 }
 
-func resolveStreamReply(flag bool, stdoutTTY bool) bool {
-	switch strings.TrimSpace(os.Getenv("CODIENT_STREAM_REPLY")) {
-	case "0":
-		return false
-	case "1":
-		return true
-	}
-	return flag && stdoutTTY
+func resolveStreamReply(cfgStreamReply bool, stdoutTTY bool) bool {
+	return cfgStreamReply && stdoutTTY
 }
 
-func streamWriterForTurn(streamReplyFlag bool, stdoutTTY bool, mode prompt.Mode, richAssistant bool, lastAssistantReply string) io.Writer {
-	if !resolveStreamReply(streamReplyFlag, stdoutTTY) {
+func streamWriterForTurn(streamReplyVal bool, stdoutTTY bool, mode prompt.Mode, richAssistant bool, lastAssistantReply string) io.Writer {
+	if !resolveStreamReply(streamReplyVal, stdoutTTY) {
 		return nil
 	}
 	if mode == prompt.ModePlan && richAssistant && assistout.ReplySignalsPlanWait(lastAssistantReply) {
@@ -305,30 +313,30 @@ func finishAssistantTurn(w io.Writer, reply string, useMarkdown, planMode, strea
 	return assistout.WriteAssistant(w, reply, useMarkdown, planMode)
 }
 
-func resolveDesignSaveDir(flag string) string {
-	if s := strings.TrimSpace(os.Getenv("CODIENT_DESIGN_SAVE_DIR")); s != "" {
-		return s
-	}
-	return strings.TrimSpace(flag)
-}
-
-func maybeSaveDesign(stderr io.Writer, workspace, designSaveDirFlag, sessionID string, mode prompt.Mode, reply string, taskSlug string) {
+func maybeSaveDesign(stderr io.Writer, workspace, designSaveDir, sessionID string, mode prompt.Mode, reply string, taskSlug string, designSave bool) {
 	if mode != prompt.ModePlan {
 		return
 	}
-	if strings.TrimSpace(os.Getenv("CODIENT_DESIGN_SAVE")) == "0" {
+	if !designSave {
 		return
 	}
 	text := assistout.PrepareAssistantText(reply, true)
 	if !designstore.LooksLikeReadyToImplement(text) {
 		return
 	}
-	path, err := designstore.Save(workspace, resolveDesignSaveDir(designSaveDirFlag), sessionID, taskSlug, text, time.Now())
+	path, err := designstore.Save(workspace, designSaveDir, sessionID, taskSlug, text, time.Now())
 	if err != nil {
 		fmt.Fprintf(stderr, "codient: saving design: %v\n", err)
 		return
 	}
 	fmt.Fprintf(stderr, "codient: wrote design to %s\n", path)
+}
+
+func resolveProjectContext(cfg *config.Config) string {
+	if strings.EqualFold(strings.TrimSpace(cfg.ProjectContext), "off") {
+		return ""
+	}
+	return projectinfo.Detect(cfg.EffectiveWorkspace())
 }
 
 func resolvePrompt(flagPrompt string) (string, error) {

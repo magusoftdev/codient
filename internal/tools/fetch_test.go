@@ -10,6 +10,43 @@ import (
 	"testing"
 )
 
+func TestRegisterFetchURL_PromptOnly(t *testing.T) {
+	r := NewRegistry()
+	registerFetchURL(r, &FetchOptions{
+		PromptUnknownHost: func(context.Context, string, string) FetchHostChoice { return FetchHostDeny },
+		Session:           NewSessionFetchAllow(),
+		MaxBytes:          1024,
+		TimeoutSec:        30,
+	})
+	found := false
+	for _, n := range r.Names() {
+		if n == "fetch_url" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("expected fetch_url when PromptUnknownHost is set")
+	}
+}
+
+func TestRegisterFetchURL_IncludePreapprovedOnly(t *testing.T) {
+	r := NewRegistry()
+	registerFetchURL(r, &FetchOptions{
+		IncludePreapproved: true,
+		MaxBytes:           1024,
+		TimeoutSec:         30,
+	})
+	found := false
+	for _, n := range r.Names() {
+		if n == "fetch_url" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("expected fetch_url when IncludePreapproved is set")
+	}
+}
+
 func TestHostAllowedFetch(t *testing.T) {
 	allow := []string{"example.com", "api.foo.org"}
 	tests := []struct {
@@ -32,11 +69,13 @@ func TestHostAllowedFetch(t *testing.T) {
 
 func TestFetchURL_SchemeAndHost(t *testing.T) {
 	ctx := context.Background()
-	_, err := fetchURL(ctx, "http://example.com/x", []string{"example.com"}, 100, 0)
+	ex := []string{"example.com"}
+	allow := func(h string, _ string) bool { return hostAllowedFetch(h, ex) }
+	_, err := fetchURL(ctx, "http://example.com/x", allow, 100, 0)
 	if err == nil {
 		t.Fatal("expected error for http")
 	}
-	_, err = fetchURL(ctx, "https://evil.com/", []string{"example.com"}, 100, 0)
+	_, err = fetchURL(ctx, "https://evil.com/", allow, 100, 0)
 	if err == nil {
 		t.Fatal("expected error for host")
 	}

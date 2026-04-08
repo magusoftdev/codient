@@ -49,7 +49,7 @@ func TestCallLLMWithRetry_TransientThenSuccess(t *testing.T) {
 	}
 	r := &Runner{
 		LLM:   llm,
-		Cfg:   &config.Config{MaxToolSteps: 5, MaxLLMRetries: 2},
+		Cfg:   &config.Config{MaxLLMRetries: 2},
 		Tools: tools.NewRegistry(),
 	}
 	params := openai.ChatCompletionNewParams{}
@@ -74,7 +74,7 @@ func TestCallLLMWithRetry_NonTransientFails(t *testing.T) {
 	}
 	r := &Runner{
 		LLM:   llm,
-		Cfg:   &config.Config{MaxToolSteps: 5, MaxLLMRetries: 3},
+		Cfg:   &config.Config{MaxLLMRetries: 3},
 		Tools: tools.NewRegistry(),
 	}
 	params := openai.ChatCompletionNewParams{}
@@ -96,7 +96,7 @@ func TestCallLLMWithRetry_ExhaustsRetries(t *testing.T) {
 	}
 	r := &Runner{
 		LLM:   llm,
-		Cfg:   &config.Config{MaxToolSteps: 5, MaxLLMRetries: 2},
+		Cfg:   &config.Config{MaxLLMRetries: 2},
 		Tools: tools.NewRegistry(),
 	}
 	params := openai.ChatCompletionNewParams{}

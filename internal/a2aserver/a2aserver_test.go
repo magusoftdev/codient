@@ -57,11 +57,10 @@ func testConfig(t *testing.T) *config.Config {
 	t.Helper()
 	ws := t.TempDir()
 	return &config.Config{
-		BaseURL:      "http://unused",
-		APIKey:       "test-key",
-		Model:        "mock",
-		Workspace:    ws,
-		MaxToolSteps: 100,
+		BaseURL:   "http://unused",
+		APIKey:    "test-key",
+		Model:     "mock",
+		Workspace: ws,
 	}
 }
 

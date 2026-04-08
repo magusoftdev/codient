@@ -8,7 +8,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/openai/openai-go/v3"
@@ -49,13 +51,16 @@ type session struct {
 	sessionID string
 	turn      int
 	lastReply string
-	taskSlug string
+	taskSlug  string
 
 	undoStack []undoEntry // per-turn undo records (most recent at end)
 
 	// stdinScanner is set for the interactive REPL; used for exec allow prompts.
 	scanner   *bufio.Scanner
 	execAllow *tools.SessionExecAllow // mutable run_command allowlist for this process; nil if exec disabled
+
+	fetchAllow    *tools.SessionFetchAllow // mutable fetch_url host approvals for this process; nil until first fetch
+	fetchPromptMu sync.Mutex               // serializes fetch allow prompts and post-lock re-checks
 }
 
 type undoEntry struct {
@@ -227,13 +232,14 @@ func (s *session) showGitDiffIfBuild() {
 func (s *session) runSingleTurn(ctx context.Context, user string) int {
 	s.warnIfNotGitRepo()
 	assistout.WriteWelcome(os.Stderr, assistout.WelcomeParams{
-		Plain:     stderrPromptPlain(false),
+		Plain:     s.cfg.Plain,
+		Quiet:     s.cfg.Quiet,
 		Repl:      false,
 		Mode:      string(s.mode),
 		Workspace: s.cfg.EffectiveWorkspace(),
 		Model:     s.cfg.Model,
 	})
-	if os.Getenv("CODIENT_VERBOSE") == "1" {
+	if s.cfg.Verbose {
 		fmt.Fprintf(os.Stderr, "codient: workspace=%q mode=%s tools=%s\n", s.cfg.EffectiveWorkspace(), s.mode, strings.Join(s.registry.Names(), ", "))
 	}
 	rawUser := user
@@ -248,7 +254,7 @@ func (s *session) runSingleTurn(ctx context.Context, user string) int {
 		fmt.Fprintf(os.Stderr, "agent: %v\n", err)
 		return 1
 	}
-	maybeSaveDesign(os.Stderr, s.cfg.EffectiveWorkspace(), s.designSaveDir, s.sessionID, s.mode, reply, designstore.TaskSlug(s.goal, s.taskFile, rawUser))
+	maybeSaveDesign(os.Stderr, s.cfg.EffectiveWorkspace(), s.designSaveDir, s.sessionID, s.mode, reply, designstore.TaskSlug(s.goal, s.taskFile, rawUser), s.cfg.DesignSave)
 	s.showGitDiffIfBuild()
 	return 0
 }
@@ -280,16 +286,17 @@ func (s *session) runSession(ctx context.Context, initialPrompt string, newSessi
 
 	s.warnIfNotGitRepo()
 	assistout.WriteWelcome(os.Stderr, assistout.WelcomeParams{
-		Plain:     stderrPromptPlain(false),
+		Plain:     s.cfg.Plain,
+		Quiet:     s.cfg.Quiet,
 		Repl:      true,
 		Mode:      string(s.mode),
 		Workspace: ws,
 		Model:     s.cfg.Model,
 	})
-	if os.Getenv("CODIENT_VERBOSE") == "1" {
+	if s.cfg.Verbose {
 		fmt.Fprintf(os.Stderr, "codient: workspace=%q mode=%s tools=%s\n", ws, s.mode, strings.Join(s.registry.Names(), ", "))
 	}
-	fmt.Fprintf(os.Stderr, "%s\n", assistout.ModeHint(stderrPromptPlain(false), string(s.mode)))
+	fmt.Fprintf(os.Stderr, "%s\n", assistout.ModeHint(s.cfg.Plain, string(s.mode)))
 
 	sc := bufio.NewScanner(os.Stdin)
 	s.scanner = sc
@@ -331,7 +338,7 @@ func (s *session) runSession(ctx context.Context, initialPrompt string, newSessi
 			return 1
 		}
 		s.pushUndoIfChanged(preModified, preUntracked, histLen)
-		maybeSaveDesign(os.Stderr, ws, s.designSaveDir, s.sessionID, s.mode, reply, s.taskSlug)
+		maybeSaveDesign(os.Stderr, ws, s.designSaveDir, s.sessionID, s.mode, reply, s.taskSlug, s.cfg.DesignSave)
 		s.lastReply = assistout.PrepareAssistantText(reply, s.mode == prompt.ModePlan)
 		s.autoSave()
 		s.maybeAutoCompact(ctx)
@@ -384,7 +391,7 @@ func (s *session) runSession(ctx context.Context, initialPrompt string, newSessi
 			return 1
 		}
 		s.pushUndoIfChanged(preModified, preUntracked, histLen)
-		maybeSaveDesign(os.Stderr, ws, s.designSaveDir, s.sessionID, s.mode, reply, s.taskSlug)
+		maybeSaveDesign(os.Stderr, ws, s.designSaveDir, s.sessionID, s.mode, reply, s.taskSlug, s.cfg.DesignSave)
 		s.lastReply = assistout.PrepareAssistantText(reply, s.mode == prompt.ModePlan)
 		s.autoSave()
 		s.maybeAutoCompact(ctx)
@@ -406,11 +413,10 @@ func (s *session) runSession(ctx context.Context, initialPrompt string, newSessi
 }
 
 func (s *session) printPrompt() {
-	plain := stderrPromptPlain(false)
 	if s.mode == prompt.ModePlan && assistout.ReplySignalsPlanWait(s.lastReply) {
-		fmt.Fprint(os.Stderr, assistout.PlanAnswerPrefix(plain))
+		fmt.Fprint(os.Stderr, assistout.PlanAnswerPrefix(s.cfg.Plain))
 	} else {
-		fmt.Fprint(os.Stderr, assistout.SessionPrompt(plain, string(s.mode)))
+		fmt.Fprint(os.Stderr, assistout.SessionPrompt(s.cfg.Plain, string(s.mode)))
 	}
 }
 
@@ -497,7 +503,7 @@ func (s *session) buildSlashCommands(ctx context.Context, sc *bufio.Scanner) *sl
 	cmds.Register(slashcmd.Command{
 		Name:        "config",
 		Usage:       "/config [key] [value]",
-		Description: "view or set connection settings (base_url, api_key, model)",
+		Description: "view or set configuration (no args = show all, key = show one, key value = set and save)",
 		Run:         func(args string) error { return s.handleConfig(ctx, args) },
 	})
 	cmds.Register(slashcmd.Command{
@@ -550,7 +556,7 @@ func (s *session) buildSlashCommands(ctx context.Context, sc *bufio.Scanner) *sl
 				s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, effectiveAutoCheckCmd(s.cfg))
 			}
 			fmt.Fprintf(os.Stderr, "codient: new session %s\n", s.sessionID)
-			fmt.Fprintf(os.Stderr, "%s\n", assistout.ModeHint(stderrPromptPlain(false), string(s.mode)))
+			fmt.Fprintf(os.Stderr, "%s\n", assistout.ModeHint(s.cfg.Plain, string(s.mode)))
 			s.autoSave()
 			return nil
 		},
@@ -611,7 +617,7 @@ func (s *session) buildSlashCommands(ctx context.Context, sc *bufio.Scanner) *sl
 				fmt.Fprintf(os.Stderr, "current model: %s\n", s.cfg.Model)
 				return nil
 			}
-			return s.handleConfig(ctx, "model " + name)
+			return s.handleConfig(ctx, "model "+name)
 		},
 	})
 	cmds.Register(slashcmd.Command{
@@ -688,20 +694,172 @@ func (s *session) handleConfig(ctx context.Context, args string) error {
 	}
 
 	if key == "" {
-		masked := s.cfg.APIKey
-		if len(masked) > 4 {
-			masked = masked[:4] + strings.Repeat("*", len(masked)-4)
-		}
-		fmt.Fprintf(os.Stderr, "  base_url: %s\n", s.cfg.BaseURL)
-		fmt.Fprintf(os.Stderr, "  api_key:  %s\n", masked)
-		fmt.Fprintf(os.Stderr, "  model:    %s\n", s.cfg.Model)
-		fmt.Fprintf(os.Stderr, "\nSet a value: /config <key> <value>\n")
+		s.printAllConfig()
 		return nil
 	}
 
 	if value == "" {
-		return fmt.Errorf("usage: /config %s <value>", key)
+		return s.printOneConfig(key)
 	}
+
+	if err := s.setConfig(key, value); err != nil {
+		return err
+	}
+
+	if err := saveCurrentConfig(s.cfg); err != nil {
+		return fmt.Errorf("save config: %w", err)
+	}
+
+	fmt.Fprintf(os.Stderr, "codient: %s set to %q (saved)\n", key, value)
+
+	switch key {
+	case "model", "base_url", "api_key":
+		s.client = openaiclient.New(s.cfg)
+		s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, effectiveAutoCheckCmd(s.cfg))
+		if key == "model" || key == "base_url" {
+			s.cfg.ContextWindowTokens = 0
+			s.probeAndSetContext(ctx)
+		}
+	case "autocheck_cmd":
+		s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, effectiveAutoCheckCmd(s.cfg))
+	}
+	return nil
+}
+
+func (s *session) printAllConfig() {
+	masked := s.cfg.APIKey
+	if len(masked) > 4 {
+		masked = masked[:4] + strings.Repeat("*", len(masked)-4)
+	}
+	w := os.Stderr
+	fmt.Fprintf(w, "  -- Connection --\n")
+	fmt.Fprintf(w, "  base_url:              %s\n", s.cfg.BaseURL)
+	fmt.Fprintf(w, "  api_key:               %s\n", masked)
+	fmt.Fprintf(w, "  model:                 %s\n", s.cfg.Model)
+	fmt.Fprintf(w, "\n  -- Defaults --\n")
+	fmt.Fprintf(w, "  mode:                  %s\n", s.cfg.Mode)
+	fmt.Fprintf(w, "  workspace:             %s\n", s.cfg.Workspace)
+	fmt.Fprintf(w, "\n  -- Agent limits --\n")
+	fmt.Fprintf(w, "  max_concurrent:        %d\n", s.cfg.MaxConcurrent)
+	fmt.Fprintf(w, "\n  -- Exec --\n")
+	fmt.Fprintf(w, "  exec_allowlist:        %s\n", strings.Join(s.cfg.ExecAllowlist, ","))
+	fmt.Fprintf(w, "  exec_timeout_sec:      %d\n", s.cfg.ExecTimeoutSeconds)
+	fmt.Fprintf(w, "  exec_max_output_bytes: %d\n", s.cfg.ExecMaxOutputBytes)
+	fmt.Fprintf(w, "\n  -- Context --\n")
+	fmt.Fprintf(w, "  context_window:        %d\n", s.cfg.ContextWindowTokens)
+	fmt.Fprintf(w, "  context_reserve:       %d\n", s.cfg.ContextReserveTokens)
+	fmt.Fprintf(w, "\n  -- LLM --\n")
+	fmt.Fprintf(w, "  max_llm_retries:       %d\n", s.cfg.MaxLLMRetries)
+	fmt.Fprintf(w, "  stream_with_tools:     %v\n", s.cfg.StreamWithTools)
+	fmt.Fprintf(w, "\n  -- Fetch --\n")
+	fmt.Fprintf(w, "  fetch_allow_hosts:     %s\n", strings.Join(s.cfg.FetchAllowHosts, ","))
+	fmt.Fprintf(w, "  fetch_preapproved:     %v\n", s.cfg.FetchPreapproved)
+	fmt.Fprintf(w, "  fetch_max_bytes:       %d\n", s.cfg.FetchMaxBytes)
+	fmt.Fprintf(w, "  fetch_timeout_sec:     %d\n", s.cfg.FetchTimeoutSec)
+	fmt.Fprintf(w, "\n  -- Search --\n")
+	fmt.Fprintf(w, "  search_url:            %s\n", s.cfg.SearchBaseURL)
+	fmt.Fprintf(w, "  search_max_results:    %d\n", s.cfg.SearchMaxResults)
+	fmt.Fprintf(w, "\n  -- Auto --\n")
+	fmt.Fprintf(w, "  autocompact_threshold: %d\n", s.cfg.AutoCompactPct)
+	fmt.Fprintf(w, "  autocheck_cmd:         %s\n", s.cfg.AutoCheckCmd)
+	fmt.Fprintf(w, "\n  -- UI/Output --\n")
+	fmt.Fprintf(w, "  plain:                 %v\n", s.cfg.Plain)
+	fmt.Fprintf(w, "  quiet:                 %v\n", s.cfg.Quiet)
+	fmt.Fprintf(w, "  verbose:               %v\n", s.cfg.Verbose)
+	fmt.Fprintf(w, "  log:                   %s\n", s.cfg.LogPath)
+	fmt.Fprintf(w, "  stream_reply:          %v\n", s.cfg.StreamReply)
+	fmt.Fprintf(w, "  progress:              %v\n", s.cfg.Progress)
+	fmt.Fprintf(w, "\n  -- Plan --\n")
+	fmt.Fprintf(w, "  design_save_dir:       %s\n", s.cfg.DesignSaveDir)
+	fmt.Fprintf(w, "  design_save:           %v\n", s.cfg.DesignSave)
+	fmt.Fprintf(w, "\n  -- Project --\n")
+	fmt.Fprintf(w, "  project_context:       %s\n", s.cfg.ProjectContext)
+	fmt.Fprintf(w, "\nSet a value: /config <key> <value>\n")
+}
+
+func (s *session) printOneConfig(key string) error {
+	v, ok := s.getConfigValue(key)
+	if !ok {
+		return fmt.Errorf("unknown config key %q", key)
+	}
+	fmt.Fprintf(os.Stderr, "  %s: %s\n", key, v)
+	return nil
+}
+
+func (s *session) getConfigValue(key string) (string, bool) {
+	switch key {
+	case "base_url":
+		return s.cfg.BaseURL, true
+	case "api_key":
+		masked := s.cfg.APIKey
+		if len(masked) > 4 {
+			masked = masked[:4] + strings.Repeat("*", len(masked)-4)
+		}
+		return masked, true
+	case "model":
+		return s.cfg.Model, true
+	case "mode":
+		return s.cfg.Mode, true
+	case "workspace":
+		return s.cfg.Workspace, true
+	case "max_concurrent":
+		return strconv.Itoa(s.cfg.MaxConcurrent), true
+	case "exec_allowlist":
+		return strings.Join(s.cfg.ExecAllowlist, ","), true
+	case "exec_timeout_sec":
+		return strconv.Itoa(s.cfg.ExecTimeoutSeconds), true
+	case "exec_max_output_bytes":
+		return strconv.Itoa(s.cfg.ExecMaxOutputBytes), true
+	case "context_window":
+		return strconv.Itoa(s.cfg.ContextWindowTokens), true
+	case "context_reserve":
+		return strconv.Itoa(s.cfg.ContextReserveTokens), true
+	case "max_llm_retries":
+		return strconv.Itoa(s.cfg.MaxLLMRetries), true
+	case "stream_with_tools":
+		return strconv.FormatBool(s.cfg.StreamWithTools), true
+	case "fetch_allow_hosts":
+		return strings.Join(s.cfg.FetchAllowHosts, ","), true
+	case "fetch_preapproved":
+		return strconv.FormatBool(s.cfg.FetchPreapproved), true
+	case "fetch_max_bytes":
+		return strconv.Itoa(s.cfg.FetchMaxBytes), true
+	case "fetch_timeout_sec":
+		return strconv.Itoa(s.cfg.FetchTimeoutSec), true
+	case "search_url":
+		return s.cfg.SearchBaseURL, true
+	case "search_max_results":
+		return strconv.Itoa(s.cfg.SearchMaxResults), true
+	case "autocompact_threshold":
+		return strconv.Itoa(s.cfg.AutoCompactPct), true
+	case "autocheck_cmd":
+		return s.cfg.AutoCheckCmd, true
+	case "plain":
+		return strconv.FormatBool(s.cfg.Plain), true
+	case "quiet":
+		return strconv.FormatBool(s.cfg.Quiet), true
+	case "verbose":
+		return strconv.FormatBool(s.cfg.Verbose), true
+	case "log":
+		return s.cfg.LogPath, true
+	case "stream_reply":
+		return strconv.FormatBool(s.cfg.StreamReply), true
+	case "progress":
+		return strconv.FormatBool(s.cfg.Progress), true
+	case "design_save_dir":
+		return s.cfg.DesignSaveDir, true
+	case "design_save":
+		return strconv.FormatBool(s.cfg.DesignSave), true
+	case "project_context":
+		return s.cfg.ProjectContext, true
+	default:
+		return "", false
+	}
+}
+
+func (s *session) setConfig(key, value string) error {
+	parseInt := func(v string) (int, error) { return strconv.Atoi(v) }
+	parseBool := func(v string) (bool, error) { return strconv.ParseBool(v) }
 
 	switch key {
 	case "base_url":
@@ -710,28 +868,134 @@ func (s *session) handleConfig(ctx context.Context, args string) error {
 		s.cfg.APIKey = value
 	case "model":
 		s.cfg.Model = value
+	case "mode":
+		s.cfg.Mode = value
+	case "workspace":
+		s.cfg.Workspace = value
+	case "max_concurrent":
+		n, err := parseInt(value)
+		if err != nil || n < 1 {
+			return fmt.Errorf("max_concurrent must be a positive integer")
+		}
+		s.cfg.MaxConcurrent = n
+	case "exec_allowlist":
+		s.cfg.ExecAllowlist = config.ParseExecAllowlistString(value)
+	case "exec_timeout_sec":
+		n, err := parseInt(value)
+		if err != nil || n < 1 {
+			return fmt.Errorf("exec_timeout_sec must be a positive integer")
+		}
+		s.cfg.ExecTimeoutSeconds = n
+	case "exec_max_output_bytes":
+		n, err := parseInt(value)
+		if err != nil || n < 1 {
+			return fmt.Errorf("exec_max_output_bytes must be a positive integer")
+		}
+		s.cfg.ExecMaxOutputBytes = n
+	case "context_window":
+		n, err := parseInt(value)
+		if err != nil || n < 0 {
+			return fmt.Errorf("context_window must be a non-negative integer")
+		}
+		s.cfg.ContextWindowTokens = n
+	case "context_reserve":
+		n, err := parseInt(value)
+		if err != nil || n < 0 {
+			return fmt.Errorf("context_reserve must be a non-negative integer")
+		}
+		s.cfg.ContextReserveTokens = n
+	case "max_llm_retries":
+		n, err := parseInt(value)
+		if err != nil || n < 0 {
+			return fmt.Errorf("max_llm_retries must be a non-negative integer")
+		}
+		s.cfg.MaxLLMRetries = n
+	case "stream_with_tools":
+		b, err := parseBool(value)
+		if err != nil {
+			return fmt.Errorf("stream_with_tools must be true or false")
+		}
+		s.cfg.StreamWithTools = b
+	case "fetch_allow_hosts":
+		s.cfg.FetchAllowHosts = config.ParseFetchAllowHostsString(value)
+	case "fetch_preapproved":
+		b, err := parseBool(value)
+		if err != nil {
+			return fmt.Errorf("fetch_preapproved must be true or false")
+		}
+		s.cfg.FetchPreapproved = b
+	case "fetch_max_bytes":
+		n, err := parseInt(value)
+		if err != nil || n < 1 {
+			return fmt.Errorf("fetch_max_bytes must be a positive integer")
+		}
+		s.cfg.FetchMaxBytes = n
+	case "fetch_timeout_sec":
+		n, err := parseInt(value)
+		if err != nil || n < 1 {
+			return fmt.Errorf("fetch_timeout_sec must be a positive integer")
+		}
+		s.cfg.FetchTimeoutSec = n
+	case "search_url":
+		s.cfg.SearchBaseURL = strings.TrimRight(value, "/")
+	case "search_max_results":
+		n, err := parseInt(value)
+		if err != nil || n < 1 {
+			return fmt.Errorf("search_max_results must be a positive integer")
+		}
+		s.cfg.SearchMaxResults = n
+	case "autocompact_threshold":
+		n, err := parseInt(value)
+		if err != nil || n < 0 || n > 100 {
+			return fmt.Errorf("autocompact_threshold must be 0-100")
+		}
+		s.cfg.AutoCompactPct = n
+	case "autocheck_cmd":
+		s.cfg.AutoCheckCmd = value
+	case "plain":
+		b, err := parseBool(value)
+		if err != nil {
+			return fmt.Errorf("plain must be true or false")
+		}
+		s.cfg.Plain = b
+	case "quiet":
+		b, err := parseBool(value)
+		if err != nil {
+			return fmt.Errorf("quiet must be true or false")
+		}
+		s.cfg.Quiet = b
+	case "verbose":
+		b, err := parseBool(value)
+		if err != nil {
+			return fmt.Errorf("verbose must be true or false")
+		}
+		s.cfg.Verbose = b
+	case "log":
+		s.cfg.LogPath = value
+	case "stream_reply":
+		b, err := parseBool(value)
+		if err != nil {
+			return fmt.Errorf("stream_reply must be true or false")
+		}
+		s.cfg.StreamReply = b
+	case "progress":
+		b, err := parseBool(value)
+		if err != nil {
+			return fmt.Errorf("progress must be true or false")
+		}
+		s.cfg.Progress = b
+	case "design_save_dir":
+		s.cfg.DesignSaveDir = value
+	case "design_save":
+		b, err := parseBool(value)
+		if err != nil {
+			return fmt.Errorf("design_save must be true or false")
+		}
+		s.cfg.DesignSave = b
+	case "project_context":
+		s.cfg.ProjectContext = value
 	default:
-		return fmt.Errorf("unknown config key %q (valid: base_url, api_key, model)", key)
-	}
-
-	s.client = openaiclient.New(s.cfg)
-	s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, effectiveAutoCheckCmd(s.cfg))
-
-	pc := &config.PersistentConfig{
-		BaseURL:       s.cfg.BaseURL,
-		APIKey:        s.cfg.APIKey,
-		Model:         s.cfg.Model,
-		SearchBaseURL: s.cfg.SearchBaseURL,
-	}
-	if err := config.SavePersistentConfig(pc); err != nil {
-		return fmt.Errorf("save config: %w", err)
-	}
-
-	fmt.Fprintf(os.Stderr, "codient: %s set to %q (saved)\n", key, value)
-
-	if key == "model" || key == "base_url" {
-		s.cfg.ContextWindowTokens = 0
-		s.probeAndSetContext(ctx)
+		return fmt.Errorf("unknown config key %q", key)
 	}
 	return nil
 }

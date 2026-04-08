@@ -6,15 +6,26 @@ import (
 	"codient/internal/tools"
 )
 
-func fetchOptsFrom(cfg *config.Config) *tools.FetchOptions {
-	if len(cfg.FetchAllowHosts) == 0 {
+func fetchOptsFrom(cfg *config.Config, s *session) *tools.FetchOptions {
+	opts := &tools.FetchOptions{
+		AllowHosts:         append([]string(nil), cfg.FetchAllowHosts...),
+		MaxBytes:           cfg.FetchMaxBytes,
+		TimeoutSec:         cfg.FetchTimeoutSec,
+		IncludePreapproved: cfg.FetchPreapproved,
+	}
+	interactive := s != nil && s.scanner != nil && stdinIsInteractive()
+	if interactive {
+		if s.fetchAllow == nil {
+			s.fetchAllow = tools.NewSessionFetchAllow()
+		}
+		opts.Session = s.fetchAllow
+		opts.PromptUnknownHost = s.fetchPromptUnknownHost
+		opts.PersistFetchHost = s.persistFetchHostToConfig
+	}
+	if len(opts.AllowHosts) == 0 && opts.PromptUnknownHost == nil && !opts.IncludePreapproved {
 		return nil
 	}
-	return &tools.FetchOptions{
-		AllowHosts: cfg.FetchAllowHosts,
-		MaxBytes:   cfg.FetchMaxBytes,
-		TimeoutSec: cfg.FetchTimeoutSec,
-	}
+	return opts
 }
 
 func searchOptsFrom(cfg *config.Config) *tools.SearchOptions {
@@ -29,7 +40,7 @@ func searchOptsFrom(cfg *config.Config) *tools.SearchOptions {
 }
 
 func buildRegistry(cfg *config.Config, mode prompt.Mode, s *session) *tools.Registry {
-	fetch := fetchOptsFrom(cfg)
+	fetch := fetchOptsFrom(cfg, s)
 	search := searchOptsFrom(cfg)
 	if mode == prompt.ModeAsk {
 		return tools.DefaultReadOnly(cfg.EffectiveWorkspace(), fetch, search)

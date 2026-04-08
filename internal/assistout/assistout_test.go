@@ -37,7 +37,6 @@ func TestWriteAssistant_EmptyPlain(t *testing.T) {
 }
 
 func TestWriteWelcome_Plain(t *testing.T) {
-	t.Setenv("CODIENT_QUIET", "")
 	var buf bytes.Buffer
 	WriteWelcome(&buf, WelcomeParams{
 		Plain:     true,
@@ -53,9 +52,8 @@ func TestWriteWelcome_Plain(t *testing.T) {
 }
 
 func TestWriteWelcome_Quiet(t *testing.T) {
-	t.Setenv("CODIENT_QUIET", "1")
 	var buf bytes.Buffer
-	WriteWelcome(&buf, WelcomeParams{Plain: true, Mode: "build"})
+	WriteWelcome(&buf, WelcomeParams{Quiet: true, Plain: true, Mode: "build"})
 	if buf.Len() != 0 {
 		t.Fatalf("expected empty, got %q", buf.String())
 	}

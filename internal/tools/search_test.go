@@ -91,7 +91,7 @@ func TestSearxngSearch_HTTPError(t *testing.T) {
 
 func TestRegisterWebSearch_NilOpts(t *testing.T) {
 	r := NewRegistry()
-	registerWebSearch(r, nil)
+	registerWebSearch(r, nil, nil)
 	for _, n := range r.Names() {
 		if n == "web_search" {
 			t.Fatal("web_search should not be registered with nil opts")
@@ -101,7 +101,7 @@ func TestRegisterWebSearch_NilOpts(t *testing.T) {
 
 func TestRegisterWebSearch_EmptyURL(t *testing.T) {
 	r := NewRegistry()
-	registerWebSearch(r, &SearchOptions{})
+	registerWebSearch(r, &SearchOptions{}, nil)
 	for _, n := range r.Names() {
 		if n == "web_search" {
 			t.Fatal("web_search should not be registered without base URL")
@@ -111,7 +111,7 @@ func TestRegisterWebSearch_EmptyURL(t *testing.T) {
 
 func TestRegisterWebSearch_WithURL(t *testing.T) {
 	r := NewRegistry()
-	registerWebSearch(r, &SearchOptions{BaseURL: "http://localhost:8080"})
+	registerWebSearch(r, &SearchOptions{BaseURL: "http://localhost:8080"}, nil)
 	found := false
 	for _, n := range r.Names() {
 		if n == "web_search" {

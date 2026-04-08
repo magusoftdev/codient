@@ -8,24 +8,8 @@ import (
 	"testing"
 )
 
-func TestLoad_StreamWithToolsEnv(t *testing.T) {
-	t.Setenv("CODIENT_STATE_DIR", t.TempDir())
-	t.Setenv("CODIENT_WORKSPACE", "/w")
-	t.Setenv("CODIENT_STREAM_WITH_TOOLS", "1")
-	c, err := Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !c.StreamWithTools {
-		t.Fatal("expected StreamWithTools when CODIENT_STREAM_WITH_TOOLS=1")
-	}
-}
-
 func TestLoad_Defaults(t *testing.T) {
 	t.Setenv("CODIENT_STATE_DIR", t.TempDir())
-	t.Setenv("AGENT_MAX_TOOL_STEPS", "")
-	t.Setenv("LLM_MAX_CONCURRENT", "")
-	t.Setenv("CODIENT_WORKSPACE", "")
 
 	c, err := Load()
 	if err != nil {
@@ -39,9 +23,6 @@ func TestLoad_Defaults(t *testing.T) {
 	}
 	if c.Model != "" {
 		t.Fatalf("Model should be empty by default: got %q", c.Model)
-	}
-	if c.MaxToolSteps != defaultMaxToolSteps {
-		t.Fatalf("MaxToolSteps: got %d", c.MaxToolSteps)
 	}
 	if c.MaxConcurrent != defaultMaxConcurrent {
 		t.Fatalf("MaxConcurrent: got %d", c.MaxConcurrent)
@@ -67,19 +48,30 @@ func TestLoad_Defaults(t *testing.T) {
 	if c.ExecAllowlist[2] != wantShell {
 		t.Fatalf("default ExecAllowlist shell: got %q want %q", c.ExecAllowlist[2], wantShell)
 	}
+	if !c.FetchPreapproved {
+		t.Fatal("expected FetchPreapproved true by default")
+	}
+	if !c.StreamReply {
+		t.Fatal("expected StreamReply true by default")
+	}
+	if !c.DesignSave {
+		t.Fatal("expected DesignSave true by default")
+	}
+	if c.AutoCompactPct != defaultAutoCompactPct {
+		t.Fatalf("AutoCompactPct: got %d", c.AutoCompactPct)
+	}
 }
 
 func TestLoad_FromConfigFile(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("CODIENT_STATE_DIR", dir)
-	t.Setenv("CODIENT_WORKSPACE", "/w")
-	t.Setenv("AGENT_MAX_TOOL_STEPS", "5")
-	t.Setenv("LLM_MAX_CONCURRENT", "2")
 
 	pc := &PersistentConfig{
-		BaseURL: "http://example.com/v1/",
-		APIKey:  "secret",
-		Model:   "m1",
+		BaseURL:       "http://example.com/v1/",
+		APIKey:        "secret",
+		Model:         "m1",
+		Workspace:     "/w",
+		MaxConcurrent: 2,
 	}
 	if err := SavePersistentConfig(pc); err != nil {
 		t.Fatal(err)
@@ -95,28 +87,21 @@ func TestLoad_FromConfigFile(t *testing.T) {
 	if c.APIKey != "secret" || c.Model != "m1" {
 		t.Fatalf("credentials: %+v", c)
 	}
-	if c.MaxToolSteps != 5 || c.MaxConcurrent != 2 {
-		t.Fatalf("limits: %+v", c)
+	if c.MaxConcurrent != 2 {
+		t.Fatalf("MaxConcurrent: got %d", c.MaxConcurrent)
 	}
 	if c.Workspace != "/w" {
 		t.Fatalf("workspace: got %q", c.Workspace)
 	}
 }
 
-func TestLoad_InvalidMaxToolSteps(t *testing.T) {
-	t.Setenv("CODIENT_STATE_DIR", t.TempDir())
-	t.Setenv("AGENT_MAX_TOOL_STEPS", "0")
-	t.Setenv("LLM_MAX_CONCURRENT", "1")
-	_, err := Load()
-	if err == nil {
-		t.Fatal("expected error")
-	}
-}
-
 func TestLoad_InvalidMaxConcurrent(t *testing.T) {
-	t.Setenv("CODIENT_STATE_DIR", t.TempDir())
-	t.Setenv("AGENT_MAX_TOOL_STEPS", "1")
-	t.Setenv("LLM_MAX_CONCURRENT", "0")
+	dir := t.TempDir()
+	t.Setenv("CODIENT_STATE_DIR", dir)
+	pc := &PersistentConfig{MaxConcurrent: -1}
+	if err := SavePersistentConfig(pc); err != nil {
+		t.Fatal(err)
+	}
 	_, err := Load()
 	if err == nil {
 		t.Fatal("expected error")
@@ -138,8 +123,12 @@ func TestRequireModel(t *testing.T) {
 }
 
 func TestLoad_ExecDisable(t *testing.T) {
-	t.Setenv("CODIENT_STATE_DIR", t.TempDir())
-	t.Setenv("CODIENT_EXEC_DISABLE", "1")
+	dir := t.TempDir()
+	t.Setenv("CODIENT_STATE_DIR", dir)
+	pc := &PersistentConfig{ExecDisable: true}
+	if err := SavePersistentConfig(pc); err != nil {
+		t.Fatal(err)
+	}
 	c, err := Load()
 	if err != nil {
 		t.Fatal(err)
@@ -150,10 +139,16 @@ func TestLoad_ExecDisable(t *testing.T) {
 }
 
 func TestLoad_ExecAllowlist(t *testing.T) {
-	t.Setenv("CODIENT_STATE_DIR", t.TempDir())
-	t.Setenv("CODIENT_EXEC_ALLOWLIST", "go, Git ,GO.exe, git")
-	t.Setenv("CODIENT_EXEC_TIMEOUT_SEC", "45")
-	t.Setenv("CODIENT_EXEC_MAX_OUTPUT_BYTES", "4096")
+	dir := t.TempDir()
+	t.Setenv("CODIENT_STATE_DIR", dir)
+	pc := &PersistentConfig{
+		ExecAllowlist:   "go, Git ,GO.exe, git",
+		ExecTimeoutSec:  45,
+		ExecMaxOutBytes: 4096,
+	}
+	if err := SavePersistentConfig(pc); err != nil {
+		t.Fatal(err)
+	}
 	c, err := Load()
 	if err != nil {
 		t.Fatal(err)
@@ -170,9 +165,15 @@ func TestLoad_ExecAllowlist(t *testing.T) {
 }
 
 func TestLoad_ExecTimeoutClamp(t *testing.T) {
-	t.Setenv("CODIENT_STATE_DIR", t.TempDir())
-	t.Setenv("CODIENT_EXEC_TIMEOUT_SEC", "999999")
-	t.Setenv("CODIENT_EXEC_MAX_OUTPUT_BYTES", "999999999")
+	dir := t.TempDir()
+	t.Setenv("CODIENT_STATE_DIR", dir)
+	pc := &PersistentConfig{
+		ExecTimeoutSec:  999999,
+		ExecMaxOutBytes: 999999999,
+	}
+	if err := SavePersistentConfig(pc); err != nil {
+		t.Fatal(err)
+	}
 	c, err := Load()
 	if err != nil {
 		t.Fatal(err)
@@ -223,13 +224,12 @@ func TestPersistentConfig_SaveAndLoad(t *testing.T) {
 		t.Fatalf("Model: got %q want %q", loaded.Model, pc.Model)
 	}
 
-	// Verify the file on disk is valid JSON.
 	path := filepath.Join(dir, "config.json")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var raw map[string]string
+	var raw map[string]any
 	if err := json.Unmarshal(data, &raw); err != nil {
 		t.Fatalf("config.json not valid JSON: %v", err)
 	}
@@ -249,7 +249,6 @@ func TestPersistentConfig_MissingFile(t *testing.T) {
 
 func TestLoad_SearchDefaults(t *testing.T) {
 	t.Setenv("CODIENT_STATE_DIR", t.TempDir())
-	t.Setenv("CODIENT_WORKSPACE", "/w")
 	c, err := Load()
 	if err != nil {
 		t.Fatal(err)
@@ -262,11 +261,78 @@ func TestLoad_SearchDefaults(t *testing.T) {
 	}
 }
 
-func TestLoad_SearchEnvVars(t *testing.T) {
+func TestLoad_FetchHosts(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CODIENT_STATE_DIR", dir)
+	pc := &PersistentConfig{FetchAllowHosts: "file.example.com, env.example.com"}
+	if err := SavePersistentConfig(pc); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.FetchAllowHosts) != 2 {
+		t.Fatalf("fetch hosts: %#v", c.FetchAllowHosts)
+	}
+}
+
+func TestLoad_FetchPreapprovedDefault(t *testing.T) {
 	t.Setenv("CODIENT_STATE_DIR", t.TempDir())
-	t.Setenv("CODIENT_WORKSPACE", "/w")
-	t.Setenv("CODIENT_SEARCH_URL", "http://localhost:8080")
-	t.Setenv("CODIENT_SEARCH_MAX_RESULTS", "8")
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.FetchPreapproved {
+		t.Fatal("expected FetchPreapproved true by default")
+	}
+}
+
+func TestLoad_FetchPreapprovedDisabled(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CODIENT_STATE_DIR", dir)
+	f := false
+	pc := &PersistentConfig{FetchPreapproved: &f}
+	if err := SavePersistentConfig(pc); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.FetchPreapproved {
+		t.Fatal("expected FetchPreapproved false")
+	}
+}
+
+func TestAppendPersistentFetchHost(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CODIENT_STATE_DIR", dir)
+	if err := AppendPersistentFetchHost("Example.COM"); err != nil {
+		t.Fatal(err)
+	}
+	if err := AppendPersistentFetchHost("example.com"); err != nil {
+		t.Fatal(err)
+	}
+	pc, err := LoadPersistentConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pc.FetchAllowHosts != "example.com" {
+		t.Fatalf("got %q", pc.FetchAllowHosts)
+	}
+}
+
+func TestLoad_SearchFromConfig(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CODIENT_STATE_DIR", dir)
+	pc := &PersistentConfig{
+		SearchBaseURL:    "http://localhost:8080",
+		SearchMaxResults: 8,
+	}
+	if err := SavePersistentConfig(pc); err != nil {
+		t.Fatal(err)
+	}
 	c, err := Load()
 	if err != nil {
 		t.Fatal(err)
@@ -280,9 +346,12 @@ func TestLoad_SearchEnvVars(t *testing.T) {
 }
 
 func TestLoad_SearchMaxResultsClamp(t *testing.T) {
-	t.Setenv("CODIENT_STATE_DIR", t.TempDir())
-	t.Setenv("CODIENT_WORKSPACE", "/w")
-	t.Setenv("CODIENT_SEARCH_MAX_RESULTS", "50")
+	dir := t.TempDir()
+	t.Setenv("CODIENT_STATE_DIR", dir)
+	pc := &PersistentConfig{SearchMaxResults: 50}
+	if err := SavePersistentConfig(pc); err != nil {
+		t.Fatal(err)
+	}
 	c, err := Load()
 	if err != nil {
 		t.Fatal(err)
@@ -295,7 +364,6 @@ func TestLoad_SearchMaxResultsClamp(t *testing.T) {
 func TestPersistentConfig_FeedsIntoLoad(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("CODIENT_STATE_DIR", dir)
-	t.Setenv("CODIENT_WORKSPACE", "/tmp/ws")
 
 	if err := SavePersistentConfig(&PersistentConfig{Model: "persisted-model"}); err != nil {
 		t.Fatal(err)
@@ -309,5 +377,85 @@ func TestPersistentConfig_FeedsIntoLoad(t *testing.T) {
 	}
 	if c.BaseURL != defaultBaseURL {
 		t.Fatalf("BaseURL should default: got %q", c.BaseURL)
+	}
+}
+
+func TestLoad_StreamWithToolsConfig(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CODIENT_STATE_DIR", dir)
+	pc := &PersistentConfig{StreamWithTools: true}
+	if err := SavePersistentConfig(pc); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.StreamWithTools {
+		t.Fatal("expected StreamWithTools true")
+	}
+}
+
+func TestLoad_StreamReplyExplicitFalse(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CODIENT_STATE_DIR", dir)
+	f := false
+	pc := &PersistentConfig{StreamReply: &f}
+	if err := SavePersistentConfig(pc); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.StreamReply {
+		t.Fatal("expected StreamReply false when explicitly set")
+	}
+}
+
+func TestLoad_DesignSaveExplicitFalse(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CODIENT_STATE_DIR", dir)
+	f := false
+	pc := &PersistentConfig{DesignSave: &f}
+	if err := SavePersistentConfig(pc); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.DesignSave {
+		t.Fatal("expected DesignSave false when explicitly set")
+	}
+}
+
+func TestConfigToPersistent_RoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CODIENT_STATE_DIR", dir)
+
+	cfg := &Config{
+		BaseURL:          "http://test/v1",
+		APIKey:           "key",
+		Model:            "m",
+		MaxConcurrent:    5,
+		SearchBaseURL:    "http://search",
+		FetchPreapproved: false,
+		StreamReply:      false,
+		DesignSave:       false,
+	}
+	pc := ConfigToPersistent(cfg)
+	if err := SavePersistentConfig(pc); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.BaseURL != "http://test/v1" || c.Model != "m" || c.MaxConcurrent != 5 {
+		t.Fatalf("round-trip failed: %+v", c)
+	}
+	if c.FetchPreapproved || c.StreamReply || c.DesignSave {
+		t.Fatalf("*bool round-trip failed: fetch=%v stream=%v design=%v", c.FetchPreapproved, c.StreamReply, c.DesignSave)
 	}
 }

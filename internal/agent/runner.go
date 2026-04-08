@@ -96,7 +96,7 @@ func (r *Runner) RunConversation(ctx context.Context, system string, history []o
 	consecutiveToolFails := 0
 	const maxConsecutiveToolFails = 3
 
-	for step := 0; step < r.Cfg.MaxToolSteps; step++ {
+	for {
 		msgs = truncateHistory(msgs, sysOffset, r.Cfg.ContextWindowTokens, r.Cfg.ContextReserveTokens, toolsOverhead)
 		params := openai.ChatCompletionNewParams{
 			Model:    shared.ChatModel(r.LLM.Model()),
@@ -351,8 +351,6 @@ func (r *Runner) RunConversation(ctx context.Context, system string, history []o
 			fmt.Fprintf(r.Progress, "  ⚠ %d consecutive tool failures — requesting text reply\n", consecutiveToolFails)
 		}
 	}
-
-	return "", nil, false, fmt.Errorf("exceeded AGENT_MAX_TOOL_STEPS (%d)", r.Cfg.MaxToolSteps)
 }
 
 type autoCheckInput struct {

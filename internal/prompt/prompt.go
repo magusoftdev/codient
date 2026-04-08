@@ -238,10 +238,15 @@ func sectionPerToolNotes(p Params) string {
 		b.WriteString("- **glob_files**: `pattern` + optional `under`. If pattern contains `/`, match full relative path; else match basenames recursively. Good for `*_test.go`.\n")
 	}
 	if _, ok := set["fetch_url"]; ok {
-		b.WriteString("- **fetch_url**: HTTPS GET only; hosts must appear in `CODIENT_FETCH_ALLOW_HOSTS`. Small UTF-8 text responses only; not for secrets.\n")
+		b.WriteString("- **fetch_url**: HTTPS GET only. A built-in preset covers common documentation domains (off: `CODIENT_FETCH_PREAPPROVED=0`). You can add hosts via `CODIENT_FETCH_ALLOW_HOSTS` and/or `fetch_allow_hosts` in `~/.codient/config.json`. In the interactive REPL you may be prompted for other hosts: once, session, or always (saved). Small UTF-8 text only; not for secrets.\n")
 	}
 	if _, ok := set["web_search"]; ok {
-		b.WriteString("- **web_search**: Search the web for library docs, error messages, or API references. Prefer this over guessing about unfamiliar libraries or APIs. Returns titles, URLs, and snippets. Chain with **fetch_url** to read full page content.\n")
+		b.WriteString("- **web_search**: Search the web for library docs, error messages, or API references. Prefer this over guessing about unfamiliar libraries or APIs. Returns titles, URLs, and snippets.")
+		if _, f := set["fetch_url"]; f {
+			b.WriteString(" You may chain with **fetch_url** (allowlisted hosts) to read full page text.\n")
+		} else {
+			b.WriteString(" **fetch_url** is not enabled—work from snippets and URLs only; do not call fetch_url.\n")
+		}
 	}
 	if _, ok := set["write_file"]; ok {
 		b.WriteString("- **write_file**: `path` relative to workspace; `mode` `create` or `overwrite`. Parent dirs are created. Use for **new files** or full rewrites.\n")

@@ -31,25 +31,3 @@ func TestParseMode(t *testing.T) {
 		t.Fatal("expected error")
 	}
 }
-
-func TestResolveMode_FlagOverridesEnv(t *testing.T) {
-	t.Setenv("CODIENT_MODE", "ask")
-	got, err := ResolveMode("plan")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got != ModePlan {
-		t.Fatalf("got %q", got)
-	}
-}
-
-func TestResolveMode_FromEnv(t *testing.T) {
-	t.Setenv("CODIENT_MODE", "ask")
-	got, err := ResolveMode("")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got != ModeAsk {
-		t.Fatalf("got %q", got)
-	}
-}

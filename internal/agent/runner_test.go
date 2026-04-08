@@ -108,7 +108,7 @@ func TestRunner_WithStreamWriterUsesChatCompletionWhenToolsPresent(t *testing.T)
 	llm := &assertStreamUnusedLLM{t: t, model: "m", script: []string{toolRound, final}}
 	reg := tools.NewRegistry()
 	reg.Register(mustEchoTool(t))
-	cfg := &config.Config{MaxToolSteps: 5, StreamWithTools: false}
+	cfg := &config.Config{StreamWithTools: false}
 	r := &Runner{LLM: llm, Cfg: cfg, Tools: reg}
 	out, _, err := r.Run(context.Background(), "", "call echo", io.Discard)
 	if err != nil {
@@ -139,7 +139,7 @@ func TestRunner_DirectReply(t *testing.T) {
 }`
 	llm := &mockLLM{model: "m", script: []string{js}}
 	reg := tools.NewRegistry()
-	cfg := &config.Config{MaxToolSteps: 5}
+	cfg := &config.Config{}
 	r := &Runner{LLM: llm, Cfg: cfg, Tools: reg}
 	out, _, err := r.Run(context.Background(), "", "hi", nil)
 	if err != nil {
@@ -190,7 +190,7 @@ func TestRunner_ToolThenReply(t *testing.T) {
 	llm := &mockLLM{model: "m", script: []string{toolRound, final}}
 	reg := tools.NewRegistry()
 	reg.Register(mustEchoTool(t))
-	cfg := &config.Config{MaxToolSteps: 5}
+	cfg := &config.Config{}
 	r := &Runner{LLM: llm, Cfg: cfg, Tools: reg}
 	out, _, err := r.Run(context.Background(), "", "call echo", nil)
 	if err != nil {
@@ -244,7 +244,7 @@ func TestRunner_ToolErrorSurfaced(t *testing.T) {
 	llm := &mockLLM{model: "m", script: []string{toolRound, final}}
 	reg := tools.NewRegistry()
 	reg.Register(mustEchoTool(t))
-	cfg := &config.Config{MaxToolSteps: 5}
+	cfg := &config.Config{}
 	r := &Runner{LLM: llm, Cfg: cfg, Tools: reg}
 	out, _, err := r.Run(context.Background(), "", "x", nil)
 	if err != nil {
@@ -258,40 +258,9 @@ func TestRunner_ToolErrorSurfaced(t *testing.T) {
 func TestRunner_EmptyChoices(t *testing.T) {
 	js := `{"id":"x","object":"chat.completion","created":1,"model":"m","choices":[]}`
 	llm := &mockLLM{model: "m", script: []string{js}}
-	r := &Runner{LLM: llm, Cfg: &config.Config{MaxToolSteps: 3}, Tools: tools.NewRegistry()}
+	r := &Runner{LLM: llm, Cfg: &config.Config{}, Tools: tools.NewRegistry()}
 	_, _, err := r.Run(context.Background(), "", "hi", nil)
 	if err == nil || !strings.Contains(err.Error(), "empty choices") {
-		t.Fatalf("err=%v", err)
-	}
-}
-
-func TestRunner_MaxToolSteps(t *testing.T) {
-	toolRound := `{
-  "id": "x",
-  "object": "chat.completion",
-  "created": 1,
-  "model": "m",
-  "choices": [{
-    "index": 0,
-    "message": {
-      "role": "assistant",
-      "content": "",
-      "tool_calls": [{
-        "id": "call_1",
-        "type": "function",
-        "function": {"name": "echo", "arguments": "{\"message\":\"x\"}"}
-      }]
-    },
-    "finish_reason": "tool_calls"
-  }]
-}`
-	llm := &mockLLM{model: "m", script: []string{toolRound, toolRound, toolRound}}
-	reg := tools.NewRegistry()
-	reg.Register(mustEchoTool(t))
-	cfg := &config.Config{MaxToolSteps: 2}
-	r := &Runner{LLM: llm, Cfg: cfg, Tools: reg}
-	_, _, err := r.Run(context.Background(), "", "loop", nil)
-	if err == nil || !strings.Contains(err.Error(), "AGENT_MAX_TOOL_STEPS") {
 		t.Fatalf("err=%v", err)
 	}
 }
@@ -309,7 +278,7 @@ func TestRunner_SystemPrompt(t *testing.T) {
   }]
 }`
 	llm := &mockLLM{model: "m", script: []string{js}}
-	r := &Runner{LLM: llm, Cfg: &config.Config{MaxToolSteps: 3}, Tools: tools.NewRegistry()}
+	r := &Runner{LLM: llm, Cfg: &config.Config{}, Tools: tools.NewRegistry()}
 	_, _, err := r.Run(context.Background(), "sys", "user", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -445,7 +414,7 @@ func TestRunner_AutoCheckInjectsOnFailure(t *testing.T) {
 	llm := &captureLLM{model: "m", script: []string{toolRound, final}}
 	reg := tools.NewRegistry()
 	reg.Register(mustWriteFileTool(t))
-	cfg := &config.Config{MaxToolSteps: 5}
+	cfg := &config.Config{}
 	r := &Runner{
 		LLM: llm, Cfg: cfg, Tools: reg,
 		AutoCheck: func(context.Context) AutoCheckOutcome {
@@ -504,7 +473,7 @@ func TestRunner_AutoCheckSilentOnSuccess(t *testing.T) {
 	llm := &captureLLM{model: "m", script: []string{toolRound, final}}
 	reg := tools.NewRegistry()
 	reg.Register(mustWriteFileTool(t))
-	cfg := &config.Config{MaxToolSteps: 5}
+	cfg := &config.Config{}
 	r := &Runner{
 		LLM: llm, Cfg: cfg, Tools: reg,
 		AutoCheck: func(context.Context) AutoCheckOutcome {
@@ -563,7 +532,7 @@ func TestRunner_AutoCheckSkipsReadOnly(t *testing.T) {
 	llm := &captureLLM{model: "m", script: []string{toolRound, final}}
 	reg := tools.NewRegistry()
 	reg.Register(mustReadFileTool(t))
-	cfg := &config.Config{MaxToolSteps: 5}
+	cfg := &config.Config{}
 	var runs int
 	r := &Runner{
 		LLM: llm, Cfg: cfg, Tools: reg,

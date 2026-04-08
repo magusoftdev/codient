@@ -25,7 +25,6 @@ func testConfig(baseURL, model string) *config.Config {
 		APIKey:        "test-key",
 		Model:         model,
 		MaxConcurrent: 3,
-		MaxToolSteps:  8,
 	}
 }
 

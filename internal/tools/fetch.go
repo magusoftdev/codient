@@ -27,10 +27,20 @@ type FetchOptions struct {
 	AllowHosts  []string // Lowercase hostnames; subdomains match (e.g. api.example.com matches example.com).
 	MaxBytes    int      // Response body cap (default 1MiB, max 10MiB).
 	TimeoutSec  int      // Per-request timeout (default 30s).
+	Session     *SessionFetchAllow
+	// PromptUnknownHost is called when the URL host is not in AllowHosts or Session. If nil, unknown hosts are rejected.
+	PromptUnknownHost func(ctx context.Context, host, pageURL string) FetchHostChoice
+	// PersistFetchHost saves host to persistent config when the user chooses FetchHostAllowAlways. Optional.
+	PersistFetchHost func(host string) error
+	// IncludePreapproved merges a built-in documentation/code-domain allowlist (plus path rules). Default on; set CODIENT_FETCH_PREAPPROVED=0 to disable.
+	IncludePreapproved bool
 }
 
 func registerFetchURL(r *Registry, opts *FetchOptions) {
-	if opts == nil || len(opts.AllowHosts) == 0 {
+	if opts == nil {
+		return
+	}
+	if len(opts.AllowHosts) == 0 && opts.PromptUnknownHost == nil && !opts.IncludePreapproved {
 		return
 	}
 	maxB := opts.MaxBytes
@@ -44,15 +54,21 @@ func registerFetchURL(r *Registry, opts *FetchOptions) {
 	if timeout < time.Second {
 		timeout = defaultFetchTimeoutSec * time.Second
 	}
-	allow := append([]string(nil), opts.AllowHosts...)
+	baseAllow := append([]string(nil), opts.AllowHosts...)
+	sess := opts.Session
+	prompt := opts.PromptUnknownHost
+	persist := opts.PersistFetchHost
+	includePre := opts.IncludePreapproved
 
 	r.Register(Tool{
 		Name: "fetch_url",
 		Description: "HTTPS GET of a URL (text response only). " +
-			"Host must be allowlisted via CODIENT_FETCH_ALLOW_HOSTS (comma-separated). " +
-			"Redirects are followed only if each hop stays on an allowlisted host and uses HTTPS. " +
+			"A built-in allowlist covers common language and framework documentation hosts (disable with CODIENT_FETCH_PREAPPROVED=0). " +
+			"Additional hosts: CODIENT_FETCH_ALLOW_HOSTS or ~/.codient/config.json (fetch_allow_hosts). " +
+			"In interactive sessions, other hosts may be approved once, for the session, or always (saved). " +
+			"Redirects must stay on HTTPS and on an allowed host/path. " +
 			"Response body is capped by max_bytes (default 1MiB). " +
-			"Use for public documentation or stable APIs—never for secrets or internal networks.",
+			"Use for public documentation—never for secrets or internal networks.",
 		Parameters: shared.FunctionParameters{
 			"type": "object",
 			"properties": map[string]any{
@@ -83,12 +99,82 @@ func registerFetchURL(r *Registry, opts *FetchOptions) {
 					limit = maxFetchMaxBytes
 				}
 			}
-			return fetchURL(ctx, p.URL, allow, limit, timeout)
+			raw := strings.TrimSpace(p.URL)
+			u, err := url.Parse(raw)
+			if err != nil || u.Host == "" {
+				return "", fmt.Errorf("invalid URL")
+			}
+			if u.Scheme != "https" {
+				return "", fmt.Errorf("only https URLs are allowed")
+			}
+			host := u.Hostname()
+			if host == "" {
+				return "", fmt.Errorf("missing host")
+			}
+			if ip := net.ParseIP(host); ip != nil && isDisallowedFetchIP(ip) {
+				return "", fmt.Errorf("refusing to fetch disallowed IP %q", host)
+			}
+
+			reqPath := urlPathForFetch(u)
+			allowOnce := make(map[string]struct{})
+			allowed := func(h, p string) bool {
+				if includePre && PreapprovedFetchAllows(h, p) {
+					return true
+				}
+				if hostAllowedFetch(h, baseAllow) {
+					return true
+				}
+				if sess != nil && sess.IsAllowed(h) {
+					return true
+				}
+				if _, ok := allowOnce[normalizeFetchHostKey(h)]; ok {
+					return true
+				}
+				return false
+			}
+
+			if !allowed(host, reqPath) {
+				if prompt == nil {
+					return "", fmt.Errorf("host %q is not allowlisted (set CODIENT_FETCH_ALLOW_HOSTS)", host)
+				}
+				switch prompt(ctx, host, raw) {
+				case FetchHostDeny:
+					return "", fmt.Errorf("fetch denied for host %q", host)
+				case FetchHostAllowOnce:
+					allowOnce[normalizeFetchHostKey(host)] = struct{}{}
+				case FetchHostAllowSession:
+					if sess != nil {
+						sess.Add(host)
+					}
+				case FetchHostAllowAlways:
+					if sess != nil {
+						sess.Add(host)
+					}
+					if persist != nil {
+						_ = persist(host)
+					}
+				default:
+					return "", fmt.Errorf("fetch denied for host %q", host)
+				}
+			}
+
+			return fetchURL(ctx, raw, allowed, limit, timeout)
 		},
 	})
 }
 
-func fetchURL(ctx context.Context, raw string, allowHosts []string, maxBytes int, timeout time.Duration) (string, error) {
+func urlPathForFetch(u *url.URL) string {
+	if u == nil {
+		return "/"
+	}
+	p := u.Path
+	if p == "" {
+		return "/"
+	}
+	return p
+}
+
+func fetchURL(ctx context.Context, raw string, allowHostPath func(host, path string) bool, maxBytes int, timeout time.Duration) (string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return "", fmt.Errorf("url is required")
@@ -104,8 +190,11 @@ func fetchURL(ctx context.Context, raw string, allowHosts []string, maxBytes int
 	if host == "" {
 		return "", fmt.Errorf("missing host")
 	}
-	if !hostAllowedFetch(host, allowHosts) {
-		return "", fmt.Errorf("host %q is not allowlisted (set CODIENT_FETCH_ALLOW_HOSTS)", host)
+	if ip := net.ParseIP(host); ip != nil && isDisallowedFetchIP(ip) {
+		return "", fmt.Errorf("refusing to fetch disallowed IP %q", host)
+	}
+	if !allowHostPath(host, urlPathForFetch(u)) {
+		return "", fmt.Errorf("host %q is not allowlisted", host)
 	}
 	if timeout <= 0 {
 		timeout = defaultFetchTimeoutSec * time.Second
@@ -121,7 +210,10 @@ func fetchURL(ctx context.Context, raw string, allowHosts []string, maxBytes int
 				return fmt.Errorf("redirect to non-https URL forbidden")
 			}
 			h := req.URL.Hostname()
-			if !hostAllowedFetch(h, allowHosts) {
+			if ip := net.ParseIP(h); ip != nil && isDisallowedFetchIP(ip) {
+				return fmt.Errorf("redirect to disallowed IP %q", h)
+			}
+			if !allowHostPath(h, urlPathForFetch(req.URL)) {
 				return fmt.Errorf("redirect to non-allowlisted host %q", h)
 			}
 			return nil
@@ -161,6 +253,11 @@ func fetchURL(ctx context.Context, raw string, allowHosts []string, maxBytes int
 	out.WriteString("\n")
 	out.WriteString(s)
 	return out.String(), nil
+}
+
+// HostAllowedFetch reports whether host matches allowlist entries (suffix rules; disallowed IPs never match).
+func HostAllowedFetch(host string, allowed []string) bool {
+	return hostAllowedFetch(host, allowed)
 }
 
 func hostAllowedFetch(host string, allowed []string) bool {

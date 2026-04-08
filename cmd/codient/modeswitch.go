@@ -35,7 +35,7 @@ func (s *session) switchMode(newMode prompt.Mode) {
 	}
 
 	fmt.Fprintf(os.Stderr, "codient: switched to %s mode\n", newMode)
-	fmt.Fprintf(os.Stderr, "%s\n", assistout.ModeHint(stderrPromptPlain(false), string(newMode)))
+	fmt.Fprintf(os.Stderr, "%s\n", assistout.ModeHint(s.cfg.Plain, string(newMode)))
 }
 
 // filterHistoryForModeSwitch keeps user and assistant text messages, dropping tool

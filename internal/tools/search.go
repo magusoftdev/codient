@@ -27,9 +27,19 @@ type SearchOptions struct {
 	TimeoutSec int    // Per-request timeout (default 30s).
 }
 
-func registerWebSearch(r *Registry, opts *SearchOptions) {
+func registerWebSearch(r *Registry, opts *SearchOptions, fetch *FetchOptions) {
 	if opts == nil || strings.TrimSpace(opts.BaseURL) == "" {
 		return
+	}
+
+	fetchEnabled := fetch != nil && (len(fetch.AllowHosts) > 0 || fetch.PromptUnknownHost != nil || fetch.IncludePreapproved)
+	desc := "Search the web for documentation, error messages, API references, or library usage. " +
+		"Backed by SearXNG. Returns a numbered list of results with title, URL, and snippet. " +
+		"Prefer this over guessing about unfamiliar libraries or APIs."
+	if fetchEnabled {
+		desc += " You may chain with fetch_url (allowlisted hosts only) to read full page text from a result URL."
+	} else {
+		desc += " Summarize from snippets and links; fetch_url is not enabled in this session—do not call it."
 	}
 
 	maxN := opts.MaxResults
@@ -46,11 +56,8 @@ func registerWebSearch(r *Registry, opts *SearchOptions) {
 	baseURL := strings.TrimRight(strings.TrimSpace(opts.BaseURL), "/")
 
 	r.Register(Tool{
-		Name: "web_search",
-		Description: "Search the web for documentation, error messages, API references, or library usage. " +
-			"Backed by SearXNG. Returns a numbered list of results with title, URL, and snippet. " +
-			"Chain with fetch_url to read full page content from a result URL. " +
-			"Prefer this over guessing about unfamiliar libraries or APIs.",
+		Name:        "web_search",
+		Description: desc,
 		Parameters: shared.FunctionParameters{
 			"type": "object",
 			"properties": map[string]any{
@@ -81,7 +88,8 @@ func registerWebSearch(r *Registry, opts *SearchOptions) {
 					n = maxSearchResults
 				}
 			}
-			return searxngSearch(ctx, baseURL, p.Query, n, timeout)
+			q := strings.TrimSpace(p.Query)
+			return searxngSearch(ctx, baseURL, q, n, timeout)
 		},
 	})
 }

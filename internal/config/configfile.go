@@ -8,12 +8,68 @@ import (
 	"strings"
 )
 
-// PersistentConfig holds the core connection settings saved to ~/.codient/config.json.
+// PersistentConfig holds all user-configurable settings saved to ~/.codient/config.json.
 type PersistentConfig struct {
-	BaseURL       string `json:"base_url,omitempty"`
-	APIKey        string `json:"api_key,omitempty"`
-	Model         string `json:"model,omitempty"`
-	SearchBaseURL string `json:"search_url,omitempty"`
+	// Connection
+	BaseURL string `json:"base_url,omitempty"`
+	APIKey  string `json:"api_key,omitempty"`
+	Model   string `json:"model,omitempty"`
+
+	// Default mode
+	Mode string `json:"mode,omitempty"` // build|ask|plan
+
+	// Workspace
+	Workspace string `json:"workspace,omitempty"`
+
+	// Agent limits
+	MaxConcurrent int `json:"max_concurrent,omitempty"`
+
+	// Exec
+	ExecAllowlist   string `json:"exec_allowlist,omitempty"`
+	ExecDisable     bool   `json:"exec_disable,omitempty"`
+	ExecTimeoutSec  int    `json:"exec_timeout_sec,omitempty"`
+	ExecMaxOutBytes int    `json:"exec_max_output_bytes,omitempty"`
+
+	// Context
+	ContextWindow  int `json:"context_window,omitempty"`
+	ContextReserve int `json:"context_reserve,omitempty"`
+
+	// LLM
+	MaxLLMRetries   int  `json:"max_llm_retries,omitempty"`
+	StreamWithTools bool `json:"stream_with_tools,omitempty"`
+
+	// Fetch
+	FetchAllowHosts  string `json:"fetch_allow_hosts,omitempty"`
+	FetchPreapproved *bool  `json:"fetch_preapproved,omitempty"`
+	FetchMaxBytes    int    `json:"fetch_max_bytes,omitempty"`
+	FetchTimeoutSec  int    `json:"fetch_timeout_sec,omitempty"`
+
+	// Search
+	SearchBaseURL    string `json:"search_url,omitempty"`
+	SearchMaxResults int    `json:"search_max_results,omitempty"`
+
+	// Auto
+	AutoCompactPct int    `json:"autocompact_threshold,omitempty"`
+	AutoCheckCmd   string `json:"autocheck_cmd,omitempty"`
+
+	// UI/Output
+	Plain   bool `json:"plain,omitempty"`
+	Quiet   bool `json:"quiet,omitempty"`
+	Verbose bool `json:"verbose,omitempty"`
+
+	// Logging
+	LogPath string `json:"log,omitempty"`
+
+	// Streaming
+	StreamReply *bool `json:"stream_reply,omitempty"`
+	Progress    bool  `json:"progress,omitempty"`
+
+	// Plan save
+	DesignSaveDir string `json:"design_save_dir,omitempty"`
+	DesignSave    *bool  `json:"design_save,omitempty"`
+
+	// Project
+	ProjectContext string `json:"project_context,omitempty"`
 }
 
 func stateDir() (string, error) {
@@ -79,4 +135,71 @@ func SavePersistentConfig(pc *PersistentConfig) error {
 		return err
 	}
 	return os.Rename(tmp, path)
+}
+
+// ConfigToPersistent builds a PersistentConfig from the runtime Config for saving.
+func ConfigToPersistent(cfg *Config) *PersistentConfig {
+	pc := &PersistentConfig{
+		BaseURL:          cfg.BaseURL,
+		APIKey:           cfg.APIKey,
+		Model:            cfg.Model,
+		Mode:             cfg.Mode,
+		Workspace:        cfg.Workspace,
+		MaxConcurrent:    cfg.MaxConcurrent,
+		ExecAllowlist:    strings.Join(cfg.ExecAllowlist, ","),
+		ExecTimeoutSec:   cfg.ExecTimeoutSeconds,
+		ExecMaxOutBytes:  cfg.ExecMaxOutputBytes,
+		ContextWindow:    cfg.ContextWindowTokens,
+		ContextReserve:   cfg.ContextReserveTokens,
+		MaxLLMRetries:    cfg.MaxLLMRetries,
+		StreamWithTools:  cfg.StreamWithTools,
+		FetchAllowHosts:  strings.Join(cfg.FetchAllowHosts, ","),
+		FetchMaxBytes:    cfg.FetchMaxBytes,
+		FetchTimeoutSec:  cfg.FetchTimeoutSec,
+		SearchBaseURL:    cfg.SearchBaseURL,
+		SearchMaxResults: cfg.SearchMaxResults,
+		AutoCompactPct:   cfg.AutoCompactPct,
+		AutoCheckCmd:     cfg.AutoCheckCmd,
+		Plain:            cfg.Plain,
+		Quiet:            cfg.Quiet,
+		Verbose:          cfg.Verbose,
+		LogPath:          cfg.LogPath,
+		Progress:         cfg.Progress,
+		DesignSaveDir:    cfg.DesignSaveDir,
+		ProjectContext:   cfg.ProjectContext,
+	}
+	if !cfg.FetchPreapproved {
+		f := false
+		pc.FetchPreapproved = &f
+	}
+	if !cfg.StreamReply {
+		f := false
+		pc.StreamReply = &f
+	}
+	if !cfg.DesignSave {
+		f := false
+		pc.DesignSave = &f
+	}
+	return pc
+}
+
+// AppendPersistentFetchHost adds host to fetch_allow_hosts in ~/.codient/config.json if not already present.
+func AppendPersistentFetchHost(host string) error {
+	host = strings.ToLower(strings.TrimSpace(host))
+	if host == "" {
+		return fmt.Errorf("empty host")
+	}
+	pc, err := LoadPersistentConfig()
+	if err != nil {
+		return err
+	}
+	cur := parseFetchAllowHosts(pc.FetchAllowHosts)
+	for _, h := range cur {
+		if h == host {
+			return nil
+		}
+	}
+	cur = append(cur, host)
+	pc.FetchAllowHosts = strings.Join(cur, ",")
+	return SavePersistentConfig(pc)
 }

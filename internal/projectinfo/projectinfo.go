@@ -17,12 +17,9 @@ const (
 )
 
 // Detect scans workspaceRoot for marker files and returns a short multi-line
-// summary of the project's stack. Returns "" if the workspace is empty, no
-// markers are found, or CODIENT_PROJECT_CONTEXT=off.
+// summary of the project's stack. Returns "" if the workspace is empty or no
+// markers are found.
 func Detect(workspaceRoot string) string {
-	if strings.EqualFold(strings.TrimSpace(os.Getenv("CODIENT_PROJECT_CONTEXT")), "off") {
-		return ""
-	}
 	root := strings.TrimSpace(workspaceRoot)
 	if root == "" {
 		return ""

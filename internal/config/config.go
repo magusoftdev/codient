@@ -1,4 +1,4 @@
-// Package config loads settings from a persistent config file and the environment.
+// Package config loads settings from a persistent config file (~/.codient/config.json).
 package config
 
 import (
@@ -6,28 +6,26 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 )
 
 const (
-	defaultBaseURL            = "http://127.0.0.1:1234/v1"
-	defaultAPIKey             = "codient"
-	defaultMaxToolSteps       = 1000
-	defaultMaxConcurrent      = 3
-	defaultExecTimeoutSec     = 120
-	defaultExecMaxOutBytes    = 256 * 1024
-	maxExecTimeoutSec         = 3600
-	maxExecMaxOutputBytes     = 10 * 1024 * 1024
-	defaultContextReserve     = 4096
-	defaultMaxLLMRetries        = 2
-	defaultFetchMaxBytes        = 1024 * 1024
-	maxFetchMaxBytes            = 10 * 1024 * 1024
-	defaultFetchTimeoutSec      = 30
-	maxFetchTimeoutSec          = 300
-	defaultAutoCompactPct       = 75
-	defaultSearchMaxResults     = 5
-	maxSearchMaxResults         = 10
+	defaultBaseURL          = "http://127.0.0.1:1234/v1"
+	defaultAPIKey           = "codient"
+	defaultMaxConcurrent    = 3
+	defaultExecTimeoutSec   = 120
+	defaultExecMaxOutBytes  = 256 * 1024
+	maxExecTimeoutSec       = 3600
+	maxExecMaxOutputBytes   = 10 * 1024 * 1024
+	defaultContextReserve   = 4096
+	defaultMaxLLMRetries    = 2
+	defaultFetchMaxBytes    = 1024 * 1024
+	maxFetchMaxBytes        = 10 * 1024 * 1024
+	defaultFetchTimeoutSec  = 30
+	maxFetchTimeoutSec      = 300
+	defaultAutoCompactPct   = 75
+	defaultSearchMaxResults = 5
+	maxSearchMaxResults     = 10
 )
 
 // Config holds runtime settings.
@@ -35,12 +33,11 @@ type Config struct {
 	BaseURL       string
 	APIKey        string
 	Model         string
-	MaxToolSteps  int
 	MaxConcurrent int
 	// Workspace is the root directory for coding tools (read_file, list_dir, search_files, write_file).
 	Workspace string
 	// ExecAllowlist is a list of lowercase command names (first argv) permitted for run_command and run_shell.
-	// When CODIENT_EXEC_ALLOWLIST is unset, defaults to go, git, and the platform shell (cmd or sh); set CODIENT_EXEC_DISABLE=1 to disable.
+	// When unset, defaults to go, git, and the platform shell (cmd or sh); set exec_disable to disable.
 	ExecAllowlist []string
 	// ExecTimeoutSeconds caps each run_command (default 120, max 3600).
 	ExecTimeoutSeconds int
@@ -52,34 +49,57 @@ type Config struct {
 	ContextReserveTokens int
 	// MaxLLMRetries is the number of retries for transient LLM errors (default 2).
 	MaxLLMRetries int
-	// StreamWithTools enables SSE token streaming for chat requests that include tools (CODIENT_STREAM_WITH_TOOLS=1).
+	// StreamWithTools enables SSE token streaming for chat requests that include tools.
 	// Default false: many local OpenAI-compatible servers omit or mishandle tool_calls in streamed responses.
 	StreamWithTools bool
-	// FetchAllowHosts lists hostnames allowed for fetch_url (comma-separated CODIENT_FETCH_ALLOW_HOSTS).
-	// Subdomains match (e.g. api.example.com when example.com is listed). Empty means fetch_url is not registered.
+	// FetchAllowHosts lists hostnames allowed for fetch_url from ~/.codient/config.json.
+	// Subdomains match. Empty base list still allows fetch_url in interactive REPL when the
+	// user can approve unknown hosts, and/or via FetchPreapproved.
 	FetchAllowHosts []string
+	// FetchPreapproved enables the built-in documentation/code-domain host preset (default true).
+	FetchPreapproved bool
 	// FetchMaxBytes caps fetch_url response bodies (default 1MiB, max 10MiB).
 	FetchMaxBytes int
 	// FetchTimeoutSec caps each fetch_url request (default 30, max 300).
 	FetchTimeoutSec int
-	// SearchBaseURL is the SearXNG base URL for the web_search tool (CODIENT_SEARCH_URL, e.g. "http://localhost:8080").
-	// Empty means web_search is not registered. Also persisted via /setup in ~/.codient/config.json.
+	// SearchBaseURL is the SearXNG base URL for the web_search tool (e.g. "http://localhost:8080").
+	// Empty means web_search is not registered.
 	SearchBaseURL string
-	// SearchMaxResults caps results per web_search query (default 5, max 10; CODIENT_SEARCH_MAX_RESULTS).
+	// SearchMaxResults caps results per web_search query (default 5, max 10).
 	SearchMaxResults int
 	// AutoCompactPct is the context usage percentage (0-100) that triggers automatic
 	// compaction (LLM-summarize) between turns. 0 disables. Default 75.
-	// Set via CODIENT_AUTOCOMPACT_THRESHOLD.
 	AutoCompactPct int
-	// AutoCheckCmd is the shell command to run after file-editing tools (CODIENT_AUTOCHECK_CMD).
+	// AutoCheckCmd is the shell command to run after file-editing tools.
 	// Empty triggers auto-detection from workspace markers (go.mod, package.json, etc.).
 	// Set to "off" to disable.
 	AutoCheckCmd string
+
+	// Mode is the default mode from config (build|ask|plan). Applied in main before CLI flag override.
+	Mode string
+	// Plain disables markdown/ANSI output.
+	Plain bool
+	// Quiet suppresses the welcome banner.
+	Quiet bool
+	// Verbose enables extra diagnostics.
+	Verbose bool
+	// LogPath is the default JSONL log path (overridden by -log flag).
+	LogPath string
+	// StreamReply controls assistant token streaming (nil pointer in PersistentConfig = default true).
+	StreamReply bool
+	// Progress forces progress output on stderr.
+	Progress bool
+	// DesignSaveDir overrides the directory for saved implementation designs.
+	DesignSaveDir string
+	// DesignSave controls whether plan-mode designs are saved to disk (default true).
+	DesignSave bool
+	// ProjectContext opt-out: "off" to disable auto-detected project hints.
+	ProjectContext string
 }
 
-// Load reads configuration from the persistent config file and environment.
-// Core connection settings (base URL, API key, model) come from ~/.codient/config.json.
-// Operational settings come from environment variables.
+// Load reads configuration from the persistent config file.
+// All settings come from ~/.codient/config.json with built-in defaults.
+// CLI flags override config values (handled by the caller via flag.Visit).
 func Load() (*Config, error) {
 	pc, err := LoadPersistentConfig()
 	if err != nil {
@@ -96,7 +116,7 @@ func Load() (*Config, error) {
 	}
 	model := strings.TrimSpace(pc.Model)
 
-	ws := strings.TrimSpace(os.Getenv("CODIENT_WORKSPACE"))
+	ws := strings.TrimSpace(pc.Workspace)
 	if ws == "" {
 		if wd, err := os.Getwd(); err == nil {
 			if abs, err := filepath.Abs(wd); err == nil {
@@ -107,44 +127,102 @@ func Load() (*Config, error) {
 		}
 	}
 
-	execAllowlist := parseExecAllowlist(os.Getenv("CODIENT_EXEC_ALLOWLIST"))
-	if strings.TrimSpace(os.Getenv("CODIENT_EXEC_DISABLE")) == "1" {
+	execAllowlist := parseExecAllowlist(pc.ExecAllowlist)
+	if pc.ExecDisable {
 		execAllowlist = nil
 	} else if len(execAllowlist) == 0 {
 		execAllowlist = defaultExecAllowlist()
 	}
 
-	fetchHosts := parseFetchAllowHosts(os.Getenv("CODIENT_FETCH_ALLOW_HOSTS"))
-	fetchMax := getenvInt("CODIENT_FETCH_MAX_BYTES", defaultFetchMaxBytes)
-	fetchTimeout := getenvInt("CODIENT_FETCH_TIMEOUT_SEC", defaultFetchTimeoutSec)
-
-	searchBaseURL := strings.TrimSpace(os.Getenv("CODIENT_SEARCH_URL"))
-	if searchBaseURL == "" {
-		searchBaseURL = strings.TrimSpace(pc.SearchBaseURL)
+	fetchHosts := parseFetchAllowHosts(pc.FetchAllowHosts)
+	fetchPreapproved := true
+	if pc.FetchPreapproved != nil {
+		fetchPreapproved = *pc.FetchPreapproved
 	}
-	searchMaxResults := getenvInt("CODIENT_SEARCH_MAX_RESULTS", defaultSearchMaxResults)
+
+	maxConcurrent := pc.MaxConcurrent
+	if maxConcurrent == 0 {
+		maxConcurrent = defaultMaxConcurrent
+	}
+
+	execTimeout := pc.ExecTimeoutSec
+	if execTimeout == 0 {
+		execTimeout = defaultExecTimeoutSec
+	}
+	execMaxOut := pc.ExecMaxOutBytes
+	if execMaxOut == 0 {
+		execMaxOut = defaultExecMaxOutBytes
+	}
+
+	contextReserve := pc.ContextReserve
+	if contextReserve == 0 {
+		contextReserve = defaultContextReserve
+	}
+
+	maxLLMRetries := pc.MaxLLMRetries
+	if maxLLMRetries == 0 {
+		maxLLMRetries = defaultMaxLLMRetries
+	}
+
+	fetchMax := pc.FetchMaxBytes
+	if fetchMax == 0 {
+		fetchMax = defaultFetchMaxBytes
+	}
+	fetchTimeout := pc.FetchTimeoutSec
+	if fetchTimeout == 0 {
+		fetchTimeout = defaultFetchTimeoutSec
+	}
+
+	searchMaxResults := pc.SearchMaxResults
+	if searchMaxResults == 0 {
+		searchMaxResults = defaultSearchMaxResults
+	}
+
+	autoCompactPct := pc.AutoCompactPct
+	if autoCompactPct == 0 && pc.AutoCompactPct == 0 {
+		autoCompactPct = defaultAutoCompactPct
+	}
+
+	streamReply := true
+	if pc.StreamReply != nil {
+		streamReply = *pc.StreamReply
+	}
+	designSave := true
+	if pc.DesignSave != nil {
+		designSave = *pc.DesignSave
+	}
 
 	c := &Config{
-		BaseURL:            baseURL,
-		APIKey:             apiKey,
-		Model:              model,
-		MaxToolSteps:       getenvInt("AGENT_MAX_TOOL_STEPS", defaultMaxToolSteps),
-		MaxConcurrent:      getenvInt("LLM_MAX_CONCURRENT", defaultMaxConcurrent),
-		Workspace:          ws,
-		ExecAllowlist:      execAllowlist,
-		ExecTimeoutSeconds:  getenvInt("CODIENT_EXEC_TIMEOUT_SEC", defaultExecTimeoutSec),
-		ExecMaxOutputBytes:  getenvInt("CODIENT_EXEC_MAX_OUTPUT_BYTES", defaultExecMaxOutBytes),
-		ContextWindowTokens: getenvInt("CODIENT_CONTEXT_WINDOW", 0),
-		ContextReserveTokens: getenvInt("CODIENT_CONTEXT_RESERVE", defaultContextReserve),
-		MaxLLMRetries:       getenvInt("CODIENT_LLM_RETRIES", defaultMaxLLMRetries),
-		StreamWithTools:     strings.TrimSpace(os.Getenv("CODIENT_STREAM_WITH_TOOLS")) == "1",
-		FetchAllowHosts:     fetchHosts,
-		FetchMaxBytes:       fetchMax,
-		FetchTimeoutSec:     fetchTimeout,
-		SearchBaseURL:       searchBaseURL,
-		SearchMaxResults:    searchMaxResults,
-		AutoCompactPct:      getenvInt("CODIENT_AUTOCOMPACT_THRESHOLD", defaultAutoCompactPct),
-		AutoCheckCmd:        strings.TrimSpace(os.Getenv("CODIENT_AUTOCHECK_CMD")),
+		BaseURL:              baseURL,
+		APIKey:               apiKey,
+		Model:                model,
+		MaxConcurrent:        maxConcurrent,
+		Workspace:            ws,
+		ExecAllowlist:        execAllowlist,
+		ExecTimeoutSeconds:   execTimeout,
+		ExecMaxOutputBytes:   execMaxOut,
+		ContextWindowTokens:  pc.ContextWindow,
+		ContextReserveTokens: contextReserve,
+		MaxLLMRetries:        maxLLMRetries,
+		StreamWithTools:      pc.StreamWithTools,
+		FetchAllowHosts:      fetchHosts,
+		FetchPreapproved:     fetchPreapproved,
+		FetchMaxBytes:        fetchMax,
+		FetchTimeoutSec:      fetchTimeout,
+		SearchBaseURL:        strings.TrimSpace(pc.SearchBaseURL),
+		SearchMaxResults:     searchMaxResults,
+		AutoCompactPct:       autoCompactPct,
+		AutoCheckCmd:         strings.TrimSpace(pc.AutoCheckCmd),
+		Mode:                 strings.TrimSpace(pc.Mode),
+		Plain:                pc.Plain,
+		Quiet:                pc.Quiet,
+		Verbose:              pc.Verbose,
+		LogPath:              strings.TrimSpace(pc.LogPath),
+		StreamReply:          streamReply,
+		Progress:             pc.Progress,
+		DesignSaveDir:        strings.TrimSpace(pc.DesignSaveDir),
+		DesignSave:           designSave,
+		ProjectContext:       strings.TrimSpace(pc.ProjectContext),
 	}
 	c.BaseURL = strings.TrimRight(c.BaseURL, "/")
 	if c.ExecTimeoutSeconds < 1 {
@@ -159,11 +237,8 @@ func Load() (*Config, error) {
 	if c.ExecMaxOutputBytes > maxExecMaxOutputBytes {
 		c.ExecMaxOutputBytes = maxExecMaxOutputBytes
 	}
-	if c.MaxToolSteps < 1 {
-		return nil, fmt.Errorf("AGENT_MAX_TOOL_STEPS must be at least 1")
-	}
 	if c.MaxConcurrent < 1 {
-		return nil, fmt.Errorf("LLM_MAX_CONCURRENT must be at least 1")
+		return nil, fmt.Errorf("max_concurrent must be at least 1")
 	}
 	if c.ContextWindowTokens < 0 {
 		c.ContextWindowTokens = 0
@@ -214,19 +289,7 @@ func (c *Config) EffectiveWorkspace() string {
 	return strings.TrimSpace(c.Workspace)
 }
 
-func getenvInt(key string, def int) int {
-	s := strings.TrimSpace(os.Getenv(key))
-	if s == "" {
-		return def
-	}
-	n, err := strconv.Atoi(s)
-	if err != nil {
-		return def
-	}
-	return n
-}
-
-// defaultExecAllowlist is used when CODIENT_EXEC_ALLOWLIST is unset and CODIENT_EXEC_DISABLE is not set,
+// defaultExecAllowlist is used when exec_allowlist is unset and exec_disable is not set,
 // so run_command / run_shell are registered without extra configuration.
 // It includes the platform shell (cmd on Windows, sh on Unix) so run_shell can run mkdir and other builtins.
 func defaultExecAllowlist() []string {
@@ -236,8 +299,17 @@ func defaultExecAllowlist() []string {
 	return []string{"go", "git", "sh"}
 }
 
-// parseExecAllowlist parses CODIENT_EXEC_ALLOWLIST (comma-separated names, no paths).
+// ParseExecAllowlistString parses a comma-separated exec allowlist string.
 // Entries are lowercased; ".exe" is stripped for comparison on any OS.
+func ParseExecAllowlistString(s string) []string {
+	return parseExecAllowlist(s)
+}
+
+// ParseFetchAllowHostsString parses a comma-separated fetch allow hosts string.
+func ParseFetchAllowHostsString(s string) []string {
+	return parseFetchAllowHosts(s)
+}
+
 func parseExecAllowlist(s string) []string {
 	s = strings.TrimSpace(s)
 	if s == "" {
@@ -265,7 +337,22 @@ func parseExecAllowlist(s string) []string {
 	return out
 }
 
-// parseFetchAllowHosts parses CODIENT_FETCH_ALLOW_HOSTS (comma-separated hostnames, no schemes or paths).
+func mergeFetchAllowHostSlices(a, b []string) []string {
+	seen := make(map[string]struct{})
+	var out []string
+	for _, list := range [][]string{a, b} {
+		for _, h := range list {
+			if _, ok := seen[h]; ok {
+				continue
+			}
+			seen[h] = struct{}{}
+			out = append(out, h)
+		}
+	}
+	return out
+}
+
+// parseFetchAllowHosts parses fetch_allow_hosts (comma-separated hostnames, no schemes or paths).
 func parseFetchAllowHosts(s string) []string {
 	s = strings.TrimSpace(s)
 	if s == "" {

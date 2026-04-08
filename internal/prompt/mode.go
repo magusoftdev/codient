@@ -2,11 +2,10 @@ package prompt
 
 import (
 	"fmt"
-	"os"
 	"strings"
 )
 
-// Mode selects agent behavior (tools + system prompt). See -mode and CODIENT_MODE.
+// Mode selects agent behavior (tools + system prompt).
 type Mode string
 
 const (
@@ -23,18 +22,9 @@ func ParseMode(s string) (Mode, error) {
 	case "ask":
 		return ModeAsk, nil
 	case "plan", "design":
-		// "design" is accepted for backward compatibility (sessions, CODIENT_MODE).
+		// "design" is accepted for backward compatibility (sessions, config file).
 		return ModePlan, nil
 	default:
 		return "", fmt.Errorf("invalid mode %q (want build, ask, or plan)", s)
 	}
-}
-
-// ResolveMode uses flagValue when non-empty; otherwise CODIENT_MODE; default build.
-func ResolveMode(flagValue string) (Mode, error) {
-	s := strings.TrimSpace(flagValue)
-	if s == "" {
-		s = strings.TrimSpace(os.Getenv("CODIENT_MODE"))
-	}
-	return ParseMode(s)
 }

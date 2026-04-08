@@ -29,14 +29,18 @@ func (s *session) runSetupWizard(ctx context.Context, sc *bufio.Scanner) bool {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "  Could not fetch models: %v\n", err)
 		fmt.Fprintf(os.Stderr, "  You can set the model manually later with /config model <name>\n\n")
-		saveCurrentConfig(s.cfg)
+		if err := saveCurrentConfig(s.cfg); err != nil {
+			fmt.Fprintf(os.Stderr, "  Warning: could not save config: %v\n", err)
+		}
 		return false
 	}
 
 	if len(models) == 0 {
 		fmt.Fprintf(os.Stderr, "  Server returned no models.\n")
 		fmt.Fprintf(os.Stderr, "  You can set the model manually later with /config model <name>\n\n")
-		saveCurrentConfig(s.cfg)
+		if err := saveCurrentConfig(s.cfg); err != nil {
+			fmt.Fprintf(os.Stderr, "  Warning: could not save config: %v\n", err)
+		}
 		return false
 	}
 
@@ -61,7 +65,9 @@ func (s *session) runSetupWizard(ctx context.Context, sc *bufio.Scanner) bool {
 			for _, m := range models {
 				if strings.EqualFold(m, input) {
 					s.cfg.Model = m
-					saveCurrentConfig(s.cfg)
+					if err := saveCurrentConfig(s.cfg); err != nil {
+						fmt.Fprintf(os.Stderr, "  Warning: could not save config: %v\n", err)
+					}
 					fmt.Fprintf(os.Stderr, "\n  Configuration saved. Model set to %s.\n\n", s.cfg.Model)
 					return true
 				}
@@ -75,7 +81,9 @@ func (s *session) runSetupWizard(ctx context.Context, sc *bufio.Scanner) bool {
 
 	s.setupWebSearch(sc)
 
-	saveCurrentConfig(s.cfg)
+	if err := saveCurrentConfig(s.cfg); err != nil {
+		fmt.Fprintf(os.Stderr, "  Warning: could not save config: %v\n", err)
+	}
 	fmt.Fprintf(os.Stderr, "\n  Configuration saved. Model set to %s.\n\n", s.cfg.Model)
 	return true
 }
@@ -125,14 +133,7 @@ func promptWithDefault(sc *bufio.Scanner, label, def string) string {
 	return v
 }
 
-func saveCurrentConfig(cfg *config.Config) {
-	pc := &config.PersistentConfig{
-		BaseURL:       cfg.BaseURL,
-		APIKey:        cfg.APIKey,
-		Model:         cfg.Model,
-		SearchBaseURL: cfg.SearchBaseURL,
-	}
-	if err := config.SavePersistentConfig(pc); err != nil {
-		fmt.Fprintf(os.Stderr, "  Warning: could not save config: %v\n", err)
-	}
+func saveCurrentConfig(cfg *config.Config) error {
+	pc := config.ConfigToPersistent(cfg)
+	return config.SavePersistentConfig(pc)
 }

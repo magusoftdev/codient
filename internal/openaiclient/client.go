@@ -1,6 +1,6 @@
 // Package openaiclient wraps an OpenAI-compatible HTTP API (openai-go client + helpers).
 //
-// LLM_MAX_CONCURRENT in the agent layer limits how many in-flight HTTP requests hit the server;
+// max_concurrent in the agent config limits how many in-flight HTTP requests hit the server;
 // the server's own concurrency limits are separate—tune both together.
 package openaiclient
 

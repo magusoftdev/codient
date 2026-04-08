@@ -12,6 +12,7 @@ import (
 // WelcomeParams configures the startup banner written to stderr.
 type WelcomeParams struct {
 	Plain          bool
+	Quiet          bool
 	Repl           bool
 	Mode           string // build | ask | plan
 	Workspace      string
@@ -20,9 +21,9 @@ type WelcomeParams struct {
 	SessionID      string // shown when resuming
 }
 
-// WriteWelcome prints a short colorful banner. Skipped when CODIENT_QUIET=1.
+// WriteWelcome prints a short colorful banner. Skipped when Quiet is true.
 func WriteWelcome(w io.Writer, p WelcomeParams) {
-	if strings.TrimSpace(os.Getenv("CODIENT_QUIET")) == "1" {
+	if p.Quiet {
 		return
 	}
 	mode := strings.TrimSpace(p.Mode)
