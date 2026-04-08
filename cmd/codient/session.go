@@ -107,9 +107,10 @@ func (s *session) executeTurn(ctx context.Context, runner *agent.Runner, user st
 
 const postReplyVerificationPrompt = `You just provided suggestions. Before I accept them, verify each one using tool calls:
 
-1. For each suggestion, use grep or read_file to confirm the codebase does NOT already implement it.
+1. For each suggestion, use grep (for content) or read_file to confirm the codebase does NOT already implement it. Do not use search_files for content searches — it only matches file paths.
 2. If a suggestion references specific code, confirm the code actually exists as described.
 3. Drop any suggestion that is already implemented or whose premise is wrong.
+4. For each verification, quote the exact tool name, pattern/path you used, and the result (match count or key output). Do not paraphrase or summarize what a tool returned.
 
 After verification, respond with ONLY a summary of the confirmed suggestions and the evidence you found for each. Do not mention or list the suggestions you dropped.`
 
