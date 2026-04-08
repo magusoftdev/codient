@@ -7,6 +7,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"codient/internal/config"
 	"codient/internal/openaiclient"
@@ -90,14 +91,90 @@ func (s *session) runSetupWizard(ctx context.Context, sc *bufio.Scanner) bool {
 
 func (s *session) setupWebSearch(sc *bufio.Scanner) {
 	fmt.Fprintf(os.Stderr, "\n  Web search (optional) lets the agent look up documentation and API references.\n")
-	fmt.Fprintf(os.Stderr, "  It requires a SearXNG instance running in Docker.\n")
-	fmt.Fprintf(os.Stderr, "  See: https://docs.searxng.org/admin/installation-docker.html\n\n")
+	fmt.Fprintf(os.Stderr, "  It requires a SearXNG instance (runs in Docker).\n\n")
 
-	current := ""
 	if s.cfg.SearchBaseURL != "" {
-		current = s.cfg.SearchBaseURL
+		fmt.Fprintf(os.Stderr, "  Currently configured: %s\n\n", s.cfg.SearchBaseURL)
 	}
 
+	fmt.Fprintf(os.Stderr, "  [1] Auto-install SearXNG via Docker (recommended)\n")
+	fmt.Fprintf(os.Stderr, "  [2] I already have SearXNG running — enter URL\n")
+	fmt.Fprintf(os.Stderr, "  [3] Skip web search\n\n")
+
+	for {
+		fmt.Fprintf(os.Stderr, "  Choice [1-3]: ")
+		if !sc.Scan() {
+			return
+		}
+		switch strings.TrimSpace(sc.Text()) {
+		case "1":
+			s.setupWebSearchDocker(sc)
+			return
+		case "2":
+			s.setupWebSearchManual(sc)
+			return
+		case "3":
+			if s.cfg.SearchBaseURL != "" {
+				s.cfg.SearchBaseURL = ""
+				fmt.Fprintf(os.Stderr, "  Web search disabled.\n")
+			} else {
+				fmt.Fprintf(os.Stderr, "  Skipped.\n")
+			}
+			return
+		default:
+			fmt.Fprintf(os.Stderr, "  Please enter 1, 2, or 3.\n")
+		}
+	}
+}
+
+func (s *session) setupWebSearchDocker(sc *bufio.Scanner) {
+	if !dockerAvailable() {
+		fmt.Fprintf(os.Stderr, "\n  Docker is not installed or not running.\n")
+		fmt.Fprintf(os.Stderr, "  Install Docker Desktop: https://www.docker.com/products/docker-desktop\n")
+		fmt.Fprintf(os.Stderr, "  Then re-run /setup, or enter a SearXNG URL manually.\n\n")
+		s.setupWebSearchManual(sc)
+		return
+	}
+
+	if running, port := searxngContainerRunning(); running {
+		url := fmt.Sprintf("http://localhost:%d", port)
+		fmt.Fprintf(os.Stderr, "\n  SearXNG is already running at %s.\n", url)
+		s.cfg.SearchBaseURL = url
+		fmt.Fprintf(os.Stderr, "  Web search enabled (%s).\n", s.cfg.SearchBaseURL)
+		return
+	}
+
+	portStr := promptWithDefault(sc, "  Port for SearXNG", strconv.Itoa(defaultSearxngPort))
+	port, err := strconv.Atoi(strings.TrimSpace(portStr))
+	if err != nil || port < 1 || port > 65535 {
+		fmt.Fprintf(os.Stderr, "  Invalid port, using default %d.\n", defaultSearxngPort)
+		port = defaultSearxngPort
+	}
+
+	fmt.Fprintf(os.Stderr, "\n  Starting SearXNG on port %d (first run pulls the image, may take a minute)...\n\n", port)
+
+	if err := startSearxng(port); err != nil {
+		fmt.Fprintf(os.Stderr, "\n  Failed to start SearXNG: %v\n", err)
+		fmt.Fprintf(os.Stderr, "  You can try manually: docker compose -f ~/.codient/docker/searxng/docker-compose.yml up -d\n\n")
+		return
+	}
+
+	url := fmt.Sprintf("http://localhost:%d", port)
+	fmt.Fprintf(os.Stderr, "\n  Waiting for SearXNG to be ready...")
+	if err := waitForSearxng(url, 30*time.Second); err != nil {
+		fmt.Fprintf(os.Stderr, " timed out.\n")
+		fmt.Fprintf(os.Stderr, "  The container is running but may still be starting up.\n")
+		fmt.Fprintf(os.Stderr, "  Check manually: %s\n", url)
+	} else {
+		fmt.Fprintf(os.Stderr, " ready!\n")
+	}
+
+	s.cfg.SearchBaseURL = url
+	fmt.Fprintf(os.Stderr, "  Web search enabled (%s).\n", s.cfg.SearchBaseURL)
+}
+
+func (s *session) setupWebSearchManual(sc *bufio.Scanner) {
+	current := s.cfg.SearchBaseURL
 	label := "  SearXNG base URL (leave empty to skip)"
 	if current != "" {
 		label = "  SearXNG base URL (empty to disable)"

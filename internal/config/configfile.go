@@ -70,6 +70,9 @@ type PersistentConfig struct {
 
 	// Project
 	ProjectContext string `json:"project_context,omitempty"`
+
+	// ast-grep: "auto" (default), "off", or explicit path to binary
+	AstGrep string `json:"ast_grep,omitempty"`
 }
 
 func stateDir() (string, error) {
@@ -167,6 +170,7 @@ func ConfigToPersistent(cfg *Config) *PersistentConfig {
 		Progress:         cfg.Progress,
 		DesignSaveDir:    cfg.DesignSaveDir,
 		ProjectContext:   cfg.ProjectContext,
+		AstGrep:          cfg.AstGrep,
 	}
 	if !cfg.FetchPreapproved {
 		f := false

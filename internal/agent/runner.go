@@ -51,9 +51,6 @@ type Runner struct {
 	Log   *agentlog.Logger
 	// Progress, when non-nil (e.g. os.Stderr), receives human-readable lines during the tool loop.
 	Progress io.Writer
-	// ProgressFromUserTurn, when true, prints tool intent lines in first-person agent phrasing.
-	// Cleared automatically at the end of RunConversation. REPL sets this; API callers leave it false.
-	ProgressFromUserTurn bool
 	// AutoCheck runs once after a tool batch that successfully used a mutating tool.
 	// If Inject is non-empty, it is appended as a user message before the next LLM call.
 	AutoCheck func(ctx context.Context) AutoCheckOutcome
@@ -62,6 +59,10 @@ type Runner struct {
 	// a user message and the loop continues instead of returning. The field is nilled
 	// after firing once to prevent infinite loops.
 	PostReplyCheck func(ctx context.Context, reply string) string
+	// ProgressPlain suppresses ANSI styling on progress lines (e.g. -plain).
+	ProgressPlain bool
+	// ProgressMode is build|ask|plan; colors the thinking/intent bullet to match the REPL mode.
+	ProgressMode string
 }
 
 // Run carries out one user turn (no prior conversation history).
@@ -78,8 +79,6 @@ func (r *Runner) Run(ctx context.Context, system, user string, streamTo io.Write
 // streamTo selects streaming for this turn only (nil = non-streaming completion).
 // streamed is true when the final reply was produced via streaming (skip glamour in the caller).
 func (r *Runner) RunConversation(ctx context.Context, system string, history []openai.ChatCompletionMessageParamUnion, user string, streamTo io.Writer) (string, []openai.ChatCompletionMessageParamUnion, bool, error) {
-	defer func() { r.ProgressFromUserTurn = false }()
-
 	msgs := make([]openai.ChatCompletionMessageParamUnion, 0, len(history)+16)
 	sys := strings.TrimSpace(system)
 	sysOffset := 0
@@ -149,8 +148,8 @@ func (r *Runner) RunConversation(ctx context.Context, system string, history []o
 					msgs = append(msgs, openai.AssistantMessage(msg.Content))
 
 					if r.Progress != nil {
-						if line := formatThinkingLine(msg.Content); line != "" {
-							fmt.Fprintf(r.Progress, "\n  ▸ %s\n", line)
+						if line := FormatThinkingProgressLine(r.ProgressPlain, r.ProgressMode, msg.Content); line != "" {
+							fmt.Fprintf(r.Progress, "\n%s\n", line)
 						}
 					}
 
@@ -163,7 +162,7 @@ func (r *Runner) RunConversation(ctx context.Context, system string, history []o
 					if r.Progress != nil {
 						for _, tc := range parsed {
 							args := textToolCallArgsJSON(tc.Args)
-							fmt.Fprintf(r.Progress, "%s\n", ProgressToolIntentLine(tc.Name, args, r.ProgressFromUserTurn))
+							fmt.Fprintf(r.Progress, "%s\n", FormatToolIntentProgressLine(tc.Name, args))
 						}
 					}
 					var wg sync.WaitGroup
@@ -217,7 +216,7 @@ func (r *Runner) RunConversation(ctx context.Context, system string, history []o
 						fmt.Fprintf(&resultBuf, "\n%s\n", inject)
 					}
 					if prog != "" && r.Progress != nil {
-						fmt.Fprintf(r.Progress, "  %s\n", prog)
+						fmt.Fprintf(r.Progress, "%s%s\n", progressNestedIndent, prog)
 					}
 					msgs = append(msgs, openai.UserMessage(resultBuf.String()))
 					if allFailed {
@@ -226,7 +225,7 @@ func (r *Runner) RunConversation(ctx context.Context, system string, history []o
 						consecutiveToolFails = 0
 					}
 					if r.Progress != nil && len(toolParts) > 0 {
-						fmt.Fprintf(r.Progress, "  llm %s  ·  %s\n", formatProgressDur(llmDur), strings.Join(toolParts, " · "))
+						fmt.Fprintf(r.Progress, "%sllm %s  ·  %s\n", progressNestedIndent, formatProgressDur(llmDur), strings.Join(toolParts, " · "))
 					}
 					if consecutiveToolFails >= maxConsecutiveToolFails && r.Progress != nil {
 						fmt.Fprintf(r.Progress, "  ⚠ %d consecutive tool failures — requesting text reply\n", consecutiveToolFails)
@@ -267,8 +266,8 @@ func (r *Runner) RunConversation(ctx context.Context, system string, history []o
 		msgs = append(msgs, msg.ToParam())
 
 		if r.Progress != nil && strings.TrimSpace(msg.Content) != "" {
-			if line := formatThinkingLine(msg.Content); line != "" {
-				fmt.Fprintf(r.Progress, "\n  ▸ %s\n", line)
+			if line := FormatThinkingProgressLine(r.ProgressPlain, r.ProgressMode, msg.Content); line != "" {
+				fmt.Fprintf(r.Progress, "\n%s\n", line)
 			}
 		}
 
@@ -290,7 +289,7 @@ func (r *Runner) RunConversation(ctx context.Context, system string, history []o
 		if r.Progress != nil {
 			for _, v := range calls {
 				args := json.RawMessage(v.Function.Arguments)
-				fmt.Fprintf(r.Progress, "%s\n", ProgressToolIntentLine(v.Function.Name, args, r.ProgressFromUserTurn))
+				fmt.Fprintf(r.Progress, "%s\n", FormatToolIntentProgressLine(v.Function.Name, args))
 			}
 		}
 		var wg sync.WaitGroup
@@ -353,7 +352,7 @@ func (r *Runner) RunConversation(ctx context.Context, system string, history []o
 			msgs = append(msgs, openai.UserMessage(inject))
 		}
 		if prog != "" && r.Progress != nil {
-			fmt.Fprintf(r.Progress, "  %s\n", prog)
+			fmt.Fprintf(r.Progress, "%s%s\n", progressNestedIndent, prog)
 		}
 		if allFailed {
 			consecutiveToolFails++
@@ -361,7 +360,7 @@ func (r *Runner) RunConversation(ctx context.Context, system string, history []o
 			consecutiveToolFails = 0
 		}
 		if r.Progress != nil && len(toolParts) > 0 {
-			fmt.Fprintf(r.Progress, "  llm %s  ·  %s\n", formatProgressDur(llmDur), strings.Join(toolParts, " · "))
+			fmt.Fprintf(r.Progress, "%sllm %s  ·  %s\n", progressNestedIndent, formatProgressDur(llmDur), strings.Join(toolParts, " · "))
 		}
 		if consecutiveToolFails >= maxConsecutiveToolFails && r.Progress != nil {
 			fmt.Fprintf(r.Progress, "  ⚠ %d consecutive tool failures — requesting text reply\n", consecutiveToolFails)

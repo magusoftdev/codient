@@ -94,12 +94,12 @@ func (r *Registry) Run(ctx context.Context, name string, args json.RawMessage) (
 // exec enables run_command when non-nil and Allowlist is non-empty (CODIENT_EXEC_ALLOWLIST).
 // fetch enables fetch_url when non-nil and AllowHosts is non-empty (CODIENT_FETCH_ALLOW_HOSTS).
 // search enables web_search when non-nil and configured (CODIENT_SEARCH_URL or persisted search_url).
-func Default(workspace string, exec *ExecOptions, fetch *FetchOptions, search *SearchOptions) *Registry {
+func Default(workspace string, exec *ExecOptions, fetch *FetchOptions, search *SearchOptions, astGrepPath string) *Registry {
 	r := NewRegistry()
 	registerBuiltinTools(r, true)
 	root := strings.TrimSpace(workspace)
 	if root != "" {
-		registerWorkspaceTools(r, root, exec, fetch, search)
+		registerWorkspaceTools(r, root, exec, fetch, search, astGrepPath)
 	}
 	return r
 }
@@ -108,24 +108,24 @@ func Default(workspace string, exec *ExecOptions, fetch *FetchOptions, search *S
 // only (plus echo and get_time). Use for Ask mode.
 // fetch enables fetch_url when non-nil and AllowHosts is non-empty.
 // search enables web_search when non-nil and configured.
-func DefaultReadOnly(workspace string, fetch *FetchOptions, search *SearchOptions) *Registry {
+func DefaultReadOnly(workspace string, fetch *FetchOptions, search *SearchOptions, astGrepPath string) *Registry {
 	r := NewRegistry()
 	registerBuiltinTools(r, true)
 	root := strings.TrimSpace(workspace)
 	if root != "" {
-		registerWorkspaceReadTools(r, root, fetch, search)
+		registerWorkspaceReadTools(r, root, fetch, search, astGrepPath)
 	}
 	return r
 }
 
 // DefaultReadOnlyPlan is like DefaultReadOnly but omits echo so the model cannot substitute
 // a one-line echo for a written design. Use for Plan mode.
-func DefaultReadOnlyPlan(workspace string, fetch *FetchOptions, search *SearchOptions) *Registry {
+func DefaultReadOnlyPlan(workspace string, fetch *FetchOptions, search *SearchOptions, astGrepPath string) *Registry {
 	r := NewRegistry()
 	registerBuiltinTools(r, false)
 	root := strings.TrimSpace(workspace)
 	if root != "" {
-		registerWorkspaceReadTools(r, root, fetch, search)
+		registerWorkspaceReadTools(r, root, fetch, search, astGrepPath)
 	}
 	return r
 }
@@ -168,12 +168,12 @@ func registerBuiltinTools(r *Registry, withEcho bool) {
 	})
 }
 
-func registerWorkspaceTools(r *Registry, root string, exec *ExecOptions, fetch *FetchOptions, search *SearchOptions) {
-	registerWorkspaceReadTools(r, root, fetch, search)
+func registerWorkspaceTools(r *Registry, root string, exec *ExecOptions, fetch *FetchOptions, search *SearchOptions, astGrepPath string) {
+	registerWorkspaceReadTools(r, root, fetch, search, astGrepPath)
 	registerWorkspaceMutatingTools(r, root, exec)
 }
 
-func registerWorkspaceReadTools(r *Registry, root string, fetch *FetchOptions, search *SearchOptions) {
+func registerWorkspaceReadTools(r *Registry, root string, fetch *FetchOptions, search *SearchOptions, astGrepPath string) {
 	r.Register(Tool{
 		Name: "read_file",
 		Description: "Reads a UTF-8 text file under the workspace root (CODIENT_WORKSPACE). " +
@@ -435,6 +435,7 @@ func registerWorkspaceReadTools(r *Registry, root string, fetch *FetchOptions, s
 
 	registerFetchURL(r, fetch)
 	registerWebSearch(r, search, fetch)
+	registerAstGrepTools(r, root, astGrepPath)
 }
 
 func registerWorkspaceMutatingTools(r *Registry, root string, exec *ExecOptions) {

@@ -46,7 +46,7 @@ func run() int {
 		modeFlag      = flag.String("mode", "", "build|ask|plan: tool + prompt policy (default build)")
 		plainOut      = flag.Bool("plain", false, "print assistant replies as raw text (no markdown/ANSI)")
 		streamReply   = flag.Bool("stream-reply", true, "stream assistant tokens to stdout")
-		designSaveDir = flag.String("design-save-dir", "", "directory for saved implementation designs (default: <workspace>/.codient/designs)")
+		designSaveDir = flag.String("design-save-dir", "", "directory for saved implementation plans (default: <workspace>/.codient/plans)")
 		workspace     = flag.String("workspace", "", "root directory for workspace tools (overrides config and cwd default)")
 		a2aFlag       = flag.Bool("a2a", false, "start an A2A (Agent-to-Agent) protocol server instead of the CLI")
 		a2aAddr       = flag.String("a2a-addr", ":8080", "listen address for the A2A server")

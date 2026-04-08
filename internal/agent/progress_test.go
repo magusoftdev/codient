@@ -44,26 +44,42 @@ func TestProgressToolLine_webSearch(t *testing.T) {
 	}
 }
 
-func TestProgressToolIntentLine_fromUserTurn(t *testing.T) {
-	got := ProgressToolIntentLine("web_search", []byte(`{"query":"exponential backoff"}`), true)
-	if !strings.Contains(got, "I'll search the web") {
-		t.Fatalf("want first-person web search lead-in: %q", got)
+func TestProgressToolIntentLine_webSearch(t *testing.T) {
+	got := ProgressToolIntentLine("web_search", []byte(`{"query":"exponential backoff"}`))
+	if !strings.HasPrefix(got, "    ▸ ") {
+		t.Fatalf("want nested indent + tool prelude mark: %q", got)
+	}
+	if !strings.Contains(got, "searching the web") {
+		t.Fatalf("want web search lead-in: %q", got)
 	}
 	if !strings.Contains(got, "exponential backoff") {
 		t.Fatalf("missing query: %q", got)
 	}
-	if strings.Contains(got, "please perform") {
-		t.Fatalf("should not echo user text: %q", got)
+	if strings.Contains(got, "I'll") || strings.Contains(got, "please perform") {
+		t.Fatalf("unexpected phrasing: %q", got)
 	}
 }
 
-func TestProgressToolIntentLine_headless(t *testing.T) {
-	got := ProgressToolIntentLine("read_file", []byte(`{"path":"main.go"}`), false)
-	if strings.Contains(got, "I'll read") {
-		t.Fatalf("headless should use neutral phrasing: %q", got)
+func TestProgressToolIntentLine_readFile(t *testing.T) {
+	got := ProgressToolIntentLine("read_file", []byte(`{"path":"main.go"}`))
+	if strings.Contains(got, "I'll") {
+		t.Fatalf("should not use first-person lead-in: %q", got)
 	}
 	if !strings.Contains(got, "reading main.go") {
 		t.Fatalf("got %q", got)
+	}
+}
+
+func TestFormatThinkingProgressLine_plain(t *testing.T) {
+	got := FormatThinkingProgressLine(true, "plan", "I'll verify the approach.")
+	if !strings.HasPrefix(got, "  ● ") || !strings.Contains(got, "verify") {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestFormatThinkingProgressLine_empty(t *testing.T) {
+	if FormatThinkingProgressLine(true, "build", "") != "" {
+		t.Fatal("expected empty")
 	}
 }
 

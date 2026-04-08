@@ -42,7 +42,7 @@ func TestSave_CreatesFile(t *testing.T) {
 	if !strings.HasPrefix(filepath.Base(path), "my-task_20260403-143022_") || !strings.HasSuffix(path, ".md") {
 		t.Fatalf("unexpected name: %s", filepath.Base(path))
 	}
-	if !strings.Contains(path, filepath.Join("designs", "sess_123")) {
+	if !strings.Contains(path, filepath.Join("plans", "sess_123")) {
 		t.Fatalf("expected session subdirectory in path: %s", path)
 	}
 	b, err := os.ReadFile(path)
@@ -58,9 +58,9 @@ func TestSave_NoSessionID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := filepath.Join(tmp, ".codient", "designs")
+	want := filepath.Join(tmp, ".codient", "plans")
 	if !strings.HasPrefix(filepath.Dir(path), want) {
-		t.Fatalf("expected designs root, got dir %s", filepath.Dir(path))
+		t.Fatalf("expected plans root, got dir %s", filepath.Dir(path))
 	}
 }
 
@@ -70,7 +70,7 @@ func TestDir_DefaultUnderWorkspace(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := filepath.Join(tmp, ".codient", "designs")
+	want := filepath.Join(tmp, ".codient", "plans")
 	if filepath.Clean(d) != filepath.Clean(want) {
 		t.Fatalf("got %q want %q", d, want)
 	}
@@ -82,7 +82,7 @@ func TestDir_WithSessionID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := filepath.Join(tmp, ".codient", "designs", "my-session")
+	want := filepath.Join(tmp, ".codient", "plans", "my-session")
 	if filepath.Clean(d) != filepath.Clean(want) {
 		t.Fatalf("got %q want %q", d, want)
 	}

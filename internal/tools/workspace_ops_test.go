@@ -91,7 +91,7 @@ func TestGlobFilesWorkspace(t *testing.T) {
 
 func TestMutatingToolsViaRegistry(t *testing.T) {
 	dir := t.TempDir()
-	r := Default(dir, nil, nil, nil)
+	r := Default(dir, nil, nil, nil, "")
 	_, err := r.Run(context.Background(), "write_file", json.RawMessage(`{"path":"t.txt","content":"z","mode":"create"}`))
 	if err != nil {
 		t.Fatal(err)

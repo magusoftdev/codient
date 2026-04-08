@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"codient/internal/agentlog"
+	"codient/internal/assistout"
 )
 
 // formatProgressDur renders a duration for stderr progress (e.g. 420ms, 4.8s).
@@ -209,117 +210,33 @@ func progressToolActionPhrase(toolName string, argsJSON []byte, sum map[string]a
 	}
 }
 
-// progressToolFirstPersonPhrase describes the tool call in the agent's voice (REPL turns).
-func progressToolFirstPersonPhrase(toolName string, argsJSON []byte, sum map[string]any) string {
-	switch toolName {
-	case "web_search":
-		if q, ok := sum["query"].(string); ok && q != "" {
-			return fmt.Sprintf("I'll search the web for %q", truncateRunes(q, 64))
-		}
-		return "I'll run a web search"
-	case "fetch_url":
-		if u, ok := sum["url"].(string); ok && u != "" {
-			return fmt.Sprintf("I'll fetch %s", truncateRunes(u, 64))
-		}
-		return "I'll fetch a URL"
-	case "read_file":
-		if p, ok := sum["path"].(string); ok && p != "" {
-			return fmt.Sprintf("I'll read %s", p)
-		}
-		return "I'll read a file"
-	case "write_file":
-		if p, ok := sum["path"].(string); ok && p != "" {
-			return fmt.Sprintf("I'll write %s", p)
-		}
-		return "I'll write a file"
-	case "str_replace":
-		if p, ok := sum["path"].(string); ok && p != "" {
-			return fmt.Sprintf("I'll edit %s", p)
-		}
-		return "I'll edit a file"
-	case "patch_file":
-		if p, ok := sum["path"].(string); ok && p != "" {
-			return fmt.Sprintf("I'll patch %s", p)
-		}
-		return "I'll apply a patch"
-	case "ensure_dir":
-		if p, ok := sum["path"].(string); ok && p != "" {
-			return fmt.Sprintf("I'll ensure the directory %s exists", p)
-		}
-		return "I'll create a directory if needed"
-	case "path_stat":
-		if p, ok := sum["path"].(string); ok && p != "" {
-			return fmt.Sprintf("I'll inspect %s", p)
-		}
-		return "I'll inspect a path"
-	case "remove_path":
-		if p, ok := sum["path"].(string); ok && p != "" {
-			return fmt.Sprintf("I'll remove %s", p)
-		}
-		return "I'll remove a path"
-	case "move_path":
-		f, ok1 := sum["from"].(string)
-		t, ok2 := sum["to"].(string)
-		if ok1 && ok2 && f != "" && t != "" {
-			return fmt.Sprintf("I'll move %s to %s", f, t)
-		}
-		return "I'll move a path"
-	case "copy_path":
-		f, ok1 := sum["from"].(string)
-		t, ok2 := sum["to"].(string)
-		if ok1 && ok2 && f != "" && t != "" {
-			return fmt.Sprintf("I'll copy %s to %s", f, t)
-		}
-		return "I'll copy a path"
-	case "glob_files":
-		if pat, ok := sum["pattern"].(string); ok && pat != "" {
-			return fmt.Sprintf("I'll glob for %s", truncateRunes(pat, 48))
-		}
-		return "I'll list matching paths"
-	case "list_dir":
-		if p, ok := sum["path"].(string); ok && strings.TrimSpace(p) != "" && p != "." {
-			return fmt.Sprintf("I'll list %s", p)
-		}
-		return "I'll list the workspace"
-	case "grep":
-		if p, ok := sum["pattern"].(string); ok && p != "" {
-			return fmt.Sprintf("I'll grep the tree for %q", truncateRunes(p, 48))
-		}
-		return "I'll grep the codebase"
-	case "search_files":
-		return "I'll search files in the project"
-	case "run_command":
-		if argv, ok := sum["argv"].([]string); ok && len(argv) > 0 {
-			s := strings.Join(argv, " ")
-			return "I'll run " + truncateRunes(s, 56)
-		}
-		return "I'll run a command"
-	case "run_shell":
-		if s, ok := sum["command_prefix"].(string); ok && s != "" {
-			return "I'll run a shell snippet: " + truncateRunes(s, 56)
-		}
-		return "I'll run a shell command"
-	case "get_time":
-		return "I'll check the current time"
-	case "echo":
-		return "I'll leave a short note (echo)"
-	default:
-		return "I'll use " + ProgressToolCompact(toolName, argsJSON)
+// progressNestedIndent spaces lines nested under the mode-colored thinking line.
+const progressNestedIndent = "    "
+
+// progressToolPreludeMark distinguishes per-tool lines from the thinking-line bullet (●).
+const progressToolPreludeMark = "▸"
+
+// FormatThinkingProgressLine is a full stderr line for assistant reasoning that accompanies tool calls.
+func FormatThinkingProgressLine(plain bool, mode string, content string) string {
+	line := formatThinkingLine(content)
+	if line == "" {
+		return ""
 	}
+	return assistout.ProgressIntentBulletPrefix(plain, mode) + line
 }
 
-// ProgressToolIntentLine is printed immediately before a tool runs so the user sees
-// activity while the tool is in flight. fromUserTurn selects first-person agent phrasing
-// (REPL); otherwise a neutral participle phrase is used (e.g. headless / API callers).
-func ProgressToolIntentLine(toolName string, argsJSON []byte, fromUserTurn bool) string {
+// FormatToolIntentProgressLine is printed immediately before a tool runs so the user sees
+// activity while the tool is in flight. The bullet is not colored so only the thinking line
+// above uses mode-colored bullets. It is indented under that line.
+func FormatToolIntentProgressLine(toolName string, argsJSON []byte) string {
 	sum := agentlog.SummarizeArgs(toolName, argsJSON)
-	var phrase string
-	if fromUserTurn {
-		phrase = progressToolFirstPersonPhrase(toolName, argsJSON, sum)
-	} else {
-		phrase = progressToolActionPhrase(toolName, argsJSON, sum)
-	}
-	return fmt.Sprintf("  ▸ %s…", phrase)
+	phrase := progressToolActionPhrase(toolName, argsJSON, sum)
+	return progressNestedIndent + progressToolPreludeMark + " " + phrase + "…"
+}
+
+// ProgressToolIntentLine is an alias for tests and plain call sites.
+func ProgressToolIntentLine(toolName string, argsJSON []byte) string {
+	return FormatToolIntentProgressLine(toolName, argsJSON)
 }
 
 // formatThinkingLine extracts a short reasoning summary from assistant content

@@ -42,11 +42,12 @@ func searchOptsFrom(cfg *config.Config) *tools.SearchOptions {
 func buildRegistry(cfg *config.Config, mode prompt.Mode, s *session) *tools.Registry {
 	fetch := fetchOptsFrom(cfg, s)
 	search := searchOptsFrom(cfg)
+	sgPath := cfg.AstGrep
 	if mode == prompt.ModeAsk {
-		return tools.DefaultReadOnly(cfg.EffectiveWorkspace(), fetch, search)
+		return tools.DefaultReadOnly(cfg.EffectiveWorkspace(), fetch, search, sgPath)
 	}
 	if mode == prompt.ModePlan {
-		return tools.DefaultReadOnlyPlan(cfg.EffectiveWorkspace(), fetch, search)
+		return tools.DefaultReadOnlyPlan(cfg.EffectiveWorkspace(), fetch, search, sgPath)
 	}
 	var execOpts *tools.ExecOptions
 	if len(cfg.ExecAllowlist) > 0 {
@@ -66,7 +67,7 @@ func buildRegistry(cfg *config.Config, mode prompt.Mode, s *session) *tools.Regi
 			execOpts.Allowlist = cfg.ExecAllowlist
 		}
 	}
-	return tools.Default(cfg.EffectiveWorkspace(), execOpts, fetch, search)
+	return tools.Default(cfg.EffectiveWorkspace(), execOpts, fetch, search, sgPath)
 }
 
 // buildAgentSystemPrompt assembles the layered agent system message (tools, repo notes, -system).

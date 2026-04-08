@@ -18,6 +18,7 @@ import (
 	"codient/internal/agent"
 	"codient/internal/agentlog"
 	"codient/internal/assistout"
+	"codient/internal/astgrep"
 	"codient/internal/config"
 	"codient/internal/designstore"
 	"codient/internal/gitutil"
@@ -73,6 +74,8 @@ func (s *session) newRunner() *agent.Runner {
 	r := &agent.Runner{
 		LLM: s.client, Cfg: s.cfg, Tools: s.registry,
 		Log: s.agentLog, Progress: s.progressOut,
+		ProgressPlain: s.cfg.Plain,
+		ProgressMode:  string(s.mode),
 	}
 	if s.mode == prompt.ModeBuild {
 		if cmd := effectiveAutoCheckCmd(s.cfg); cmd != "" {
@@ -88,8 +91,7 @@ func (s *session) executeTurn(ctx context.Context, runner *agent.Runner, user st
 		return "", fmt.Errorf("%w — use /config model <name> to set one", err)
 	}
 	fmt.Fprint(os.Stderr, "\n")
-	runner.ProgressFromUserTurn = true
-	if s.mode == prompt.ModeAsk || s.mode == prompt.ModePlan {
+	if s.mode == prompt.ModeAsk {
 		runner.PostReplyCheck = makePostReplyCheck()
 	}
 	writePlanDraftPreamble(os.Stdout, s.mode, s.lastReply)
@@ -105,14 +107,25 @@ func (s *session) executeTurn(ctx context.Context, runner *agent.Runner, user st
 	return reply, nil
 }
 
-const postReplyVerificationPrompt = `You just provided suggestions. Before I accept them, verify each one using tool calls:
+const postReplyVerificationPrompt = `You just provided suggestions. Before I accept them, try to DISPROVE each one using tool calls:
 
-1. For each suggestion, use grep (for content) or read_file to confirm the codebase does NOT already implement it. Do not use search_files for content searches — it only matches file paths.
-2. If a suggestion references specific code, confirm the code actually exists as described.
-3. Drop any suggestion that is already implemented or whose premise is wrong.
-4. For each verification, quote the exact tool name, pattern/path you used, and the result (match count or key output). Do not paraphrase or summarize what a tool returned.
+1. For each suggestion, search for the underlying CONCERN it addresses — not the specific names your implementation would use. For example, if you suggested "add transient error types", grep for "transient", "retry", "backoff" — not just "TransientError". Use at least two different search terms per suggestion.
+2. Use grep (for content) or read_file. Do not use search_files for content searches — it only matches file paths.
+3. Drop any suggestion where you find the concern is already addressed, even under different names or in a different style than you proposed.
+4. For each surviving suggestion, describe a specific scenario where the current code produces wrong or dangerous behavior. If you cannot construct one, drop the suggestion — "could be more sophisticated" is not a defect.
+5. For each verification, quote the exact tool name, pattern you used, and the result (match count or key output). Do not paraphrase what a tool returned.
 
-After verification, respond with ONLY a summary of the confirmed suggestions and the evidence you found for each. Do not mention or list the suggestions you dropped.`
+Reply with EXACTLY this structure and nothing else:
+
+## Verified Suggestions
+
+### 1. <title>
+- Evidence: <tool name, pattern, result>
+- Failure scenario: <concrete scenario where current code breaks>
+
+(repeat for each survivor)
+
+Do NOT add any other sections. Suggestions that were disproved or dropped must not appear anywhere in your response.`
 
 // makePostReplyCheck returns a PostReplyCheck function for Ask/Plan modes.
 // It fires only when the reply appears to contain a list of suggestions
@@ -348,6 +361,7 @@ func (s *session) runSession(ctx context.Context, initialPrompt string, newSessi
 	s.scanner = sc
 	enableBracketedPaste()
 	defer disableBracketedPaste()
+	resolveAstGrep(s.cfg, sc)
 	s.registry = buildRegistry(s.cfg, s.mode, s)
 	s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, effectiveAutoCheckCmd(s.cfg))
 
@@ -826,6 +840,12 @@ func (s *session) printAllConfig() {
 	fmt.Fprintf(w, "  design_save:           %v\n", s.cfg.DesignSave)
 	fmt.Fprintf(w, "\n  -- Project --\n")
 	fmt.Fprintf(w, "  project_context:       %s\n", s.cfg.ProjectContext)
+	fmt.Fprintf(w, "\n  -- Tools --\n")
+	astGrepDisplay := s.cfg.AstGrep
+	if astGrepDisplay == "" {
+		astGrepDisplay = "(not installed)"
+	}
+	fmt.Fprintf(w, "  ast_grep:              %s\n", astGrepDisplay)
 	fmt.Fprintf(w, "\nSet a value: /config <key> <value>\n")
 }
 
@@ -904,6 +924,8 @@ func (s *session) getConfigValue(key string) (string, bool) {
 		return strconv.FormatBool(s.cfg.DesignSave), true
 	case "project_context":
 		return s.cfg.ProjectContext, true
+	case "ast_grep":
+		return s.cfg.AstGrep, true
 	default:
 		return "", false
 	}
@@ -1046,10 +1068,71 @@ func (s *session) setConfig(key, value string) error {
 		s.cfg.DesignSave = b
 	case "project_context":
 		s.cfg.ProjectContext = value
+	case "ast_grep":
+		s.cfg.AstGrep = value
+		s.registry = buildRegistry(s.cfg, s.mode, s)
+		s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, effectiveAutoCheckCmd(s.cfg))
 	default:
 		return fmt.Errorf("unknown config key %q", key)
 	}
 	return nil
+}
+
+// resolveAstGrep resolves the ast-grep binary path into cfg.AstGrep.
+// If the binary is not found and a scanner is available (interactive mode),
+// the user is prompted to download it. Non-interactive sessions silently skip.
+func resolveAstGrep(cfg *config.Config, sc *bufio.Scanner) {
+	v := strings.TrimSpace(strings.ToLower(cfg.AstGrep))
+	if v == "off" {
+		cfg.AstGrep = ""
+		return
+	}
+	if v != "" && v != "auto" {
+		if _, err := os.Stat(cfg.AstGrep); err == nil {
+			return
+		}
+		fmt.Fprintf(os.Stderr, "codient: configured ast-grep path %q not found, falling back to auto-detect\n", cfg.AstGrep)
+	}
+
+	if p := astgrep.Resolve(); p != "" {
+		cfg.AstGrep = p
+		return
+	}
+
+	if sc == nil {
+		cfg.AstGrep = ""
+		return
+	}
+
+	fmt.Fprintf(os.Stderr, "codient: ast-grep not found. Install it for structural code search (find_references)? [Y/n] ")
+	if !sc.Scan() {
+		cfg.AstGrep = ""
+		return
+	}
+	answer := strings.ToLower(strings.TrimSpace(sc.Text()))
+	if answer != "" && answer != "y" && answer != "yes" {
+		cfg.AstGrep = ""
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	fmt.Fprintf(os.Stderr, "codient: downloading ast-grep...\n")
+	destDir, err := astgrep.BinDir()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "codient: ast-grep setup: %v\n", err)
+		cfg.AstGrep = ""
+		return
+	}
+	path, err := astgrep.Download(ctx, destDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "codient: ast-grep download failed: %v\n", err)
+		cfg.AstGrep = ""
+		return
+	}
+	cfg.AstGrep = path
+	fmt.Fprintf(os.Stderr, "codient: ast-grep installed to %s\n", path)
 }
 
 // probeAndSetContext tries to detect the server's context window for the current model.

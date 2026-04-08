@@ -89,12 +89,14 @@ type Config struct {
 	StreamReply bool
 	// Progress forces progress output on stderr.
 	Progress bool
-	// DesignSaveDir overrides the directory for saved implementation designs.
+	// DesignSaveDir overrides the directory for saved implementation plans.
 	DesignSaveDir string
-	// DesignSave controls whether plan-mode designs are saved to disk (default true).
+	// DesignSave controls whether plan-mode plans are saved to disk (default true).
 	DesignSave bool
 	// ProjectContext opt-out: "off" to disable auto-detected project hints.
 	ProjectContext string
+	// AstGrep is the resolved ast-grep binary path, empty if unavailable, or "off" to disable.
+	AstGrep string
 }
 
 // Load reads configuration from the persistent config file.
@@ -223,6 +225,7 @@ func Load() (*Config, error) {
 		DesignSaveDir:        strings.TrimSpace(pc.DesignSaveDir),
 		DesignSave:           designSave,
 		ProjectContext:       strings.TrimSpace(pc.ProjectContext),
+		AstGrep:              strings.TrimSpace(pc.AstGrep),
 	}
 	c.BaseURL = strings.TrimRight(c.BaseURL, "/")
 	if c.ExecTimeoutSeconds < 1 {

@@ -3,6 +3,7 @@ package assistout
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/charmbracelet/lipgloss"
 )
@@ -11,6 +12,45 @@ var modeColors = map[string]lipgloss.AdaptiveColor{
 	"build": {Light: "#C2410C", Dark: "#FB923C"}, // orange
 	"plan":  {Light: "#0369A1", Dark: "#7DD3FC"}, // blue
 	"ask":   {Light: "#15803D", Dark: "#4ADE80"}, // green
+}
+
+func stderrIsInteractive() bool {
+	st, err := os.Stderr.Stat()
+	if err != nil {
+		return false
+	}
+	return (st.Mode() & os.ModeCharDevice) != 0
+}
+
+func normalizedMode(mode string) string {
+	m := strings.ToLower(strings.TrimSpace(mode))
+	if m == "" {
+		return "build"
+	}
+	return m
+}
+
+func modeForeground(mode string) lipgloss.AdaptiveColor {
+	c, ok := modeColors[normalizedMode(mode)]
+	if !ok {
+		return modeColors["build"]
+	}
+	return c
+}
+
+// ProgressIntentBulletPrefix is the leading indent and bullet for assistant thinking / intent
+// prose on stderr. The bullet uses the same color as the REPL mode label for mode.
+func ProgressIntentBulletPrefix(plain bool, mode string) string {
+	return progressBulletPrefix(plain, modeForeground(mode))
+}
+
+func progressBulletPrefix(plain bool, fg lipgloss.AdaptiveColor) string {
+	const bullet = "●"
+	if plain || !stderrIsInteractive() {
+		return "  " + bullet + " "
+	}
+	b := lipgloss.NewStyle().Foreground(fg).Render(bullet)
+	return "  " + b + " "
 }
 
 // SessionPrompt returns a styled REPL prompt showing the current mode, e.g. "[build] > ".
@@ -51,11 +91,7 @@ func PlanAnswerPrefix(plain bool) string {
 }
 
 func styledLabel(plain bool, label string, fg lipgloss.AdaptiveColor, bold bool) string {
-	if plain {
-		return label
-	}
-	st, err := os.Stderr.Stat()
-	if err != nil || (st.Mode()&os.ModeCharDevice) == 0 {
+	if plain || !stderrIsInteractive() {
 		return label
 	}
 	s := lipgloss.NewStyle().Foreground(fg)

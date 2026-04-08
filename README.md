@@ -1,6 +1,6 @@
 # codient
 
-**codient** is a command-line agent for any **OpenAI-compatible** chat API (local server, cloud provider, etc.). It runs multi-step tool use against your workspace—read and search files, run allowlisted commands, optional HTTPS fetch and web search, and write access in **build** mode. **Ask** and **plan** modes use a read-only tool set and different system prompts: ask for exploration, plan for structured implementation designs with clarifying questions.
+**codient** is a command-line agent for any **OpenAI-compatible** chat API (local server, cloud provider, etc.). It runs multi-step tool use against your workspace—read and search files, run allowlisted commands, optional HTTPS fetch and web search, and write access in **build** mode. **Ask** and **plan** modes use a read-only tool set and different system prompts: ask for exploration, plan for structured implementation plans with clarifying questions.
 
 **Repository:** [github.com/vaughanb/codient](https://github.com/vaughanb/codient)
 
@@ -8,6 +8,11 @@
 
 - [Go](https://go.dev/dl/) 1.26+ (see `go.mod`)
 - A running server exposing OpenAI-style `/v1/chat/completions` (default base URL `http://127.0.0.1:1234/v1`; typical for local stacks)
+
+**Optional:**
+
+- [Docker](https://www.docker.com/products/docker-desktop) — for automated SearXNG setup (web search). See [Web search (SearXNG)](#web-search-searxng).
+- [ast-grep](https://ast-grep.github.io/) — for the `find_references` structural code search tool. Codient auto-detects or offers to download it on first interactive session.
 
 ## Install
 
@@ -54,7 +59,7 @@ All settings live in a single JSON file. Use `/config` to view and edit, or edit
   "api_key": "codient",
   "model": "qwen3-coder",
   "mode": "build",
-  "search_url": "http://localhost:8080",
+  "search_url": "http://localhost:8888",
   "fetch_allow_hosts": "docs.go.dev,pkg.go.dev",
   "autocheck_cmd": "go build ./...",
   "verbose": true
@@ -92,7 +97,7 @@ Run `/config` with no arguments to see all current values. `/config <key>` shows
 | `fetch_max_bytes` | Max response body bytes (max 10 MiB) | `1048576` |
 | `fetch_timeout_sec` | Per-fetch timeout (max 300) | `30` |
 | **Search** | | |
-| `search_url` | SearXNG base URL (e.g. `http://localhost:8080`). Enables `web_search`. | *(empty)* |
+| `search_url` | SearXNG base URL (e.g. `http://localhost:8888`). Enables `web_search`. | *(empty)* |
 | `search_max_results` | Results per query (max 10) | `5` |
 | **Auto** | | |
 | `autocompact_threshold` | Context usage % that triggers compaction (0 disables) | `75` |
@@ -105,10 +110,12 @@ Run `/config` with no arguments to see all current values. `/config <key>` shows
 | `stream_reply` | Stream assistant tokens to stdout | `true` |
 | `progress` | Force progress output on stderr | `false` |
 | **Plan** | | |
-| `design_save_dir` | Override directory for saved designs | `<workspace>/.codient/designs` |
-| `design_save` | Save plan-mode designs to disk | `true` |
+| `design_save_dir` | Override directory for saved plans | `<workspace>/.codient/plans` |
+| `design_save` | Save plan-mode plans to disk | `true` |
 | **Project** | | |
 | `project_context` | `off` to skip auto-injected project hints | *(empty)* |
+| **Tools** | | |
+| `ast_grep` | ast-grep binary path: `auto` (default), explicit path, or `off` to disable | *(auto)* |
 
 When `fetch_url` receives `Content-Type: text/html`, the body is converted to simplified markdown (headings, links, lists, code) before being returned.
 
@@ -121,6 +128,39 @@ When `fetch_url` receives `Content-Type: text/html`, the body is converted to si
 Test infrastructure variables (`CODIENT_INTEGRATION*`) are used by the test suite but are not user configuration.
 
 For defaults and validation details, see [`internal/config/config.go`](internal/config/config.go).
+
+### Web search (SearXNG)
+
+The `web_search` tool requires a [SearXNG](https://docs.searxng.org/) instance running in Docker.
+
+**Easiest path** — run `/setup` inside a codient session and pick option 1 (auto-install). This pulls and starts the SearXNG container automatically if Docker is installed.
+
+**Manual start:**
+
+```bash
+make searxng-up                # default port 8888
+make searxng-up SEARXNG_PORT=9090  # custom port
+```
+
+Or use Docker Compose directly:
+
+```bash
+SEARXNG_PORT=8888 docker compose -f docker/searxng/docker-compose.yml up -d
+```
+
+**Stop:**
+
+```bash
+make searxng-down
+```
+
+**Check status:**
+
+```bash
+make searxng-status
+```
+
+The default port is **8888** (not 8080, which is reserved for the A2A server). Override with `SEARXNG_PORT`.
 
 ## Usage
 
@@ -163,7 +203,7 @@ Use `-help` for all flags. Notable options:
 - **`-progress`** — agent progress on stderr
 - **`-log`** — append JSONL events (LLM rounds, tools)
 - **`-goal` / `-task-file`** — merged into the first user turn as a task directive
-- **`-design-save-dir`** — where to save completed designs
+- **`-design-save-dir`** — where to save completed plans
 - **`-a2a` / `-a2a-addr`** — run an [A2A](https://github.com/a2aproject/A2A) protocol server instead of the interactive CLI (default listen `:8080`)
 
 ### A2A server
@@ -203,9 +243,9 @@ Inside a session you can use slash commands to control the agent:
 
 Session state (conversation history, mode, model) is saved under `<workspace>/.codient/sessions/` after each turn. Starting codient again in the same workspace resumes the latest session. Use `-new-session` to start fresh.
 
-### Plan mode and saved designs
+### Plan mode and saved plans
 
-In **plan** mode, when the assistant's reply includes a **Ready to implement** section, codient saves the markdown under the workspace (by default `.codient/designs/<sessionID>/`). Designs are scoped to the session that created them. Filenames are `{task-slug}_{date-time}_{nanoseconds}.md` so runs never collide. The task slug comes from `-goal`, else `-task-file` basename, else the first line of your first message.
+In **plan** mode, when the assistant's reply includes a **Ready to implement** section, codient saves the markdown under the workspace (by default `.codient/plans/<sessionID>/`). Plans are scoped to the session that created them. Filenames are `{task-slug}_{date-time}_{nanoseconds}.md` so runs never collide. The task slug comes from `-goal`, else `-task-file` basename, else the first line of your first message.
 
 ### Streaming
 

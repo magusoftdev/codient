@@ -1,4 +1,4 @@
-// Package designstore writes implementation designs to disk with unique filenames.
+// Package designstore writes implementation plans to disk with unique filenames.
 package designstore
 
 import (
@@ -57,8 +57,8 @@ func LooksLikeReadyToImplement(markdown string) bool {
 	return strings.Contains(strings.ToLower(markdown), "ready to implement")
 }
 
-// Dir resolves the directory to store designs.
-// When sessionID is non-empty, designs are stored in a per-session subdirectory.
+// Dir resolves the directory to store plans.
+// When sessionID is non-empty, plans are stored in a per-session subdirectory.
 func Dir(workspace, override, sessionID string) (string, error) {
 	if o := strings.TrimSpace(override); o != "" {
 		return filepath.Abs(o)
@@ -71,7 +71,7 @@ func Dir(workspace, override, sessionID string) (string, error) {
 		}
 		base = wd
 	}
-	dir := filepath.Join(base, ".codient", "designs")
+	dir := filepath.Join(base, ".codient", "plans")
 	if sid := strings.TrimSpace(sessionID); sid != "" {
 		dir = filepath.Join(dir, sid)
 	}

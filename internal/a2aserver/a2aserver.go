@@ -181,11 +181,12 @@ func registryForMode(cfg *config.Config, mode prompt.Mode) *tools.Registry {
 	ws := cfg.EffectiveWorkspace()
 	fetch := fetchOpts(cfg)
 	search := searchOpts(cfg)
+	sgPath := cfg.AstGrep
 	switch mode {
 	case prompt.ModeAsk:
-		return tools.DefaultReadOnly(ws, fetch, search)
+		return tools.DefaultReadOnly(ws, fetch, search, sgPath)
 	case prompt.ModePlan:
-		return tools.DefaultReadOnlyPlan(ws, fetch, search)
+		return tools.DefaultReadOnlyPlan(ws, fetch, search, sgPath)
 	default:
 		var execOpts *tools.ExecOptions
 		if len(cfg.ExecAllowlist) > 0 {
@@ -195,7 +196,7 @@ func registryForMode(cfg *config.Config, mode prompt.Mode) *tools.Registry {
 				Allowlist:      cfg.ExecAllowlist,
 			}
 		}
-		return tools.Default(ws, execOpts, fetch, search)
+		return tools.Default(ws, execOpts, fetch, search, sgPath)
 	}
 }
 

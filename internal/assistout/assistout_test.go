@@ -76,3 +76,10 @@ func TestPlanAnswerPrefix_Plain(t *testing.T) {
 		t.Fatalf("unexpected prefix: %q", p)
 	}
 }
+
+func TestProgressIntentBulletPrefix_Plain(t *testing.T) {
+	want := "  ● "
+	if got := ProgressIntentBulletPrefix(true, "plan"); got != want {
+		t.Fatalf("got %q want %q", got, want)
+	}
+}

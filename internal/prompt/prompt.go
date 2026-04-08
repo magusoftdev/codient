@@ -244,6 +244,9 @@ func sectionPerToolNotes(p Params) string {
 	if _, ok := set["glob_files"]; ok {
 		b.WriteString("- **glob_files**: `pattern` + optional `under`. If pattern contains `/`, match full relative path; else match basenames recursively. Good for `*_test.go`.\n")
 	}
+	if _, ok := set["find_references"]; ok {
+		b.WriteString("- **find_references**: Structural code search via ast-grep. Finds all call sites and references to a symbol using AST parsing (more precise than grep for understanding call chains). Prefer this over grep when checking who calls a function or where a type is used. Requires `symbol`; optionally `lang` and `path_prefix`.\n")
+	}
 	if _, ok := set["fetch_url"]; ok {
 		b.WriteString("- **fetch_url**: HTTPS GET only. A built-in preset covers common documentation domains (off: `CODIENT_FETCH_PREAPPROVED=0`). You can add hosts via `CODIENT_FETCH_ALLOW_HOSTS` and/or `fetch_allow_hosts` in `~/.codient/config.json`. In the interactive REPL you may be prompted for other hosts: once, session, or always (saved). Small UTF-8 text only; not for secrets.\n")
 	}
