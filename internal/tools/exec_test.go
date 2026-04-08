@@ -46,7 +46,11 @@ func TestNormalizeCmdKey(t *testing.T) {
 			t.Fatalf("git: %q", got)
 		}
 	}
-	nested := filepath.Join(t.TempDir(), "bin", "go.exe")
+	nestedName := "go"
+	if runtime.GOOS == "windows" {
+		nestedName = "go.exe"
+	}
+	nested := filepath.Join(t.TempDir(), "bin", nestedName)
 	if got := NormalizeCmdKey(nested); got != "go" {
 		t.Fatalf("path base: %q", got)
 	}
