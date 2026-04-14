@@ -26,6 +26,7 @@ import (
 	"codient/internal/designstore"
 	"codient/internal/gitutil"
 	"codient/internal/openaiclient"
+	"codient/internal/planstore"
 	"codient/internal/projectinfo"
 	"codient/internal/prompt"
 	"codient/internal/sessionstore"
@@ -67,6 +68,10 @@ type session struct {
 	fetchPromptMu sync.Mutex               // serializes fetch allow prompts and post-lock re-checks
 
 	codeIndex *codeindex.Index // semantic search index; nil when embedding_model is not configured
+
+	// Plan lifecycle state (non-nil when a structured plan is active).
+	currentPlan *planstore.Plan
+	planPhase   planstore.Phase
 }
 
 type undoEntry struct {
@@ -507,7 +512,14 @@ func (s *session) runSession(ctx context.Context, initialPrompt string, newSessi
 					s.registry = buildRegistry(s.cfg, mode, s)
 					s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, mode, s.userSystem, s.repoInstructions, s.projectContext, effectiveAutoCheckCmd(s.cfg))
 				}
+				if existing.PlanPhase != "" {
+					s.planPhase = planstore.Phase(existing.PlanPhase)
+				}
+				s.loadPlanFromDisk()
 				resumeSummary = sessionstore.ResumeSummaryLine(s.sessionID, existing.Messages)
+				if s.currentPlan != nil && s.planPhase != "" && s.planPhase != planstore.PhaseDone {
+					resumeSummary += " · plan: " + string(s.planPhase)
+				}
 			}
 		}
 	}
@@ -549,6 +561,10 @@ func (s *session) runSession(ctx context.Context, initialPrompt string, newSessi
 
 	s.probeAndSetContext(ctx)
 	s.startCodeIndex(ctx)
+
+	if s.currentPlan != nil && s.planPhase != "" && s.planPhase != planstore.PhaseDone {
+		s.handlePlanResume(ctx, sc)
+	}
 
 	fmt.Fprintf(os.Stderr, "codient: type /help for commands, /exit to quit\n")
 
@@ -637,6 +653,7 @@ func (s *session) runSession(ctx context.Context, initialPrompt string, newSessi
 
 		if s.mode == prompt.ModePlan {
 			designText := assistout.PrepareAssistantText(reply, true)
+			s.updatePlanFromReply(designText, line)
 			if designstore.LooksLikeReadyToImplement(designText) {
 				runner = s.offerPlanHandoff(ctx, sc, runner, designText)
 			}
@@ -658,40 +675,67 @@ func (s *session) printPrompt() {
 	}
 }
 
-// offerPlanHandoff prompts the user to switch to build mode after a plan
-// is finalized. If accepted, it switches modes and injects the design as the
-// first build turn. Returns the updated runner.
+// offerPlanHandoff prompts the user with a structured approval dialog after a plan
+// is finalized. On approval, it switches to build mode and executes from the
+// structured plan. On rejection, it injects feedback and continues planning.
+// Returns the updated runner.
 func (s *session) offerPlanHandoff(ctx context.Context, sc *bufio.Scanner, runner *agent.Runner, designText string) *agent.Runner {
-	fmt.Fprintf(os.Stderr, "\ncodient: plan complete — would you like to build it? [Y/n] ")
-	if !sc.Scan() {
-		return runner
+	if s.currentPlan == nil {
+		s.updatePlanFromReply(designText, "")
 	}
-	answer := strings.ToLower(strings.TrimSpace(sc.Text()))
-	if answer != "" && answer != "y" && answer != "yes" {
-		return runner
+	plan := s.currentPlan
+	plan.Phase = planstore.PhaseAwaitingApproval
+	s.planPhase = planstore.PhaseAwaitingApproval
+	if err := planstore.Save(plan); err != nil {
+		fmt.Fprintf(os.Stderr, "codient: plan save: %v\n", err)
 	}
 
-	s.switchMode(prompt.ModeBuild)
-	// Clear history — the full design is embedded in the handoff user message,
-	// so carrying over the design conversation just confuses the model into
-	// continuing to design instead of building.
-	s.history = nil
-	runner = s.newRunner()
+	decision := s.promptApproval(sc, plan)
 
-	preModified, preUntracked := s.captureSnapshot()
-	histLen := len(s.history)
-	s.turn++
-	userMsg := designHandoffUserMessage(designText, s.registry.Names())
-	reply, err := s.executeTurn(ctx, runner, userMsg)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "agent: %v\n", err)
+	switch decision.Action {
+	case "approve":
+		recordApproval(plan, "approve", decision.Feedback)
+		plan.Phase = planstore.PhaseApproved
+		s.planPhase = planstore.PhaseApproved
+		if err := planstore.Save(plan); err != nil {
+			fmt.Fprintf(os.Stderr, "codient: plan save: %v\n", err)
+		}
+		if err := s.executeFromPlan(ctx, plan); err != nil {
+			fmt.Fprintf(os.Stderr, "agent: %v\n", err)
+		}
+		return s.newRunner()
+
+	case "reject":
+		recordApproval(plan, "reject", decision.Feedback)
+		plan.Phase = planstore.PhaseDraft
+		s.planPhase = planstore.PhaseDraft
+		if err := planstore.Save(plan); err != nil {
+			fmt.Fprintf(os.Stderr, "codient: plan save: %v\n", err)
+		}
+		feedback := "[Plan rejected."
+		if decision.Feedback != "" {
+			feedback += " Feedback: " + decision.Feedback + "."
+		}
+		feedback += " Please revise the plan and address the feedback.]"
+		s.history = append(s.history, openai.UserMessage(feedback))
+		fmt.Fprintf(os.Stderr, "codient: plan rejected — continuing in plan mode\n")
+		return runner
+
+	case "edit":
+		plan.Phase = planstore.PhaseDraft
+		s.planPhase = planstore.PhaseDraft
+		fmt.Fprintf(os.Stderr, "codient: plan edited — continuing in plan mode\n")
+		return runner
+
+	default:
+		plan.Phase = planstore.PhaseDraft
+		s.planPhase = planstore.PhaseDraft
+		if err := planstore.Save(plan); err != nil {
+			fmt.Fprintf(os.Stderr, "codient: plan save: %v\n", err)
+		}
+		fmt.Fprintf(os.Stderr, "codient: continuing in plan mode\n")
 		return runner
 	}
-	s.pushUndoIfChanged(preModified, preUntracked, histLen)
-	s.lastReply = assistout.PrepareAssistantText(reply, false)
-	s.autoSave()
-	s.showGitDiffIfBuild()
-	return runner
 }
 
 func (s *session) autoSave() {
@@ -705,6 +749,10 @@ func (s *session) autoSave() {
 		Mode:      string(s.mode),
 		Model:     s.cfg.Model,
 		Messages:  sessionstore.FromOpenAI(s.history),
+	}
+	if s.planPhase != "" {
+		state.PlanPhase = string(s.planPhase)
+		state.PlanPath = planstore.Path(ws, s.sessionID)
 	}
 	if err := sessionstore.Save(state); err != nil {
 		fmt.Fprintf(os.Stderr, "codient: session save: %v\n", err)
@@ -776,6 +824,8 @@ func (s *session) buildSlashCommands(ctx context.Context, sc *bufio.Scanner) *sl
 			s.lastReply = ""
 			s.turn = 0
 			s.undoStack = nil
+			s.currentPlan = nil
+			s.planPhase = ""
 			fmt.Fprintf(os.Stderr, "codient: history cleared\n")
 			s.autoSave()
 			return nil
@@ -793,6 +843,8 @@ func (s *session) buildSlashCommands(ctx context.Context, sc *bufio.Scanner) *sl
 			s.turn = 0
 			s.taskSlug = ""
 			s.undoStack = nil
+			s.currentPlan = nil
+			s.planPhase = ""
 			if len(s.cfg.ExecAllowlist) > 0 {
 				s.execAllow = tools.NewSessionExecAllow(s.cfg.ExecAllowlist)
 				s.registry = buildRegistry(s.cfg, s.mode, s)
@@ -831,6 +883,9 @@ func (s *session) buildSlashCommands(ctx context.Context, sc *bufio.Scanner) *sl
 					fmt.Fprintf(os.Stderr, "  exec:      all commands allowed for this session\n")
 				}
 			}
+			if ps := s.planStatusLine(); ps != "" {
+				fmt.Fprintf(os.Stderr, "  plan:      %s\n", ps)
+			}
 			return nil
 		},
 	})
@@ -840,6 +895,19 @@ func (s *session) buildSlashCommands(ctx context.Context, sc *bufio.Scanner) *sl
 		Run: func(string) error {
 			names := s.registry.Names()
 			fmt.Fprintf(os.Stderr, "Tools (%s mode): %s\n", s.mode, strings.Join(names, ", "))
+			return nil
+		},
+	})
+	cmds.Register(slashcmd.Command{
+		Name:        "plan-status",
+		Aliases:     []string{"ps"},
+		Description: "show current plan phase, steps, and approval state",
+		Run: func(string) error {
+			if s.currentPlan == nil {
+				fmt.Fprintf(os.Stderr, "codient: no active plan\n")
+				return nil
+			}
+			fmt.Fprint(os.Stderr, planstore.RenderMarkdown(s.currentPlan))
 			return nil
 		},
 	})
@@ -1416,6 +1484,134 @@ func (s *session) startCodeIndex(ctx context.Context) {
 			fmt.Fprintf(os.Stderr, "codient: semantic index ready (%d files)\n", n)
 		}
 	}()
+}
+
+// updatePlanFromReply parses the agent's plan-mode markdown into a structured
+// plan and persists it. If a plan already exists, the parsed content is merged
+// (keeping the existing session/revision metadata).
+func (s *session) updatePlanFromReply(markdown, userRequest string) {
+	ws := s.cfg.EffectiveWorkspace()
+	if ws == "" {
+		return
+	}
+	parsed := planstore.ParseFromMarkdown(markdown, userRequest)
+	if s.currentPlan == nil {
+		parsed.SessionID = s.sessionID
+		parsed.Workspace = ws
+		parsed.Revision = 1
+		s.currentPlan = parsed
+	} else {
+		s.currentPlan.Summary = parsed.Summary
+		s.currentPlan.Steps = parsed.Steps
+		s.currentPlan.Assumptions = parsed.Assumptions
+		s.currentPlan.OpenQuestions = parsed.OpenQuestions
+		s.currentPlan.FilesToModify = parsed.FilesToModify
+		s.currentPlan.Verification = parsed.Verification
+		s.currentPlan.RawMarkdown = parsed.RawMarkdown
+		if s.currentPlan.UserRequest == "" {
+			s.currentPlan.UserRequest = parsed.UserRequest
+		}
+	}
+	s.currentPlan.Phase = planstore.PhaseDraft
+	s.planPhase = planstore.PhaseDraft
+	if err := planstore.Save(s.currentPlan); err != nil {
+		fmt.Fprintf(os.Stderr, "codient: plan save: %v\n", err)
+	}
+}
+
+// loadPlanFromDisk loads a previously saved plan for the current session.
+func (s *session) loadPlanFromDisk() {
+	ws := s.cfg.EffectiveWorkspace()
+	if ws == "" || s.sessionID == "" {
+		return
+	}
+	plan, err := planstore.Load(ws, s.sessionID)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "codient: plan load: %v\n", err)
+		return
+	}
+	if plan == nil {
+		return
+	}
+	s.currentPlan = plan
+	s.planPhase = plan.Phase
+}
+
+// handlePlanResume is called on session resume when an active plan exists.
+// It shows the plan status and offers resume options.
+func (s *session) handlePlanResume(ctx context.Context, sc *bufio.Scanner) {
+	plan := s.currentPlan
+	done, total := 0, len(plan.Steps)
+	for _, st := range plan.Steps {
+		if st.Status == planstore.StepDone || st.Status == planstore.StepSkipped {
+			done++
+		}
+	}
+	fmt.Fprintf(os.Stderr, "\ncodient: resuming plan (rev %d, phase %s, steps %d/%d)\n", plan.Revision, plan.Phase, done, total)
+
+	switch s.planPhase {
+	case planstore.PhaseDraft, planstore.PhaseAwaitingApproval:
+		fmt.Fprintf(os.Stderr, "codient: plan is in %s phase — continue in plan mode\n", s.planPhase)
+		if s.mode != prompt.ModePlan {
+			s.switchMode(prompt.ModePlan)
+		}
+
+	case planstore.PhaseApproved, planstore.PhaseExecuting:
+		fmt.Fprintf(os.Stderr, "\n  [r] Resume execution from current step\n")
+		fmt.Fprintf(os.Stderr, "  [p] Re-plan (switch to plan mode)\n")
+		fmt.Fprintf(os.Stderr, "  [i] Ignore plan and start fresh\n")
+		fmt.Fprintf(os.Stderr, "\ncodient: choose action: ")
+		if !sc.Scan() {
+			return
+		}
+		choice := strings.ToLower(strings.TrimSpace(sc.Text()))
+		switch {
+		case choice == "r" || choice == "resume":
+			if err := s.executeFromPlan(ctx, plan); err != nil {
+				fmt.Fprintf(os.Stderr, "agent: %v\n", err)
+			}
+		case choice == "p" || choice == "replan":
+			plan.Phase = planstore.PhaseDraft
+			s.planPhase = planstore.PhaseDraft
+			planstore.IncrementRevision(plan)
+			if err := planstore.Save(plan); err != nil {
+				fmt.Fprintf(os.Stderr, "codient: plan save: %v\n", err)
+			}
+			s.switchMode(prompt.ModePlan)
+		default:
+			s.currentPlan = nil
+			s.planPhase = ""
+			s.autoSave()
+		}
+
+	case planstore.PhaseReview:
+		fmt.Fprintf(os.Stderr, "codient: plan was in review phase — re-running verification\n")
+		if s.scanner == nil {
+			s.scanner = sc
+		}
+		passed, err := s.runVerification(ctx, sc, plan)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "codient: verification error: %v\n", err)
+		}
+		if passed {
+			fmt.Fprintf(os.Stderr, "codient: verification passed\n")
+		}
+	}
+}
+
+// planStatusLine returns a one-line summary of the current plan for /status.
+func (s *session) planStatusLine() string {
+	if s.currentPlan == nil {
+		return ""
+	}
+	p := s.currentPlan
+	done, total := 0, len(p.Steps)
+	for _, st := range p.Steps {
+		if st.Status == planstore.StepDone || st.Status == planstore.StepSkipped {
+			done++
+		}
+	}
+	return fmt.Sprintf("rev %d, phase %s, steps %d/%d", p.Revision, p.Phase, done, total)
 }
 
 func setDiff(a, b []string) []string {

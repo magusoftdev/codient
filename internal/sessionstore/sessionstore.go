@@ -23,6 +23,10 @@ type SessionState struct {
 	CreatedAt time.Time         `json:"created_at"`
 	UpdatedAt time.Time         `json:"updated_at"`
 	Messages  []json.RawMessage `json:"messages"`
+
+	// Plan lifecycle fields (populated when a structured plan exists).
+	PlanPhase string `json:"plan_phase,omitempty"`
+	PlanPath  string `json:"plan_path,omitempty"`
 }
 
 // SessionSummary is returned by List for UI purposes.

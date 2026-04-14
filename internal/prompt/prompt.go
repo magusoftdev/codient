@@ -21,6 +21,7 @@ type Params struct {
 	RepoInstructions  string // optional, already truncated by caller
 	AutoCheckResolved string // non-empty when post-edit auto-check is enabled (resolved command line)
 	ProjectContext    string // auto-detected project summary (language, framework, etc.)
+	ReviewMode        bool   // when true, appends review/verification guidance
 }
 
 // Build returns the full system message: persona/rules, dynamic tools, repo notes, user -system.
@@ -56,6 +57,10 @@ func Build(p Params) string {
 	if mode == ModePlan {
 		b.WriteString("\n\n")
 		b.WriteString(sectionPlanMode())
+	}
+	if p.ReviewMode {
+		b.WriteString("\n\n")
+		b.WriteString(sectionReviewMode())
 	}
 	b.WriteString("\n\n")
 	b.WriteString(sectionDynamicTools(p.Cfg, p.Reg))
@@ -168,6 +173,18 @@ func sectionPlanMode() string {
 - Acknowledge, merge into the design, then either ask the **next single blocking question** (same format) or continue toward **Ready to implement** without further questions.
 
 - **Do not include complete ready-to-paste code blocks.** Describe changes in terms of which files to modify, what logic to add, and why. The build agent writes actual code using tools and verifies syntax as it goes — pasting large blocks from the design bypasses that verification and risks syntax errors (e.g. broken YAML indentation, Makefile tab issues).`
+}
+
+func sectionReviewMode() string {
+	return `## Review mode
+
+You are fixing issues found during post-execution verification (build/test/lint failures). Focus on:
+
+- Reading the verification output carefully to identify root causes.
+- Making targeted fixes — do not refactor unrelated code.
+- After each fix, the host will re-run verification automatically.
+- If a test failure is caused by the test itself being wrong (not the implementation), fix the test.
+- If a failure cannot be fixed without changing the plan, say so and explain why.`
 }
 
 func sectionCommunication() string {
