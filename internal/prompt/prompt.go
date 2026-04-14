@@ -307,13 +307,13 @@ func sectionPerToolNotes(p Params) string {
 		b.WriteString("- **copy_path**: Copies a file or directory tree within the workspace (symlinks not supported).\n")
 	}
 	if _, ok := set["write_file"]; ok && strings.TrimSpace(p.AutoCheckResolved) != "" {
-		b.WriteString(fmt.Sprintf("- **Auto-check**: After successful **write_file**, **str_replace**, **patch_file**, **insert_lines**, **remove_path**, **move_path**, or **copy_path**, the host runs `%s`. If it fails, you receive `[auto-check]` feedback—fix those errors before moving on.\n", strings.TrimSpace(p.AutoCheckResolved)))
+		fmt.Fprintf(&b, "- **Auto-check**: After successful **write_file**, **str_replace**, **patch_file**, **insert_lines**, **remove_path**, **move_path**, or **copy_path**, the host runs `%s`. If it fails, you receive `[auto-check]` feedback—fix those errors before moving on.\n", strings.TrimSpace(p.AutoCheckResolved))
 	}
 	if _, ok := set["run_command"]; ok && len(cfg.ExecAllowlist) > 0 {
-		b.WriteString(fmt.Sprintf("- **run_command**: JSON `{\"argv\":[\"program\",\"arg1\",...],\"cwd\":\".\"}`. `argv[0]` must be a bare name (no path separators). Allowlisted: **%s**. Output includes `exit_code` and combined stdout/stderr. Example: `{\"argv\":[\"go\",\"test\",\"./...\"],\"cwd\":\".\"}`.\n", strings.Join(cfg.ExecAllowlist, ", ")))
+		fmt.Fprintf(&b, "- **run_command**: JSON `{\"argv\":[\"program\",\"arg1\",...],\"cwd\":\".\"}`. `argv[0]` must be a bare name (no path separators). Allowlisted: **%s**. Output includes `exit_code` and combined stdout/stderr. Example: `{\"argv\":[\"go\",\"test\",\"./...\"],\"cwd\":\".\"}`.\n", strings.Join(cfg.ExecAllowlist, ", "))
 	}
 	if _, ok := set["run_shell"]; ok && len(cfg.ExecAllowlist) > 0 {
-		b.WriteString(fmt.Sprintf("- **run_shell**: JSON `{\"command\":\"...\",\"cwd\":\".\"}`. Runs via **cmd /c** (Windows) or **sh -c** (Unix)—use for **mkdir**, pipelines, redirects. The shell (`cmd` or `sh`) must be allowlisted (included in **%s**).\n", strings.Join(cfg.ExecAllowlist, ", ")))
+		fmt.Fprintf(&b, "- **run_shell**: JSON `{\"command\":\"...\",\"cwd\":\".\"}`. Runs via **cmd /c** (Windows) or **sh -c** (Unix)—use for **mkdir**, pipelines, redirects. The shell (`cmd` or `sh`) must be allowlisted (included in **%s**).\n", strings.Join(cfg.ExecAllowlist, ", "))
 	}
 	if _, ok := set["semantic_search"]; ok {
 		b.WriteString("- **semantic_search**: Find files by meaning rather than exact text. Use when you need to discover code related to a concept (e.g. 'authentication middleware', 'database migrations', 'error handling'). Prefer this over grep for exploratory discovery in unfamiliar codebases; use grep when you know the exact string or symbol.\n")
