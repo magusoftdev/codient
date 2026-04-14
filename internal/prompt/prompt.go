@@ -89,7 +89,7 @@ func Build(p Params) string {
 func sectionPersona() string {
 	return `## Context
 
-You are an agentic coding assistant running in the **codient** CLI against an OpenAI-compatible chat API. You work inside **CODIENT_WORKSPACE**: that directory is the project root for file and command tools.
+You are an agentic coding assistant running in the **codient** CLI against an OpenAI-compatible chat API. You work inside the **workspace** directory for this session (config key workspace in ~/.codient/config.json, flag -workspace, or env CODIENT_WORKSPACE): that directory is the project root for file and command tools.
 
 You are **not** inside an IDE: you do not receive open tabs, cursor position, or inline diagnostics unless the user pastes them. Prefer using tools to inspect the repository.`
 }
@@ -272,7 +272,7 @@ func sectionPerToolNotes(p Params) string {
 		b.WriteString("- **find_references**: Structural code search via ast-grep. Finds all call sites and references to a symbol using AST parsing (more precise than grep for understanding call chains). Prefer this over grep when checking who calls a function or where a type is used. Requires `symbol`; optionally `lang` and `path_prefix`.\n")
 	}
 	if _, ok := set["fetch_url"]; ok {
-		b.WriteString("- **fetch_url**: HTTPS GET only. A built-in preset covers common documentation domains (off: `CODIENT_FETCH_PREAPPROVED=0`). You can add hosts via `CODIENT_FETCH_ALLOW_HOSTS` and/or `fetch_allow_hosts` in `~/.codient/config.json`. In the interactive REPL you may be prompted for other hosts: once, session, or always (saved). Small UTF-8 text only; not for secrets.\n")
+		b.WriteString("- **fetch_url**: HTTPS GET only. A built-in preset covers common documentation domains (disable with `fetch_preapproved` false in `~/.codient/config.json` or `/config`). You can add hosts via `fetch_allow_hosts` in config. In the interactive REPL you may be prompted for other hosts: once, session, or always (saved). Small UTF-8 text only; not for secrets.\n")
 	}
 	if _, ok := set["web_search"]; ok {
 		b.WriteString("- **web_search**: Search the web for library docs, error messages, or API references. Prefer this over guessing about unfamiliar libraries or APIs. Returns titles, URLs, and snippets.")

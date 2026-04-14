@@ -171,10 +171,10 @@ func promptCheckpoint(sc *bufio.Scanner) string {
 		return "continue"
 	}
 	choice := strings.ToLower(strings.TrimSpace(sc.Text()))
-	switch {
-	case choice == "s" || choice == "stop":
+	switch choice {
+	case "s", "stop":
 		return "stop"
-	case choice == "p" || choice == "replan":
+	case "p", "replan":
 		return "replan"
 	default:
 		return "continue"

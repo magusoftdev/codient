@@ -315,7 +315,7 @@ func runCommand(ctx context.Context, workspaceRoot, cwdRel string, argv []string
 		return "", fmt.Errorf("empty command name")
 	}
 	if _, ok := allow[key]; !ok {
-		return "", fmt.Errorf("command %q is not on CODIENT_EXEC_ALLOWLIST", key)
+		return "", fmt.Errorf("command %q is not on the exec allowlist (configure exec_allowlist in ~/.codient/config.json or /config)", key)
 	}
 
 	cwd := strings.TrimSpace(cwdRel)

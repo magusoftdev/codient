@@ -48,8 +48,14 @@ func Run() int {
 		workspace     = flag.String("workspace", "", "root directory for workspace tools (overrides config and cwd default)")
 		a2aFlag       = flag.Bool("a2a", false, "start an A2A (Agent-to-Agent) protocol server instead of the CLI")
 		a2aAddr       = flag.String("a2a-addr", ":8080", "listen address for the A2A server")
+		showVersion   = flag.Bool("version", false, "print version and exit")
 	)
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Println(Version)
+		return 0
+	}
 
 	cfg, err := config.Load()
 	if err != nil {

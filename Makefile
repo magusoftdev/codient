@@ -4,7 +4,7 @@ BIN_DIR := bin
 EXE     := $(shell $(GO) env GOEXE)
 BIN     := $(BIN_DIR)/codient$(EXE)
 
-.PHONY: all help build install clean test test-unit test-short test-race test-integration test-integration-strict vet fmt mod-tidy check run
+.PHONY: all help build install clean test test-unit test-short test-race test-integration test-integration-strict vet fmt mod-tidy check lint govulncheck run
 
 all: build
 
@@ -23,6 +23,8 @@ help:
 	@echo "  make vet            go vet ./..."
 	@echo "  make fmt            go fmt ./..."
 	@echo "  make mod-tidy       go mod tidy"
+	@echo "  make lint           golangci-lint run (requires golangci-lint on PATH)"
+	@echo "  make govulncheck    vulnerability scan on dependencies (go run)"
 	@echo "  make check          vet + test-unit (no live integration; safe for CI)"
 	@echo "  make clean          remove $(BIN_DIR)/"
 
@@ -68,6 +70,12 @@ fmt:
 
 mod-tidy:
 	$(GO) mod tidy
+
+lint:
+	golangci-lint run ./...
+
+govulncheck:
+	$(GO) run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
 check: vet test-unit
 

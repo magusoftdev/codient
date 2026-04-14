@@ -73,10 +73,7 @@ func messageText(m openai.ChatCompletionMessageParamUnion) string {
 }
 
 func isToolMessage(m openai.ChatCompletionMessageParamUnion) bool {
-	if m.OfTool != nil {
-		return true
-	}
-	return false
+	return m.OfTool != nil
 }
 
 func replaceToolContent(m openai.ChatCompletionMessageParamUnion, content string) openai.ChatCompletionMessageParamUnion {

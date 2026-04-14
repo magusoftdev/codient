@@ -105,11 +105,29 @@ func (s *session) executeTurn(ctx context.Context, runner *agent.Runner, user st
 		return "", err
 	}
 	fmt.Fprint(os.Stderr, "\n")
-	if s.mode == prompt.ModeAsk {
-		runner.PostReplyCheck = makePostReplyCheck(s)
-	}
 	writePlanDraftPreamble(os.Stdout, s.mode, s.lastReply)
 	streamTo := streamWriterForTurn(s.streamReply, assistout.StdoutIsInteractive(), s.mode, s.richOutput, s.lastReply)
+
+	stopSpin := startWorkingSpinner(os.Stderr)
+	var stopOnce sync.Once
+	doStop := func() { stopOnce.Do(stopSpin) }
+	defer doStop()
+
+	prevProg := runner.Progress
+	var gateProg io.Writer
+	if prevProg != nil {
+		wrapped := &firstWriteStop{w: prevProg, stop: doStop}
+		runner.Progress = wrapped
+		gateProg = wrapped
+		defer func() { runner.Progress = prevProg }()
+	}
+	if s.mode == prompt.ModeAsk {
+		runner.PostReplyCheck = makePostReplyCheck(s, gateProg)
+	}
+	if streamTo != nil {
+		streamTo = &firstWriteStop{w: streamTo, stop: doStop}
+	}
+
 	reply, newHist, streamed, runErr := runner.RunConversation(ctx, s.systemPrompt, s.history, user, streamTo)
 	if runErr != nil {
 		return "", runErr
@@ -144,7 +162,7 @@ Answer NO if the reply is mainly: summarizing external pages or search results; 
 // makePostReplyCheck returns a PostReplyCheck function for Ask mode.
 // It uses a cheap LLM gate after list-shaped heuristics: only when the model
 // says the reply warrants verification do we inject the verification prompt.
-func makePostReplyCheck(s *session) func(context.Context, agent.PostReplyCheckInfo) string {
+func makePostReplyCheck(s *session, progress io.Writer) func(context.Context, agent.PostReplyCheckInfo) string {
 	return func(ctx context.Context, info agent.PostReplyCheckInfo) string {
 		if !looksLikeSuggestionList(info.Reply) {
 			return ""
@@ -152,9 +170,9 @@ func makePostReplyCheck(s *session) func(context.Context, agent.PostReplyCheckIn
 		if skipSuggestionVerifyForResearchTurn(info) {
 			return ""
 		}
-		if s.progressOut != nil {
+		if progress != nil {
 			if line := agent.FormatStatusProgressLine(s.cfg.Plain, string(s.mode), "checking whether verification is needed…"); line != "" {
-				fmt.Fprintf(s.progressOut, "%s\n", line)
+				fmt.Fprintf(progress, "%s\n", line)
 			}
 		}
 		want, err := postReplyGateWantsVerification(ctx, s.client, info)
@@ -240,10 +258,7 @@ func skipSuggestionVerifyForResearchTurn(info agent.PostReplyCheckInfo) bool {
 			return false
 		}
 	}
-	if userIntentSuggestsCodeChanges(info.User) {
-		return false
-	}
-	return true
+	return !userIntentSuggestsCodeChanges(info.User)
 }
 
 func userIntentSuggestsCodeChanges(u string) bool {
@@ -1708,12 +1723,12 @@ func (s *session) handlePlanResume(ctx context.Context, sc *bufio.Scanner) {
 			return
 		}
 		choice := strings.ToLower(strings.TrimSpace(sc.Text()))
-		switch {
-		case choice == "r" || choice == "resume":
+		switch choice {
+		case "r", "resume":
 			if err := s.executeFromPlan(ctx, plan); err != nil {
 				fmt.Fprintf(os.Stderr, "agent: %v\n", err)
 			}
-		case choice == "p" || choice == "replan":
+		case "p", "replan":
 			plan.Phase = planstore.PhaseDraft
 			s.planPhase = planstore.PhaseDraft
 			planstore.IncrementRevision(plan)

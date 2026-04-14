@@ -33,12 +33,12 @@ func (s *session) promptApproval(sc *bufio.Scanner, plan *planstore.Plan) Approv
 	}
 	choice := strings.ToLower(strings.TrimSpace(sc.Text()))
 
-	switch {
-	case choice == "a" || choice == "approve":
+	switch choice {
+	case "a", "approve":
 		return ApprovalDecision{Action: "approve"}
-	case choice == "r" || choice == "reject":
+	case "r", "reject":
 		return s.promptRejectFeedback(sc)
-	case choice == "e" || choice == "edit":
+	case "e", "edit":
 		return s.promptEditPlan(plan)
 	default:
 		return ApprovalDecision{Action: "continue"}

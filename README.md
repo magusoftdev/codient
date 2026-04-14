@@ -31,7 +31,7 @@ make build     # outputs ./bin/codient
 
 ## Configuration
 
-All settings are stored in `~/.codient/config.json` (unless `CODIENT_STATE_DIR` points elsewhere) and managed via `/config` and `/setup` inside a session. Environment variables are **not** used for configuration (see below for the one exception).
+Most settings are stored in `~/.codient/config.json` (unless `CODIENT_STATE_DIR` points elsewhere) and managed via `/config` and `/setup` inside a session. A few environment variables override defaults (see below); everything else is config file or CLI flags.
 
 ### First run
 
@@ -146,7 +146,10 @@ When `fetch_url` receives `Content-Type: text/html`, the body is converted to si
 
 | Variable | Description |
 |----------|-------------|
-| `CODIENT_STATE_DIR` | Directory for `config.json` instead of `~/.codient`. This is the **only** environment variable used for configuration (it locates the config file itself). |
+| `CODIENT_STATE_DIR` | Directory for `config.json` and related state instead of `~/.codient`. |
+| `CODIENT_WORKSPACE` | Default workspace root for file and command tools when not set in config or via `-workspace`. |
+
+Run `codient -version` to print the binary version.
 
 Test infrastructure variables (`CODIENT_INTEGRATION*`) are used by the test suite but are not user configuration.
 

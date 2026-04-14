@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"sync"
@@ -41,7 +42,9 @@ func (l *Logger) emit(v map[string]any) {
 	v["ts"] = time.Now().UTC().Format(time.RFC3339Nano)
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	_ = json.NewEncoder(l.w).Encode(v)
+	if err := json.NewEncoder(l.w).Encode(v); err != nil {
+		fmt.Fprintf(os.Stderr, "codient: agent log write failed: %v\n", err)
+	}
 }
 
 // LLM records a chat completion round (after the HTTP call).

@@ -92,9 +92,9 @@ func (r *Registry) Run(ctx context.Context, name string, args json.RawMessage) (
 }
 
 // Default returns a registry with safe builtins and, when workspace is non-empty,
-// coding tools scoped to that directory (set CODIENT_WORKSPACE).
-// exec enables run_command when non-nil and Allowlist is non-empty (CODIENT_EXEC_ALLOWLIST).
-// fetch enables fetch_url when non-nil and AllowHosts is non-empty (CODIENT_FETCH_ALLOW_HOSTS).
+// coding tools scoped to that directory (config workspace, -workspace, or CODIENT_WORKSPACE).
+// exec enables run_command when non-nil and Allowlist is non-empty (exec_allowlist in config).
+// fetch enables fetch_url when non-nil and AllowHosts is non-empty (fetch_allow_hosts / preapproved in config).
 // search enables web_search when non-nil (always enabled in default builds).
 func Default(workspace string, exec *ExecOptions, fetch *FetchOptions, search *SearchOptions, astGrepPath string, idx *codeindex.Index, mem *MemoryOptions) *Registry {
 	r := NewRegistry()
@@ -182,7 +182,7 @@ func registerWorkspaceTools(r *Registry, root string, exec *ExecOptions, fetch *
 func registerWorkspaceReadTools(r *Registry, root string, fetch *FetchOptions, search *SearchOptions, astGrepPath string) {
 	r.Register(Tool{
 		Name: "read_file",
-		Description: "Reads a UTF-8 text file under the workspace root (CODIENT_WORKSPACE). " +
+		Description: "Reads a UTF-8 text file under the configured workspace root. " +
 			"Optional max_bytes (default 262144) and 1-based start_line/end_line to return a slice of lines.",
 		Parameters: shared.FunctionParameters{
 			"type": "object",
@@ -759,9 +759,9 @@ func registerRunCommand(r *Registry, root string, exec *ExecOptions) {
 			"argv[0] must be a command name on the allowlist; a leading ./ or .\\ prefix is accepted " +
 			"and resolves the binary relative to the working directory. " +
 			"For shell builtins (mkdir, redirects, pipelines) use run_shell instead. " +
-			"Default allowlist includes go, git, and the platform shell; override with CODIENT_EXEC_ALLOWLIST; disable with CODIENT_EXEC_DISABLE=1. " +
+			"Default allowlist includes go, git, and the platform shell; override with exec_allowlist in ~/.codient/config.json or /config; disable with exec_disable. " +
 			"If a command is not allowlisted, the user may be prompted to allow it for this session. " +
-			"Stdout and stderr are combined. Respects CODIENT_EXEC_TIMEOUT_SEC and output size limits.",
+			"Stdout and stderr are combined. Respects exec_timeout_sec and exec_max_output_bytes in config.",
 		Parameters: shared.FunctionParameters{
 			"type": "object",
 			"properties": map[string]any{

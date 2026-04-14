@@ -15,8 +15,6 @@ import (
 	"codient/internal/prompt"
 )
 
-const codientVersion = "0.1.0"
-
 func runA2AServer(ctx context.Context, cfg *config.Config, addr string, agentLog *agentlog.Logger) int {
 	if err := cfg.RequireModel(); err != nil {
 		fmt.Fprintf(os.Stderr, "config: %v\n", err)
@@ -30,7 +28,7 @@ func runA2AServer(ctx context.Context, cfg *config.Config, addr string, agentLog
 			return client
 		},
 		Log:     agentLog,
-		Version: codientVersion,
+		Version: Version,
 		Addr:    addr,
 	})
 

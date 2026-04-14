@@ -32,7 +32,7 @@ type FetchOptions struct {
 	PromptUnknownHost func(ctx context.Context, host, pageURL string) FetchHostChoice
 	// PersistFetchHost saves host to persistent config when the user chooses FetchHostAllowAlways. Optional.
 	PersistFetchHost func(host string) error
-	// IncludePreapproved merges a built-in documentation/code-domain allowlist (plus path rules). Default on; set CODIENT_FETCH_PREAPPROVED=0 to disable.
+	// IncludePreapproved merges a built-in documentation/code-domain allowlist (plus path rules). Default on; disable via config fetch_preapproved false.
 	IncludePreapproved bool
 	// RateLimiter throttles fetch requests to prevent abuse. Optional; nil disables rate limiting.
 	RateLimiter *RateLimiter
@@ -66,8 +66,8 @@ func registerFetchURL(r *Registry, opts *FetchOptions) {
 	r.Register(Tool{
 		Name: "fetch_url",
 		Description: "HTTPS GET of a URL (text response only). " +
-			"A built-in allowlist covers common language and framework documentation hosts (disable with CODIENT_FETCH_PREAPPROVED=0). " +
-			"Additional hosts: CODIENT_FETCH_ALLOW_HOSTS or ~/.codient/config.json (fetch_allow_hosts). " +
+			"A built-in allowlist covers common language and framework documentation hosts (disable with fetch_preapproved false in ~/.codient/config.json or /config). " +
+			"Additional hosts: fetch_allow_hosts in config (comma-separated hostnames) or approve in the interactive REPL. " +
 			"In interactive sessions, other hosts may be approved once, for the session, or always (saved). " +
 			"Redirects must stay on HTTPS and on an allowed host/path. " +
 			"Response body is capped by max_bytes (default 1MiB). " +
@@ -138,7 +138,7 @@ func registerFetchURL(r *Registry, opts *FetchOptions) {
 
 			if !allowed(host, reqPath) {
 				if prompt == nil {
-					return "", fmt.Errorf("host %q is not allowlisted (set CODIENT_FETCH_ALLOW_HOSTS)", host)
+					return "", fmt.Errorf("host %q is not allowlisted (add fetch_allow_hosts in ~/.codient/config.json or use an interactive session to approve)", host)
 				}
 				switch prompt(ctx, host, raw) {
 				case FetchHostDeny:

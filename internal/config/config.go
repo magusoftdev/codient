@@ -370,21 +370,6 @@ func parseExecAllowlist(s string) []string {
 	return out
 }
 
-func mergeFetchAllowHostSlices(a, b []string) []string {
-	seen := make(map[string]struct{})
-	var out []string
-	for _, list := range [][]string{a, b} {
-		for _, h := range list {
-			if _, ok := seen[h]; ok {
-				continue
-			}
-			seen[h] = struct{}{}
-			out = append(out, h)
-		}
-	}
-	return out
-}
-
 // parseFetchAllowHosts parses fetch_allow_hosts (comma-separated hostnames, no schemes or paths).
 func parseFetchAllowHosts(s string) []string {
 	s = strings.TrimSpace(s)

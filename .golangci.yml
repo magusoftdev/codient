@@ -1,0 +1,10 @@
+version: "2"
+
+run:
+  timeout: 10m
+
+linters:
+  default: standard
+  # The codebase intentionally omits many errcheck cases (defer Close, test helpers).
+  disable:
+    - errcheck

@@ -224,9 +224,10 @@ func CheckpointSummary(plan *Plan, completedGroup int) string {
 			break
 		}
 		for _, s := range g {
-			if s.Status == StepDone {
+			switch s.Status {
+			case StepDone:
 				fmt.Fprintf(&b, "  [done]    %s\n", s.Title)
-			} else if s.Status == StepSkipped {
+			case StepSkipped:
 				fmt.Fprintf(&b, "  [skipped] %s\n", s.Title)
 			}
 		}

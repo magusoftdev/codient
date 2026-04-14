@@ -86,8 +86,8 @@ func (s *session) runVerification(ctx context.Context, sc *bufio.Scanner, plan *
 	}
 	choice := strings.ToLower(strings.TrimSpace(sc.Text()))
 
-	switch {
-	case choice == "f" || choice == "fix":
+	switch choice {
+	case "f", "fix":
 		plan.Phase = planstore.PhaseExecuting
 		s.planPhase = planstore.PhaseExecuting
 		if err := planstore.Save(plan); err != nil {
@@ -97,7 +97,7 @@ func (s *session) runVerification(ctx context.Context, sc *bufio.Scanner, plan *
 		s.history = append(s.history, openai.UserMessage(failureMsg))
 		return false, nil
 
-	case choice == "a" || choice == "accept":
+	case "a", "accept":
 		plan.Phase = planstore.PhaseDone
 		s.planPhase = planstore.PhaseDone
 		if err := planstore.Save(plan); err != nil {
@@ -106,7 +106,7 @@ func (s *session) runVerification(ctx context.Context, sc *bufio.Scanner, plan *
 		fmt.Fprintf(os.Stderr, "codient: accepted with failures — plan marked done\n")
 		return true, nil
 
-	case choice == "p" || choice == "replan":
+	case "p", "replan":
 		plan.Phase = planstore.PhaseDraft
 		s.planPhase = planstore.PhaseDraft
 		planstore.IncrementRevision(plan)
