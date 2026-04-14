@@ -210,7 +210,15 @@ func registryForMode(cfg *config.Config, mode prompt.Mode) *tools.Registry {
 				Allowlist:      cfg.ExecAllowlist,
 			}
 		}
-		return tools.Default(ws, execOpts, fetch, search, sgPath, nil)
+		stateDir, _ := config.StateDir()
+		var memOpts *tools.MemoryOptions
+		if stateDir != "" || ws != "" {
+			memOpts = &tools.MemoryOptions{
+				StateDir:      stateDir,
+				WorkspaceRoot: ws,
+			}
+		}
+		return tools.Default(ws, execOpts, fetch, search, sgPath, nil, memOpts)
 	}
 }
 
@@ -239,11 +247,14 @@ func searchOpts(cfg *config.Config, netLimit *tools.RateLimiter) *tools.SearchOp
 func systemPromptForMode(cfg *config.Config, reg *tools.Registry, mode prompt.Mode) string {
 	repoInstr, _ := prompt.LoadRepoInstructions(cfg.EffectiveWorkspace())
 	projCtx := projectinfo.Detect(cfg.EffectiveWorkspace())
+	stateDir, _ := config.StateDir()
+	mem, _ := prompt.LoadMemory(stateDir, cfg.EffectiveWorkspace())
 	return prompt.Build(prompt.Params{
 		Cfg:              cfg,
 		Reg:              reg,
 		Mode:             mode,
 		RepoInstructions: repoInstr,
 		ProjectContext:   projCtx,
+		Memory:           mem,
 	})
 }

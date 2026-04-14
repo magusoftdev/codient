@@ -237,6 +237,7 @@ Inside a session you can use slash commands to control the agent:
 | `/status` | Show session state (mode, model, turns, tokens, auto-check, exec policy) |
 | `/log [path]` | Show logging status or enable JSONL logging to a file |
 | `/undo` | Undo the last build turn using git (restore modified files, remove new files from that turn). Requires a git repo. Use `/undo all` to revert every tracked turn in the stack. |
+| `/memory` (or `/mem`) | View, edit, or clear cross-session memory files. Subcommands: `show` (default), `edit [global\|workspace]`, `clear [global\|workspace]`, `reload`. |
 | `/new` (or `/n`) | Start a brand new session (fresh ID, history, and design namespace) |
 | `/clear` | Reset conversation history (same session) |
 | `/help` (or `/h`, `/?`) | Show available commands |
@@ -247,6 +248,34 @@ Inside a session you can use slash commands to control the agent:
 Session state (conversation history, mode, model) is saved under `<workspace>/.codient/sessions/` after each turn. Starting codient again in the same workspace resumes the latest session. Use `-new-session` to start fresh.
 
 The semantic search index (when **`embedding_model`** is set) lives under `<workspace>/.codient/index/` and is separate from chat sessions.
+
+### Cross-session memory
+
+Codient supports persistent memory that carries project conventions, user preferences, and past decisions across sessions. Memory is loaded into the system prompt at startup so the agent "remembers" what it learned previously.
+
+**Two layers:**
+
+| Scope | File | Purpose |
+|-------|------|---------|
+| **Global** | `~/.codient/memory.md` | User-wide preferences and conventions (applies to all projects) |
+| **Workspace** | `<workspace>/.codient/memory.md` | Project-specific conventions, architecture decisions, patterns |
+
+Both files are Markdown. Global memory is loaded first, workspace memory second, so project-specific notes can override global ones. Each file is capped at 16 KiB to avoid bloating the system prompt.
+
+**How it works:**
+
+- **Automatic:** In build mode, the agent has a `memory_update` tool. It can proactively record conventions it discovers (build commands, naming patterns, architecture decisions) and user preferences it learns (style, verbosity, workflow).
+- **Manual:** Use the `/memory` slash command to view (`/memory show`), edit in `$EDITOR` (`/memory edit workspace`), or clear (`/memory clear global`) memory files. `/memory reload` re-reads files after external edits.
+- **Tool actions:** `memory_update` supports `append` (add to end) and `replace_section` (update a `## Heading` section in-place, or create it if missing).
+
+**Repository instruction files** are also loaded into the system prompt alongside memory:
+
+| File | Description |
+|------|-------------|
+| `AGENTS.md` | Workspace-root conventions file (compatible with common agent tooling) |
+| `.codient/instructions.md` | Codient-specific project instructions |
+
+These are read-only from the agent's perspective (capped at 32 KiB total) and complement the read-write memory files.
 
 ### Plan mode and saved plans
 

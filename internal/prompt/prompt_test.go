@@ -10,7 +10,7 @@ import (
 
 func TestBuild_IncludesToolsAndUserSystem(t *testing.T) {
 	cfg := &config.Config{Workspace: "/tmp/w"}
-	reg := tools.Default("/tmp/w", nil, nil, nil, "", nil)
+	reg := tools.Default("/tmp/w", nil, nil, nil, "", nil, nil)
 	s := Build(Params{Cfg: cfg, Reg: reg, Mode: ModeBuild, UserSystem: "custom", RepoInstructions: ""})
 	if !strings.Contains(s, "echo") {
 		t.Fatalf("missing tool name: %s", s)
@@ -72,7 +72,7 @@ func TestBuild_ModeAsk_ReadOnlySections(t *testing.T) {
 
 func TestBuild_AutoCheckNote(t *testing.T) {
 	cfg := &config.Config{Workspace: "/tmp/w"}
-	reg := tools.Default("/tmp/w", nil, nil, nil, "", nil)
+	reg := tools.Default("/tmp/w", nil, nil, nil, "", nil, nil)
 	s := Build(Params{
 		Cfg: cfg, Reg: reg, Mode: ModeBuild,
 		AutoCheckResolved: "go build ./...",

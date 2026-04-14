@@ -21,6 +21,7 @@ type Params struct {
 	RepoInstructions  string // optional, already truncated by caller
 	AutoCheckResolved string // non-empty when post-edit auto-check is enabled (resolved command line)
 	ProjectContext    string // auto-detected project summary (language, framework, etc.)
+	Memory            string // cross-session memory (global + workspace), already loaded and truncated
 	ReviewMode        bool   // when true, appends review/verification guidance
 }
 
@@ -73,6 +74,10 @@ func Build(p Params) string {
 	if strings.TrimSpace(p.RepoInstructions) != "" {
 		b.WriteString("\n\n## Repository instructions (from workspace files)\n\n")
 		b.WriteString(strings.TrimSpace(p.RepoInstructions))
+	}
+	if strings.TrimSpace(p.Memory) != "" {
+		b.WriteString("\n\n## Memory (cross-session)\n\n")
+		b.WriteString(strings.TrimSpace(p.Memory))
 	}
 	if strings.TrimSpace(p.UserSystem) != "" {
 		b.WriteString("\n\n## Additional instructions from the user (-system)\n\n")
@@ -312,6 +317,9 @@ func sectionPerToolNotes(p Params) string {
 	}
 	if _, ok := set["semantic_search"]; ok {
 		b.WriteString("- **semantic_search**: Find files by meaning rather than exact text. Use when you need to discover code related to a concept (e.g. 'authentication middleware', 'database migrations', 'error handling'). Prefer this over grep for exploratory discovery in unfamiliar codebases; use grep when you know the exact string or symbol.\n")
+	}
+	if _, ok := set["memory_update"]; ok {
+		b.WriteString("- **memory_update**: Persist knowledge across sessions. Use `scope` **global** for user-wide preferences or **workspace** for project-specific conventions. Use `action` **append** to add entries or **replace_section** to update a `## Heading` section. Keep entries concise (bullet points). Record: project conventions (build commands, naming patterns, architecture decisions), user preferences (style, verbosity), and important past decisions. Do **not** store secrets, credentials, or transient session details.\n")
 	}
 	if _, ok := set["echo"]; ok {
 		b.WriteString("- **echo** / **get_time**: Utility tools for sanity checks.\n")

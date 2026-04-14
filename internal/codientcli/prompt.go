@@ -38,7 +38,7 @@ func searchOptsFrom(cfg *config.Config, netLimit *tools.RateLimiter) *tools.Sear
 	}
 }
 
-func buildRegistry(cfg *config.Config, mode prompt.Mode, s *session) *tools.Registry {
+func buildRegistry(cfg *config.Config, mode prompt.Mode, s *session, memOpts *tools.MemoryOptions) *tools.Registry {
 	netLimit := tools.NewNetworkLimiter(cfg.FetchWebRatePerSec, cfg.FetchWebRateBurst)
 	fetch := fetchOptsFrom(cfg, s, netLimit)
 	search := searchOptsFrom(cfg, netLimit)
@@ -71,11 +71,11 @@ func buildRegistry(cfg *config.Config, mode prompt.Mode, s *session) *tools.Regi
 			execOpts.Allowlist = cfg.ExecAllowlist
 		}
 	}
-	return tools.Default(cfg.EffectiveWorkspace(), execOpts, fetch, search, sgPath, idx)
+	return tools.Default(cfg.EffectiveWorkspace(), execOpts, fetch, search, sgPath, idx, memOpts)
 }
 
 // buildAgentSystemPrompt assembles the layered agent system message (tools, repo notes, -system).
-func buildAgentSystemPrompt(cfg *config.Config, reg *tools.Registry, mode prompt.Mode, userSystem, repoInstructions, projectContext, autoCheckResolved string) string {
+func buildAgentSystemPrompt(cfg *config.Config, reg *tools.Registry, mode prompt.Mode, userSystem, repoInstructions, projectContext, memory, autoCheckResolved string) string {
 	return prompt.Build(prompt.Params{
 		Cfg:               cfg,
 		Reg:               reg,
@@ -83,6 +83,7 @@ func buildAgentSystemPrompt(cfg *config.Config, reg *tools.Registry, mode prompt
 		UserSystem:        userSystem,
 		RepoInstructions:  repoInstructions,
 		ProjectContext:    projectContext,
+		Memory:            memory,
 		AutoCheckResolved: autoCheckResolved,
 	})
 }

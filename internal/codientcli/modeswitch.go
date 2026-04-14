@@ -35,8 +35,8 @@ func (s *session) switchMode(newMode prompt.Mode) {
 
 	s.mode = newMode
 	s.client = openaiclient.New(s.cfg)
-	s.registry = buildRegistry(s.cfg, newMode, s)
-	s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, newMode, s.userSystem, s.repoInstructions, s.projectContext, effectiveAutoCheckCmd(s.cfg))
+	s.registry = buildRegistry(s.cfg, newMode, s, s.memOpts)
+	s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, newMode, s.userSystem, s.repoInstructions, s.projectContext, s.memory, effectiveAutoCheckCmd(s.cfg))
 
 	if spinner != nil {
 		spinner.stop(fmt.Sprintf("codient: switched to %s mode (model: %s)", newMode, s.cfg.Model))

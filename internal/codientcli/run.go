@@ -123,7 +123,7 @@ func Run() int {
 		return 0
 	}
 	if *listTools {
-		reg := buildRegistry(cfg, agentMode, nil)
+		reg := buildRegistry(cfg, agentMode, nil, nil)
 		for _, n := range reg.Names() {
 			fmt.Println(n)
 		}
@@ -179,6 +179,21 @@ func Run() int {
 		return 2
 	}
 	projectCtx := resolveProjectContext(cfg)
+
+	stateDir, _ := config.StateDir()
+	mem, err := prompt.LoadMemory(stateDir, cfg.EffectiveWorkspace())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "memory: %v\n", err)
+		return 2
+	}
+	var memOpts *tools.MemoryOptions
+	if stateDir != "" || cfg.EffectiveWorkspace() != "" {
+		memOpts = &tools.MemoryOptions{
+			StateDir:      stateDir,
+			WorkspaceRoot: cfg.EffectiveWorkspace(),
+		}
+	}
+
 	var execAllow *tools.SessionExecAllow
 	if len(cfg.ExecAllowlist) > 0 {
 		execAllow = tools.NewSessionExecAllow(cfg.ExecAllowlist)
@@ -196,11 +211,13 @@ func Run() int {
 		userSystem:       *system,
 		repoInstructions: repoInstr,
 		projectContext:   projectCtx,
+		memory:           mem,
+		memOpts:          memOpts,
 		execAllow:        execAllow,
 	}
 	s.client = openaiclient.New(cfg)
-	s.registry = buildRegistry(cfg, agentMode, s)
-	s.systemPrompt = buildAgentSystemPrompt(cfg, s.registry, agentMode, *system, repoInstr, projectCtx, effectiveAutoCheckCmd(cfg))
+	s.registry = buildRegistry(cfg, agentMode, s, memOpts)
+	s.systemPrompt = buildAgentSystemPrompt(cfg, s.registry, agentMode, *system, repoInstr, projectCtx, mem, effectiveAutoCheckCmd(cfg))
 
 	// Determine whether to enter the REPL session.
 	// REPL is the default when stdin is a TTY (interactive), or when -repl is explicit.

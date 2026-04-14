@@ -85,7 +85,8 @@ type PersistentConfig struct {
 	EmbeddingModel string `json:"embedding_model,omitempty"`
 }
 
-func stateDir() (string, error) {
+// StateDir returns the codient state directory (~/.codient, or CODIENT_STATE_DIR if set).
+func StateDir() (string, error) {
 	if d := strings.TrimSpace(os.Getenv("CODIENT_STATE_DIR")); d != "" {
 		return filepath.Abs(d)
 	}
@@ -97,7 +98,7 @@ func stateDir() (string, error) {
 }
 
 func configFilePath() (string, error) {
-	dir, err := stateDir()
+	dir, err := StateDir()
 	if err != nil {
 		return "", err
 	}
@@ -146,7 +147,7 @@ func SavePersistentConfig(pc *PersistentConfig) error {
 	// Always stamp the current schema version.
 	pc.SchemaVersion = currentSchemaVersion
 
-	dir, err := stateDir()
+	dir, err := StateDir()
 	if err != nil {
 		return err
 	}

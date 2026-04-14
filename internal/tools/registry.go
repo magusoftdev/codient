@@ -96,13 +96,14 @@ func (r *Registry) Run(ctx context.Context, name string, args json.RawMessage) (
 // exec enables run_command when non-nil and Allowlist is non-empty (CODIENT_EXEC_ALLOWLIST).
 // fetch enables fetch_url when non-nil and AllowHosts is non-empty (CODIENT_FETCH_ALLOW_HOSTS).
 // search enables web_search when non-nil (always enabled in default builds).
-func Default(workspace string, exec *ExecOptions, fetch *FetchOptions, search *SearchOptions, astGrepPath string, idx *codeindex.Index) *Registry {
+func Default(workspace string, exec *ExecOptions, fetch *FetchOptions, search *SearchOptions, astGrepPath string, idx *codeindex.Index, mem *MemoryOptions) *Registry {
 	r := NewRegistry()
 	registerBuiltinTools(r, true)
 	root := strings.TrimSpace(workspace)
 	if root != "" {
 		registerWorkspaceTools(r, root, exec, fetch, search, astGrepPath)
 	}
+	registerMemoryUpdate(r, mem)
 	registerSemanticSearch(r, idx)
 	return r
 }

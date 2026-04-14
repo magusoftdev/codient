@@ -65,7 +65,7 @@ func SaveLastMode(mode string) {
 }
 
 func lastModePath() (string, error) {
-	dir, err := stateDir()
+	dir, err := StateDir()
 	if err != nil {
 		return "", err
 	}

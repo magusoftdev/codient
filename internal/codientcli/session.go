@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -50,6 +51,8 @@ type session struct {
 	userSystem       string
 	repoInstructions string
 	projectContext   string
+	memory           string              // cross-session memory (global + workspace), loaded at startup
+	memOpts          *tools.MemoryOptions // passed to build-mode registry for memory_update tool
 
 	// REPL state
 	history   []openai.ChatCompletionMessageParamUnion
@@ -509,8 +512,8 @@ func (s *session) runSession(ctx context.Context, initialPrompt string, newSessi
 				mode, modeErr := prompt.ParseMode(existing.Mode)
 				if modeErr == nil && mode != s.mode {
 					s.mode = mode
-					s.registry = buildRegistry(s.cfg, mode, s)
-					s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, mode, s.userSystem, s.repoInstructions, s.projectContext, effectiveAutoCheckCmd(s.cfg))
+					s.registry = buildRegistry(s.cfg, mode, s, s.memOpts)
+					s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory, effectiveAutoCheckCmd(s.cfg))
 				}
 				if existing.PlanPhase != "" {
 					s.planPhase = planstore.Phase(existing.PlanPhase)
@@ -549,14 +552,14 @@ func (s *session) runSession(ctx context.Context, initialPrompt string, newSessi
 	enableBracketedPaste()
 	defer disableBracketedPaste()
 	resolveAstGrep(s.cfg, sc)
-	s.registry = buildRegistry(s.cfg, s.mode, s)
-	s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, effectiveAutoCheckCmd(s.cfg))
+	s.registry = buildRegistry(s.cfg, s.mode, s, s.memOpts)
+	s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory, effectiveAutoCheckCmd(s.cfg))
 
 	if strings.TrimSpace(s.cfg.Model) == "" {
 		s.runSetupWizard(ctx, sc)
 		s.client = openaiclient.New(s.cfg)
-		s.registry = buildRegistry(s.cfg, s.mode, s)
-		s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, effectiveAutoCheckCmd(s.cfg))
+		s.registry = buildRegistry(s.cfg, s.mode, s, s.memOpts)
+		s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory, effectiveAutoCheckCmd(s.cfg))
 	}
 
 	s.probeAndSetContext(ctx)
@@ -803,8 +806,8 @@ func (s *session) buildSlashCommands(ctx context.Context, sc *bufio.Scanner) *sl
 		Run: func(string) error {
 			s.runSetupWizard(ctx, sc)
 			s.client = openaiclient.New(s.cfg)
-			s.registry = buildRegistry(s.cfg, s.mode, s)
-			s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, effectiveAutoCheckCmd(s.cfg))
+			s.registry = buildRegistry(s.cfg, s.mode, s, s.memOpts)
+			s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory, effectiveAutoCheckCmd(s.cfg))
 			s.cfg.ContextWindowTokens = 0
 			s.probeAndSetContext(ctx)
 			return nil
@@ -847,8 +850,8 @@ func (s *session) buildSlashCommands(ctx context.Context, sc *bufio.Scanner) *sl
 			s.planPhase = ""
 			if len(s.cfg.ExecAllowlist) > 0 {
 				s.execAllow = tools.NewSessionExecAllow(s.cfg.ExecAllowlist)
-				s.registry = buildRegistry(s.cfg, s.mode, s)
-				s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, effectiveAutoCheckCmd(s.cfg))
+				s.registry = buildRegistry(s.cfg, s.mode, s, s.memOpts)
+				s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory, effectiveAutoCheckCmd(s.cfg))
 			}
 			fmt.Fprintf(os.Stderr, "codient: new session %s\n", s.sessionID)
 			fmt.Fprintf(os.Stderr, "%s\n", assistout.ModeHint(s.cfg.Plain, string(s.mode)))
@@ -943,8 +946,8 @@ func (s *session) buildSlashCommands(ctx context.Context, sc *bufio.Scanner) *sl
 			}
 			s.cfg.Workspace = path
 			s.projectContext = projectinfo.Detect(s.cfg.EffectiveWorkspace())
-			s.registry = buildRegistry(s.cfg, s.mode, s)
-			s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, effectiveAutoCheckCmd(s.cfg))
+			s.registry = buildRegistry(s.cfg, s.mode, s, s.memOpts)
+			s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory, effectiveAutoCheckCmd(s.cfg))
 			s.warnIfNotGitRepo()
 			fmt.Fprintf(os.Stderr, "codient: workspace set to %s\n", path)
 			return nil
@@ -992,8 +995,148 @@ func (s *session) buildSlashCommands(ctx context.Context, sc *bufio.Scanner) *sl
 			return s.undoLast(ws)
 		},
 	})
+	cmds.Register(slashcmd.Command{
+		Name:        "memory",
+		Aliases:     []string{"mem"},
+		Usage:       "/memory [show|edit|clear [global|workspace]]",
+		Description: "view, edit, or clear cross-session memory files",
+		Run: func(args string) error {
+			return s.handleMemory(args)
+		},
+	})
 
 	return cmds
+}
+
+func (s *session) handleMemory(args string) error {
+	parts := strings.SplitN(strings.TrimSpace(args), " ", 2)
+	sub := strings.ToLower(parts[0])
+	subArg := ""
+	if len(parts) > 1 {
+		subArg = strings.TrimSpace(parts[1])
+	}
+
+	stateDir := ""
+	if s.memOpts != nil {
+		stateDir = s.memOpts.StateDir
+	}
+	ws := s.cfg.EffectiveWorkspace()
+
+	switch sub {
+	case "", "show":
+		if s.memory == "" {
+			fmt.Fprintf(os.Stderr, "codient: no cross-session memory loaded\n")
+			if stateDir != "" {
+				fmt.Fprintf(os.Stderr, "  global:    %s\n", prompt.GlobalMemoryPath(stateDir))
+			}
+			if ws != "" {
+				fmt.Fprintf(os.Stderr, "  workspace: %s\n", prompt.WorkspaceMemoryPath(ws))
+			}
+			return nil
+		}
+		fmt.Fprintf(os.Stderr, "%s\n", s.memory)
+		return nil
+
+	case "edit":
+		editor := os.Getenv("EDITOR")
+		if editor == "" {
+			editor = os.Getenv("VISUAL")
+		}
+		scope := strings.ToLower(subArg)
+		if scope == "" {
+			scope = "workspace"
+		}
+		var path string
+		switch scope {
+		case "global":
+			if stateDir == "" {
+				return fmt.Errorf("global state directory not configured")
+			}
+			path = prompt.GlobalMemoryPath(stateDir)
+		case "workspace":
+			if ws == "" {
+				return fmt.Errorf("no workspace set")
+			}
+			path = prompt.WorkspaceMemoryPath(ws)
+		default:
+			return fmt.Errorf("unknown scope %q; use \"global\" or \"workspace\"", scope)
+		}
+		if editor == "" {
+			fmt.Fprintf(os.Stderr, "codient: $EDITOR not set; edit manually:\n  %s\n", path)
+			return nil
+		}
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "codient: opening %s in %s\n", path, editor)
+		return s.runEditor(editor, path)
+
+	case "clear":
+		scope := strings.ToLower(subArg)
+		if scope == "" {
+			return fmt.Errorf("specify scope: /memory clear global or /memory clear workspace")
+		}
+		var path string
+		switch scope {
+		case "global":
+			if stateDir == "" {
+				return fmt.Errorf("global state directory not configured")
+			}
+			path = prompt.GlobalMemoryPath(stateDir)
+		case "workspace":
+			if ws == "" {
+				return fmt.Errorf("no workspace set")
+			}
+			path = prompt.WorkspaceMemoryPath(ws)
+		default:
+			return fmt.Errorf("unknown scope %q; use \"global\" or \"workspace\"", scope)
+		}
+		if err := os.Remove(path); err != nil {
+			if os.IsNotExist(err) {
+				fmt.Fprintf(os.Stderr, "codient: %s does not exist\n", path)
+				return nil
+			}
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "codient: removed %s\n", path)
+		s.reloadMemory()
+		return nil
+
+	case "reload":
+		s.reloadMemory()
+		fmt.Fprintf(os.Stderr, "codient: memory reloaded\n")
+		return nil
+
+	default:
+		return fmt.Errorf("unknown subcommand %q; use show, edit, clear, or reload", sub)
+	}
+}
+
+func (s *session) reloadMemory() {
+	stateDir := ""
+	if s.memOpts != nil {
+		stateDir = s.memOpts.StateDir
+	}
+	mem, err := prompt.LoadMemory(stateDir, s.cfg.EffectiveWorkspace())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "codient: reload memory: %v\n", err)
+		return
+	}
+	s.memory = mem
+	s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory, effectiveAutoCheckCmd(s.cfg))
+}
+
+func (s *session) runEditor(editor, path string) error {
+	argv := []string{editor, path}
+	cmd := exec.Command(argv[0], argv[1:]...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("editor: %w", err)
+	}
+	s.reloadMemory()
+	return nil
 }
 
 func (s *session) handleConfig(ctx context.Context, args string) error {
@@ -1026,7 +1169,7 @@ func (s *session) handleConfig(ctx context.Context, args string) error {
 	switch key {
 	case "model", "base_url", "api_key", "max_concurrent":
 		s.client = openaiclient.New(s.cfg)
-		s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, effectiveAutoCheckCmd(s.cfg))
+		s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory, effectiveAutoCheckCmd(s.cfg))
 		if key == "model" || key == "base_url" {
 			s.cfg.ContextWindowTokens = 0
 			s.probeAndSetContext(ctx)
@@ -1034,10 +1177,10 @@ func (s *session) handleConfig(ctx context.Context, args string) error {
 	case "fetch_allow_hosts", "fetch_preapproved", "fetch_max_bytes", "fetch_timeout_sec",
 		"fetch_web_rate_per_sec", "fetch_web_rate_burst",
 		"search_max_results":
-		s.registry = buildRegistry(s.cfg, s.mode, s)
-		s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, effectiveAutoCheckCmd(s.cfg))
+		s.registry = buildRegistry(s.cfg, s.mode, s, s.memOpts)
+		s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory, effectiveAutoCheckCmd(s.cfg))
 	case "autocheck_cmd":
-		s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, effectiveAutoCheckCmd(s.cfg))
+		s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory, effectiveAutoCheckCmd(s.cfg))
 	case "embedding_model":
 		s.startCodeIndex(ctx)
 	}
@@ -1357,8 +1500,8 @@ func (s *session) setConfig(key, value string) error {
 		s.cfg.ProjectContext = value
 	case "ast_grep":
 		s.cfg.AstGrep = value
-		s.registry = buildRegistry(s.cfg, s.mode, s)
-		s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, effectiveAutoCheckCmd(s.cfg))
+		s.registry = buildRegistry(s.cfg, s.mode, s, s.memOpts)
+		s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory, effectiveAutoCheckCmd(s.cfg))
 	case "embedding_model":
 		s.cfg.EmbeddingModel = value
 	default:
@@ -1472,8 +1615,8 @@ func (s *session) startCodeIndex(ctx context.Context) {
 		return
 	}
 	s.codeIndex = codeindex.New(ws, s.client, model)
-	s.registry = buildRegistry(s.cfg, s.mode, s)
-	s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, effectiveAutoCheckCmd(s.cfg))
+	s.registry = buildRegistry(s.cfg, s.mode, s, s.memOpts)
+	s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory, effectiveAutoCheckCmd(s.cfg))
 	fmt.Fprintf(os.Stderr, "codient: indexing workspace for semantic search...\n")
 	go func() {
 		s.codeIndex.BuildOrUpdate(ctx)
