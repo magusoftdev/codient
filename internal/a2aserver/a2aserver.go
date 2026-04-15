@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"iter"
 	"net/http"
+	"os"
 	"strings"
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
@@ -245,10 +246,19 @@ func searchOpts(cfg *config.Config, netLimit *tools.RateLimiter) *tools.SearchOp
 }
 
 func systemPromptForMode(cfg *config.Config, reg *tools.Registry, mode prompt.Mode) string {
-	repoInstr, _ := prompt.LoadRepoInstructions(cfg.EffectiveWorkspace())
+	repoInstr, err := prompt.LoadRepoInstructions(cfg.EffectiveWorkspace())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "codient: a2a: repo instructions: %v\n", err)
+	}
 	projCtx := projectinfo.Detect(cfg.EffectiveWorkspace())
-	stateDir, _ := config.StateDir()
-	mem, _ := prompt.LoadMemory(stateDir, cfg.EffectiveWorkspace())
+	stateDir, err := config.StateDir()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "codient: a2a: state dir: %v\n", err)
+	}
+	mem, err := prompt.LoadMemory(stateDir, cfg.EffectiveWorkspace())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "codient: a2a: memory: %v\n", err)
+	}
 	return prompt.Build(prompt.Params{
 		Cfg:              cfg,
 		Reg:              reg,

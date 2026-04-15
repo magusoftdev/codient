@@ -750,7 +750,7 @@ func registerRunCommand(r *Registry, root string, exec *ExecOptions) {
 	timeout := time.Duration(exec.TimeoutSeconds) * time.Second
 	maxOut := exec.MaxOutputBytes
 	if maxOut < 1 {
-		maxOut = 256 * 1024
+		maxOut = defaultExecMaxOutputBytes
 	}
 
 	r.Register(Tool{
@@ -799,7 +799,7 @@ func registerRunShell(r *Registry, root string, exec *ExecOptions) {
 	timeout := time.Duration(exec.TimeoutSeconds) * time.Second
 	maxOut := exec.MaxOutputBytes
 	if maxOut < 1 {
-		maxOut = 256 * 1024
+		maxOut = defaultExecMaxOutputBytes
 	}
 
 	r.Register(Tool{
@@ -831,7 +831,7 @@ func registerRunShell(r *Registry, root string, exec *ExecOptions) {
 			if err := json.Unmarshal(args, &p); err != nil {
 				return "", fmt.Errorf("invalid arguments: %w", err)
 			}
-			argv, err := shellArgv(p.Command)
+			argv, err := ShellArgv(p.Command)
 			if err != nil {
 				return "", err
 			}

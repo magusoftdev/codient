@@ -38,12 +38,6 @@ func DiffSummary(dir string) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
-// HasUnstagedChanges returns true when `git diff --stat` produces output.
-func HasUnstagedChanges(dir string) bool {
-	s, err := DiffSummary(dir)
-	return err == nil && s != ""
-}
-
 // DiffFiles returns workspace-relative paths of tracked files with unstaged modifications.
 func DiffFiles(dir string) ([]string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

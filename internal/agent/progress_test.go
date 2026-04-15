@@ -7,7 +7,7 @@ import (
 )
 
 func TestProgressToolLine_runCommand(t *testing.T) {
-	s := ProgressToolLine("run_command", []byte(`{"argv":["go","test","./..."],"cwd":"."}`))
+	s := progressToolLine("run_command", []byte(`{"argv":["go","test","./..."],"cwd":"."}`))
 	if s == "" {
 		t.Fatal("empty")
 	}
@@ -17,35 +17,35 @@ func TestProgressToolLine_runCommand(t *testing.T) {
 }
 
 func TestProgressToolLine_readFile(t *testing.T) {
-	s := ProgressToolLine("read_file", []byte(`{"path":"cmd/main.go"}`))
+	s := progressToolLine("read_file", []byte(`{"path":"cmd/main.go"}`))
 	if !strings.Contains(s, "main.go") {
 		t.Fatalf("got %q", s)
 	}
 }
 
 func TestProgressToolCompact_listDirRoot(t *testing.T) {
-	s := ProgressToolCompact("list_dir", []byte(`{"path":"."}`))
+	s := progressToolCompact("list_dir", []byte(`{"path":"."}`))
 	if s != "list_dir" {
 		t.Fatalf("got %q want list_dir", s)
 	}
 }
 
 func TestProgressToolCompact_webSearch(t *testing.T) {
-	s := ProgressToolCompact("web_search", []byte(`{"query":"go slog handler"}`))
+	s := progressToolCompact("web_search", []byte(`{"query":"go slog handler"}`))
 	if !strings.Contains(s, "web_search") || !strings.Contains(s, "go slog handler") {
 		t.Fatalf("got %q", s)
 	}
 }
 
 func TestProgressToolLine_webSearch(t *testing.T) {
-	s := ProgressToolLine("web_search", []byte(`{"query":"react hooks tutorial"}`))
+	s := progressToolLine("web_search", []byte(`{"query":"react hooks tutorial"}`))
 	if !strings.Contains(s, "react hooks tutorial") {
 		t.Fatalf("got %q", s)
 	}
 }
 
-func TestProgressToolIntentLine_webSearch(t *testing.T) {
-	got := ProgressToolIntentLine("web_search", []byte(`{"query":"exponential backoff"}`))
+func TestFormatToolIntentProgressLine_webSearch(t *testing.T) {
+	got := FormatToolIntentProgressLine("web_search", []byte(`{"query":"exponential backoff"}`))
 	if !strings.HasPrefix(got, "    ▸ ") {
 		t.Fatalf("want nested indent + tool prelude (no mode ●): %q", got)
 	}
@@ -60,8 +60,8 @@ func TestProgressToolIntentLine_webSearch(t *testing.T) {
 	}
 }
 
-func TestProgressToolIntentLine_readFile(t *testing.T) {
-	got := ProgressToolIntentLine("read_file", []byte(`{"path":"main.go"}`))
+func TestFormatToolIntentProgressLine_readFile(t *testing.T) {
+	got := FormatToolIntentProgressLine("read_file", []byte(`{"path":"main.go"}`))
 	if strings.Contains(got, "I'll") {
 		t.Fatalf("should not use first-person lead-in: %q", got)
 	}

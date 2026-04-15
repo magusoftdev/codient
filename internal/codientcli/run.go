@@ -191,7 +191,10 @@ func Run() int {
 	}
 	projectCtx := resolveProjectContext(cfg)
 
-	stateDir, _ := config.StateDir()
+	stateDir, err := config.StateDir()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "codient: state dir: %v\n", err)
+	}
 	mem, err := prompt.LoadMemory(stateDir, cfg.EffectiveWorkspace())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "memory: %v\n", err)

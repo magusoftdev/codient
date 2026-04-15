@@ -15,7 +15,7 @@ import (
 )
 
 func TestShellArgv(t *testing.T) {
-	argv, err := shellArgv("  mkdir foo  ")
+	argv, err := ShellArgv("  mkdir foo  ")
 	if err != nil {
 		t.Fatal(err)
 	}

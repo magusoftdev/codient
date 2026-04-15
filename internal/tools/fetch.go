@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"net"
 	"net/http"
 	"net/url"
@@ -153,9 +154,11 @@ func registerFetchURL(r *Registry, opts *FetchOptions) {
 					if sess != nil {
 						sess.Add(host)
 					}
-					if persist != nil {
-						_ = persist(host)
+				if persist != nil {
+					if pErr := persist(host); pErr != nil {
+						fmt.Fprintf(os.Stderr, "codient: persist fetch host: %v\n", pErr)
 					}
+				}
 				default:
 					return "", fmt.Errorf("fetch denied for host %q", host)
 				}

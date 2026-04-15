@@ -13,6 +13,7 @@ import (
 	"github.com/openai/openai-go/v3/shared"
 
 	"codient/internal/config"
+	"codient/internal/stringutil"
 	"codient/internal/openaiclient"
 )
 
@@ -100,13 +101,6 @@ func TestIntegration_ChatCompletionNonEmpty(t *testing.T) {
 	if len(strings.TrimSpace(content)) < 2 {
 		t.Fatalf("unexpectedly short model reply: %q", content)
 	}
-	t.Logf("model reply (%d runes): %s", len([]rune(content)), truncateRunes(content, 200))
+	t.Logf("model reply (%d runes): %s", len([]rune(content)), stringutil.TruncateRunes(content, 200))
 }
 
-func truncateRunes(s string, max int) string {
-	r := []rune(s)
-	if len(r) <= max {
-		return s
-	}
-	return string(r[:max]) + "…"
-}

@@ -38,10 +38,9 @@ type Index struct {
 	workspace string
 	model     string
 	embedder  Embedder
-	entries   []Entry
-	ready     chan struct{}
-	disabled  bool
-	buildErr  error
+	entries  []Entry
+	ready    chan struct{}
+	buildErr error
 }
 
 // New creates an Index. Call BuildOrUpdate in a goroutine to populate it.
@@ -136,7 +135,9 @@ func (idx *Index) BuildOrUpdate(ctx context.Context) {
 	idx.buildErr = nil
 	idx.mu.Unlock()
 
-	_ = saveIndex(idx.workspace, idx.model, kept)
+	if err := saveIndex(idx.workspace, idx.model, kept); err != nil {
+		fmt.Fprintf(os.Stderr, "codient: index persist: %v\n", err)
+	}
 }
 
 // Len returns the number of indexed files.
@@ -156,14 +157,10 @@ func (idx *Index) Query(ctx context.Context, query string, topK int) ([]Result, 
 	}
 
 	idx.mu.RLock()
-	disabled := idx.disabled
 	buildErr := idx.buildErr
 	entries := idx.entries
 	idx.mu.RUnlock()
 
-	if disabled {
-		return nil, fmt.Errorf("semantic search is disabled (embedding API not available)")
-	}
 	if buildErr != nil {
 		return nil, fmt.Errorf("index build failed: %w", buildErr)
 	}

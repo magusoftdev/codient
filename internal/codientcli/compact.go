@@ -84,7 +84,7 @@ func (s *session) compactHistory(ctx context.Context) error {
 func estimateHistoryTokens(history []openai.ChatCompletionMessageParamUnion) int {
 	total := 0
 	for _, m := range history {
-		total += tokenest.Estimate(messageTextForEstimate(m)) + 4
+		total += tokenest.Estimate(messageTextForEstimate(m)) + tokenest.MessageOverhead
 	}
 	return total
 }
@@ -92,12 +92,16 @@ func estimateHistoryTokens(history []openai.ChatCompletionMessageParamUnion) int
 // estimateFullContextUsage returns the estimated total tokens for the next API request:
 // system prompt + tool definitions + history messages.
 func (s *session) estimateFullContextUsage() int {
-	sys := tokenest.Estimate(s.systemPrompt) + 4
+	sys := tokenest.Estimate(s.systemPrompt) + tokenest.MessageOverhead
 	toolJSON, _ := json.Marshal(s.registry.OpenAITools())
 	tools := tokenest.Estimate(string(toolJSON))
 	hist := estimateHistoryTokens(s.history)
 	return sys + tools + hist
 }
+
+// minHistoryForCompact is the minimum number of history messages required
+// before auto-compaction is considered (avoids compacting trivially short sessions).
+const minHistoryForCompact = 4
 
 // maybeAutoCompact checks context pressure after a turn and automatically
 // compacts history if usage exceeds the configured threshold.
@@ -105,7 +109,7 @@ func (s *session) maybeAutoCompact(ctx context.Context) {
 	if s.cfg.ContextWindowTokens <= 0 || s.cfg.AutoCompactPct <= 0 {
 		return
 	}
-	if len(s.history) < 4 {
+	if len(s.history) < minHistoryForCompact {
 		return
 	}
 	usage := s.estimateFullContextUsage()

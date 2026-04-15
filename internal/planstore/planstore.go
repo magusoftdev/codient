@@ -142,18 +142,6 @@ func IncrementRevision(plan *Plan) {
 	plan.Approval = nil
 }
 
-// SetStepStatus updates the status of a step by ID.
-// Returns false if the step was not found.
-func SetStepStatus(plan *Plan, stepID string, status StepStatus) bool {
-	for i := range plan.Steps {
-		if plan.Steps[i].ID == stepID {
-			plan.Steps[i].Status = status
-			return true
-		}
-	}
-	return false
-}
-
 // AllStepsDone returns true when every step is done or skipped.
 func AllStepsDone(plan *Plan) bool {
 	if len(plan.Steps) == 0 {

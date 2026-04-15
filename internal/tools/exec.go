@@ -218,8 +218,9 @@ func lookPathHint(name string) string {
 	}
 }
 
-// shellArgv builds argv for run_shell: Windows uses cmd /c; Unix uses sh -c.
-func shellArgv(line string) ([]string, error) {
+// ShellArgv builds argv for running a command via the platform shell:
+// Windows uses cmd /c; Unix uses sh -c.
+func ShellArgv(line string) ([]string, error) {
 	line = strings.TrimSpace(line)
 	if line == "" {
 		return nil, fmt.Errorf("command is empty")

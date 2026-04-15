@@ -204,7 +204,7 @@ func (r *Runner) RunConversation(ctx context.Context, system string, history []o
 							if r.Log != nil {
 								r.Log.ToolEnd(tc.Name, toolDur, toolErr, nil)
 							}
-							compact := ProgressToolCompact(tc.Name, args)
+							compact := progressToolCompact(tc.Name, args)
 							var prog string
 							if toolErr != nil {
 								prog = fmt.Sprintf("%s ✗ %s", compact, progressErrShort(toolErr))
@@ -357,7 +357,7 @@ func (r *Runner) RunConversation(ctx context.Context, system string, history []o
 				if r.Log != nil {
 					r.Log.ToolEnd(v.Function.Name, toolDur, toolErr, summary)
 				}
-				compact := ProgressToolCompact(v.Function.Name, args)
+				compact := progressToolCompact(v.Function.Name, args)
 				var prog string
 				if toolErr != nil {
 					prog = fmt.Sprintf("%s ✗ %s", compact, progressErrShort(toolErr))

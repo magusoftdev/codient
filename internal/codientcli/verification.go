@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
 
@@ -120,26 +119,32 @@ func (s *session) runVerification(ctx context.Context, sc *bufio.Scanner, plan *
 	}
 }
 
+const verificationTimeoutSec = 120
+
 func runVerificationCmd(ctx context.Context, workspace, label, cmdLine string, maxOut int, progress io.Writer) VerificationResult {
 	if progress != nil {
 		fmt.Fprintf(progress, "verification: running %s (%s)...\n", label, cmdLine)
 	}
 
 	t0 := time.Now()
-	runCtx, cancel := context.WithTimeout(ctx, 120*time.Second)
+	runCtx, cancel := context.WithTimeout(ctx, verificationTimeoutSec*time.Second)
 	defer cancel()
 
-	var argv []string
-	if runtime.GOOS == "windows" {
-		argv = []string{"cmd", "/c", cmdLine}
-	} else {
-		argv = []string{"sh", "-c", cmdLine}
+	argv, err := tools.ShellArgv(cmdLine)
+	if err != nil {
+		return VerificationResult{
+			Label:    label,
+			Command:  cmdLine,
+			ExitCode: -1,
+			Output:   fmt.Sprintf("invalid command: %v", err),
+			Duration: time.Since(t0),
+			Passed:   false,
+		}
 	}
 	cmd := exec.CommandContext(runCtx, argv[0], argv[1:]...)
 	cmd.Dir = workspace
 
 	var out []byte
-	var err error
 	if progress != nil {
 		ls := tools.NewLineStreamer(progress)
 		cmd.Stdout = ls

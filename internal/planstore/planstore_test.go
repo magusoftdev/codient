@@ -77,24 +77,6 @@ func TestIncrementRevision(t *testing.T) {
 	}
 }
 
-func TestSetStepStatus(t *testing.T) {
-	plan := &Plan{
-		Steps: []Step{
-			{ID: "s1", Status: StepPending},
-			{ID: "s2", Status: StepPending},
-		},
-	}
-	if !SetStepStatus(plan, "s1", StepDone) {
-		t.Fatal("SetStepStatus should return true for existing step")
-	}
-	if plan.Steps[0].Status != StepDone {
-		t.Errorf("step s1 status = %q, want %q", plan.Steps[0].Status, StepDone)
-	}
-	if SetStepStatus(plan, "missing", StepDone) {
-		t.Fatal("SetStepStatus should return false for missing step")
-	}
-}
-
 func TestAllStepsDone(t *testing.T) {
 	plan := &Plan{Steps: []Step{
 		{ID: "s1", Status: StepDone},

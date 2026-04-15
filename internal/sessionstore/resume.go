@@ -4,7 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	"unicode/utf8"
+
+	"codient/internal/stringutil"
 )
 
 // ResumeSummaryLine builds a one-line summary for stderr when resuming a REPL session.
@@ -17,7 +18,7 @@ func ResumeSummaryLine(sessionID string, msgs []json.RawMessage) string {
 	preview := lastUserPreview(msgs, 100)
 	var parts []string
 	if tid := strings.TrimSpace(sessionID); tid != "" {
-		parts = append(parts, "session "+truncateRunes(tid, 56))
+		parts = append(parts, "session "+stringutil.TruncateRunes(tid, 56))
 	}
 	if n == 1 {
 		parts = append(parts, "1 turn")
@@ -58,7 +59,7 @@ func lastUserPreviewFiltered(msgs []json.RawMessage, maxRunes int, skipInternal 
 		if skipInternal && isInternalResumePreviewLine(line) {
 			continue
 		}
-		return truncateRunes(line, maxRunes)
+		return stringutil.TruncateRunes(line, maxRunes)
 	}
 	return ""
 }
@@ -80,16 +81,3 @@ func isInternalResumePreviewLine(line string) bool {
 	return false
 }
 
-func truncateRunes(s string, max int) string {
-	if max <= 0 {
-		return ""
-	}
-	if utf8.RuneCountInString(s) <= max {
-		return s
-	}
-	rs := []rune(s)
-	if len(rs) > max {
-		rs = rs[:max]
-	}
-	return strings.TrimSpace(string(rs)) + "…"
-}

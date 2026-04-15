@@ -64,9 +64,9 @@ func TestSave_NoSessionID(t *testing.T) {
 	}
 }
 
-func TestDir_DefaultUnderWorkspace(t *testing.T) {
+func Test_dir_DefaultUnderWorkspace(t *testing.T) {
 	tmp := t.TempDir()
-	d, err := Dir(tmp, "", "")
+	d, err := dir(tmp, "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,9 +76,9 @@ func TestDir_DefaultUnderWorkspace(t *testing.T) {
 	}
 }
 
-func TestDir_WithSessionID(t *testing.T) {
+func Test_dir_WithSessionID(t *testing.T) {
 	tmp := t.TempDir()
-	d, err := Dir(tmp, "", "my-session")
+	d, err := dir(tmp, "", "my-session")
 	if err != nil {
 		t.Fatal(err)
 	}

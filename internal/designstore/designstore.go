@@ -57,9 +57,9 @@ func LooksLikeReadyToImplement(markdown string) bool {
 	return strings.Contains(strings.ToLower(markdown), "ready to implement")
 }
 
-// Dir resolves the directory to store plans.
+// dir resolves the directory to store plans.
 // When sessionID is non-empty, plans are stored in a per-session subdirectory.
-func Dir(workspace, override, sessionID string) (string, error) {
+func dir(workspace, override, sessionID string) (string, error) {
 	if o := strings.TrimSpace(override); o != "" {
 		return filepath.Abs(o)
 	}
@@ -81,7 +81,7 @@ func Dir(workspace, override, sessionID string) (string, error) {
 // Save writes markdown to a new file named {slug}_{date}_{unixNano}.md.
 // sessionID scopes the file into a per-session subdirectory.
 func Save(workspace, dirOverride, sessionID, slug, markdown string, t time.Time) (absPath string, err error) {
-	dir, err := Dir(workspace, dirOverride, sessionID)
+	dir, err := dir(workspace, dirOverride, sessionID)
 	if err != nil {
 		return "", err
 	}

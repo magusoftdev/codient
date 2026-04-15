@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"codient/internal/agentlog"
+	"codient/internal/stringutil"
 )
 
 // progressArgsHint turns SummarizeArgs output into a short human line (no raw content).
@@ -19,7 +20,7 @@ func progressArgsHint(name string, sum map[string]any) string {
 		}
 	case "run_shell":
 		if s, ok := sum["command_prefix"].(string); ok && s != "" {
-			return truncateRunes(s, 80)
+			return stringutil.TruncateRunes(s, 80)
 		}
 	case "read_file", "write_file", "str_replace", "patch_file", "insert_lines", "ensure_dir", "path_stat", "remove_path":
 		if p, ok := sum["path"].(string); ok && p != "" {
@@ -46,21 +47,21 @@ func progressArgsHint(name string, sum map[string]any) string {
 			parts = append(parts, "under="+u)
 		}
 		if pat, ok := sum["pattern"].(string); ok && pat != "" {
-			parts = append(parts, "pattern="+truncateRunes(pat, 60))
+			parts = append(parts, "pattern="+stringutil.TruncateRunes(pat, 60))
 		}
 		return strings.Join(parts, " ")
 	case "fetch_url":
 		if u, ok := sum["url"].(string); ok && u != "" {
-			return "url=" + truncateRunes(u, 80)
+			return "url=" + stringutil.TruncateRunes(u, 80)
 		}
 	case "web_search":
 		if q, ok := sum["query"].(string); ok && q != "" {
-			return "query=" + truncateRunes(q, 80)
+			return "query=" + stringutil.TruncateRunes(q, 80)
 		}
 	case "grep":
 		var parts []string
 		if p, ok := sum["pattern"].(string); ok && p != "" {
-			parts = append(parts, "pattern="+truncateRunes(p, 60))
+			parts = append(parts, "pattern="+stringutil.TruncateRunes(p, 60))
 		}
 		if pre, ok := sum["path_prefix"].(string); ok && pre != "" {
 			parts = append(parts, "under="+pre)
@@ -93,16 +94,8 @@ func progressArgsHint(name string, sum map[string]any) string {
 	return strings.Join(parts, " ")
 }
 
-func truncateRunes(s string, max int) string {
-	r := []rune(s)
-	if len(r) <= max {
-		return s
-	}
-	return string(r[:max]) + "…"
-}
-
-// ProgressToolLine builds the "before tool" stderr line using redacted summaries.
-func ProgressToolLine(toolName string, argsJSON []byte) string {
+// progressToolLine builds the "before tool" stderr line using redacted summaries.
+func progressToolLine(toolName string, argsJSON []byte) string {
 	sum := agentlog.SummarizeArgs(toolName, argsJSON)
 	hint := progressArgsHint(toolName, sum)
 	if hint == "" {

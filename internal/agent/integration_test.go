@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"codient/internal/agent"
+	"codient/internal/stringutil"
 	"codient/internal/config"
 	"codient/internal/openaiclient"
 	"codient/internal/tools"
@@ -69,7 +70,7 @@ func TestIntegration_AgentDirectReply(t *testing.T) {
 	if !strings.Contains(upper, "AGENT") && !strings.Contains(upper, "OK") {
 		t.Logf("model reply (may still be valid): %q", reply)
 	}
-	t.Logf("reply: %s", truncateRunes(reply, 500))
+	t.Logf("reply: %s", stringutil.TruncateRunes(reply, 500))
 }
 
 func TestIntegration_AgentUsesEchoTool(t *testing.T) {
@@ -131,9 +132,9 @@ func TestIntegration_AgentUsesGetTimeTool(t *testing.T) {
 	// Loose match: full RFC3339 or common variants (with or without fractional seconds / Z).
 	rx := regexp.MustCompile(`\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}`)
 	if !rx.MatchString(reply) {
-		t.Fatalf("expected reply to contain an RFC3339-like timestamp; got: %q", truncateRunes(reply, 800))
+		t.Fatalf("expected reply to contain an RFC3339-like timestamp; got: %q", stringutil.TruncateRunes(reply, 800))
 	}
-	t.Logf("reply: %s", truncateRunes(reply, 500))
+	t.Logf("reply: %s", stringutil.TruncateRunes(reply, 500))
 }
 
 func TestIntegration_AgentUsesEchoTwice(t *testing.T) {
@@ -152,7 +153,7 @@ func TestIntegration_AgentUsesEchoTwice(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !strings.Contains(reply, a) || !strings.Contains(reply, b) {
-		t.Fatalf("expected reply to contain both %q and %q; got: %q", a, b, truncateRunes(reply, 1200))
+		t.Fatalf("expected reply to contain both %q and %q; got: %q", a, b, stringutil.TruncateRunes(reply, 1200))
 	}
 }
 
@@ -175,7 +176,7 @@ func TestIntegration_AgentReadFileWorkspace(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !strings.Contains(reply, want) {
-		t.Fatalf("expected reply to contain file contents %q; got: %q", want, truncateRunes(reply, 1200))
+		t.Fatalf("expected reply to contain file contents %q; got: %q", want, stringutil.TruncateRunes(reply, 1200))
 	}
 }
 
@@ -199,7 +200,7 @@ func TestIntegration_AgentListDirWorkspace(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !strings.Contains(reply, marker) {
-		t.Fatalf("expected reply to mention %q; got: %q", marker, truncateRunes(reply, 1200))
+		t.Fatalf("expected reply to mention %q; got: %q", marker, stringutil.TruncateRunes(reply, 1200))
 	}
 }
 
@@ -222,7 +223,7 @@ func TestIntegration_AgentGrepWorkspace(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !strings.Contains(reply, needle) {
-		t.Fatalf("expected reply to contain %q; got: %q", needle, truncateRunes(reply, 1200))
+		t.Fatalf("expected reply to contain %q; got: %q", needle, stringutil.TruncateRunes(reply, 1200))
 	}
 }
 
@@ -245,7 +246,7 @@ func TestIntegration_AgentSearchFilesWorkspace(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !strings.Contains(reply, base+".txt") && !strings.Contains(strings.ReplaceAll(reply, "\\", "/"), base+".txt") {
-		t.Fatalf("expected reply to mention %q; got: %q", base+".txt", truncateRunes(reply, 1200))
+		t.Fatalf("expected reply to mention %q; got: %q", base+".txt", stringutil.TruncateRunes(reply, 1200))
 	}
 }
 
@@ -278,7 +279,7 @@ func TestIntegration_AgentRunCommandGoVersion(t *testing.T) {
 	}
 	upper := strings.ToUpper(reply)
 	if !strings.Contains(upper, "GO") || !strings.Contains(reply, "version") {
-		t.Fatalf("expected reply to reflect go version output; got: %q", truncateRunes(reply, 1200))
+		t.Fatalf("expected reply to reflect go version output; got: %q", stringutil.TruncateRunes(reply, 1200))
 	}
 }
 
@@ -343,10 +344,3 @@ func workspaceFixture(t *testing.T, files map[string]string) string {
 	return root
 }
 
-func truncateRunes(s string, max int) string {
-	r := []rune(s)
-	if len(r) <= max {
-		return s
-	}
-	return string(r[:max]) + "…"
-}

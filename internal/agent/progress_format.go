@@ -7,6 +7,7 @@ import (
 
 	"codient/internal/agentlog"
 	"codient/internal/assistout"
+	"codient/internal/stringutil"
 )
 
 // formatProgressDur renders a duration for stderr progress (e.g. 420ms, 4.8s).
@@ -29,8 +30,8 @@ func formatProgressDur(d time.Duration) string {
 	return d.Round(time.Second).String()
 }
 
-// ProgressToolCompact is a short label for progress (no path= prefixes).
-func ProgressToolCompact(toolName string, argsJSON []byte) string {
+// progressToolCompact is a short label for progress (no path= prefixes).
+func progressToolCompact(toolName string, argsJSON []byte) string {
 	sum := agentlog.SummarizeArgs(toolName, argsJSON)
 	switch toolName {
 	case "read_file", "write_file", "str_replace", "patch_file", "insert_lines", "ensure_dir", "path_stat", "remove_path":
@@ -47,17 +48,17 @@ func ProgressToolCompact(toolName string, argsJSON []byte) string {
 		return toolName
 	case "glob_files":
 		if pat, ok := sum["pattern"].(string); ok && pat != "" {
-			return "glob_files " + truncateRunes(pat, 40)
+			return "glob_files " + stringutil.TruncateRunes(pat, 40)
 		}
 		return "glob_files"
 	case "fetch_url":
 		if u, ok := sum["url"].(string); ok && u != "" {
-			return "fetch_url " + truncateRunes(u, 48)
+			return "fetch_url " + stringutil.TruncateRunes(u, 48)
 		}
 		return "fetch_url"
 	case "web_search":
 		if q, ok := sum["query"].(string); ok && q != "" {
-			return "web_search " + truncateRunes(q, 48)
+			return "web_search " + stringutil.TruncateRunes(q, 48)
 		}
 		return "web_search"
 	case "list_dir":
@@ -67,7 +68,7 @@ func ProgressToolCompact(toolName string, argsJSON []byte) string {
 		return "list_dir"
 	case "grep":
 		if p, ok := sum["pattern"].(string); ok && p != "" {
-			return "grep " + truncateRunes(p, 40)
+			return "grep " + stringutil.TruncateRunes(p, 40)
 		}
 		return "grep"
 	case "search_files":
@@ -103,11 +104,11 @@ func ProgressToolCompact(toolName string, argsJSON []byte) string {
 		return "get_time"
 	case "echo":
 		if msg, ok := sum["message"].(string); ok && msg != "" {
-			return "echo " + truncateRunes(msg, 36)
+			return "echo " + stringutil.TruncateRunes(msg, 36)
 		}
 		return "echo"
 	default:
-		return ProgressToolLine(toolName, argsJSON)
+		return progressToolLine(toolName, argsJSON)
 	}
 }
 
@@ -116,12 +117,12 @@ func progressToolActionPhrase(toolName string, argsJSON []byte, sum map[string]a
 	switch toolName {
 	case "web_search":
 		if q, ok := sum["query"].(string); ok && q != "" {
-			return fmt.Sprintf("searching the web for %q", truncateRunes(q, 64))
+			return fmt.Sprintf("searching the web for %q", stringutil.TruncateRunes(q, 64))
 		}
 		return "searching the web"
 	case "fetch_url":
 		if u, ok := sum["url"].(string); ok && u != "" {
-			return fmt.Sprintf("fetching %s", truncateRunes(u, 64))
+			return fmt.Sprintf("fetching %s", stringutil.TruncateRunes(u, 64))
 		}
 		return "fetching a URL"
 	case "read_file":
@@ -180,7 +181,7 @@ func progressToolActionPhrase(toolName string, argsJSON []byte, sum map[string]a
 		return "copying a path"
 	case "glob_files":
 		if pat, ok := sum["pattern"].(string); ok && pat != "" {
-			return fmt.Sprintf("glob %s", truncateRunes(pat, 48))
+			return fmt.Sprintf("glob %s", stringutil.TruncateRunes(pat, 48))
 		}
 		return "glob files"
 	case "list_dir":
@@ -190,28 +191,28 @@ func progressToolActionPhrase(toolName string, argsJSON []byte, sum map[string]a
 		return "listing directory"
 	case "grep":
 		if p, ok := sum["pattern"].(string); ok && p != "" {
-			return fmt.Sprintf("grep %q", truncateRunes(p, 48))
+			return fmt.Sprintf("grep %q", stringutil.TruncateRunes(p, 48))
 		}
 		return "grep"
 	case "search_files":
-		return ProgressToolCompact(toolName, argsJSON)
+		return progressToolCompact(toolName, argsJSON)
 	case "run_command":
 		if argv, ok := sum["argv"].([]string); ok && len(argv) > 0 {
 			s := strings.Join(argv, " ")
-			return "running " + truncateRunes(s, 56)
+			return "running " + stringutil.TruncateRunes(s, 56)
 		}
 		return "running a command"
 	case "run_shell":
 		if s, ok := sum["command_prefix"].(string); ok && s != "" {
-			return "running shell " + truncateRunes(s, 56)
+			return "running shell " + stringutil.TruncateRunes(s, 56)
 		}
 		return "running shell"
 	case "get_time":
 		return "reading current time"
 	case "echo":
-		return ProgressToolCompact(toolName, argsJSON)
+		return progressToolCompact(toolName, argsJSON)
 	default:
-		return ProgressToolCompact(toolName, argsJSON)
+		return progressToolCompact(toolName, argsJSON)
 	}
 }
 
@@ -245,12 +246,12 @@ func syntheticIntentSentence(toolName string, argsJSON []byte) string {
 	switch toolName {
 	case "web_search":
 		if q, ok := sum["query"].(string); ok && strings.TrimSpace(q) != "" {
-			return fmt.Sprintf(`I'll search the web for %q.`, truncateRunes(strings.TrimSpace(q), 72))
+			return fmt.Sprintf(`I'll search the web for %q.`, stringutil.TruncateRunes(strings.TrimSpace(q), 72))
 		}
 		return "I'll run a web search."
 	case "fetch_url":
 		if u, ok := sum["url"].(string); ok && strings.TrimSpace(u) != "" {
-			return fmt.Sprintf("I'll fetch %s.", truncateRunes(strings.TrimSpace(u), 72))
+			return fmt.Sprintf("I'll fetch %s.", stringutil.TruncateRunes(strings.TrimSpace(u), 72))
 		}
 		return "I'll fetch a URL."
 	case "read_file":
@@ -265,7 +266,7 @@ func syntheticIntentSentence(toolName string, argsJSON []byte) string {
 		return "I'll edit a file."
 	case "grep":
 		if p, ok := sum["pattern"].(string); ok && strings.TrimSpace(p) != "" {
-			return fmt.Sprintf(`I'll search the codebase for %q.`, truncateRunes(strings.TrimSpace(p), 48))
+			return fmt.Sprintf(`I'll search the codebase for %q.`, stringutil.TruncateRunes(strings.TrimSpace(p), 48))
 		}
 		return "I'll search the codebase."
 	case "list_dir":
@@ -275,19 +276,19 @@ func syntheticIntentSentence(toolName string, argsJSON []byte) string {
 		return "I'll list the workspace."
 	case "glob_files":
 		if pat, ok := sum["pattern"].(string); ok && strings.TrimSpace(pat) != "" {
-			return fmt.Sprintf("I'll glob for %s.", truncateRunes(strings.TrimSpace(pat), 48))
+			return fmt.Sprintf("I'll glob for %s.", stringutil.TruncateRunes(strings.TrimSpace(pat), 48))
 		}
 		return "I'll run a file glob."
 	case "search_files":
 		return "I'll search for matching file paths."
 	case "run_command":
 		if argv, ok := sum["argv"].([]string); ok && len(argv) > 0 {
-			return fmt.Sprintf("I'll run %s.", truncateRunes(strings.Join(argv, " "), 56))
+			return fmt.Sprintf("I'll run %s.", stringutil.TruncateRunes(strings.Join(argv, " "), 56))
 		}
 		return "I'll run a command."
 	case "run_shell":
 		if cmd, ok := sum["command_prefix"].(string); ok && strings.TrimSpace(cmd) != "" {
-			return fmt.Sprintf("I'll run a shell command (%s).", truncateRunes(strings.TrimSpace(cmd), 48))
+			return fmt.Sprintf("I'll run a shell command (%s).", stringutil.TruncateRunes(strings.TrimSpace(cmd), 48))
 		}
 		return "I'll run a shell command."
 	case "get_time":
@@ -315,11 +316,6 @@ func FormatToolIntentProgressLine(toolName string, argsJSON []byte) string {
 	sum := agentlog.SummarizeArgs(toolName, argsJSON)
 	phrase := progressToolActionPhrase(toolName, argsJSON, sum)
 	return progressNestedIndent + progressToolPreludeMark + " " + phrase + "…"
-}
-
-// ProgressToolIntentLine is an alias for tests and plain call sites.
-func ProgressToolIntentLine(toolName string, argsJSON []byte) string {
-	return FormatToolIntentProgressLine(toolName, argsJSON)
 }
 
 // formatThinkingLine extracts a short reasoning summary from assistant content

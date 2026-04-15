@@ -16,10 +16,8 @@ func TestEstimate(t *testing.T) {
 	}
 }
 
-func TestEstimateMessages(t *testing.T) {
-	msgs := []string{"hello world", "how are you"}
-	total := EstimateMessages(msgs)
-	if total < 10 {
-		t.Fatalf("expected at least 10 tokens for two short messages, got %d", total)
+func TestMessageOverhead(t *testing.T) {
+	if MessageOverhead != 4 {
+		t.Fatalf("MessageOverhead = %d, want 4", MessageOverhead)
 	}
 }

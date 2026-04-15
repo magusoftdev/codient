@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
 
@@ -111,17 +110,14 @@ func makeAutoCheck(workspace, cmdLine string, timeout time.Duration, maxOut int,
 			runCtx, cancel = context.WithTimeout(ctx, timeout)
 			defer cancel()
 		}
-		var argv []string
-		if runtime.GOOS == "windows" {
-			argv = []string{"cmd", "/c", cmdLine}
-		} else {
-			argv = []string{"sh", "-c", cmdLine}
+		argv, err := tools.ShellArgv(cmdLine)
+		if err != nil {
+			return agent.AutoCheckOutcome{}
 		}
 		cmd := exec.CommandContext(runCtx, argv[0], argv[1:]...)
 		cmd.Dir = workspace
 
 		var out []byte
-		var err error
 		if progress != nil {
 			ls := tools.NewLineStreamer(progress)
 			cmd.Stdout = ls
