@@ -47,31 +47,36 @@ func buildRegistry(cfg *config.Config, mode prompt.Mode, s *session, memOpts *to
 	if s != nil {
 		idx = s.codeIndex
 	}
+	var reg *tools.Registry
 	if mode == prompt.ModeAsk {
-		return tools.DefaultReadOnly(cfg.EffectiveWorkspace(), fetch, search, sgPath, idx)
-	}
-	if mode == prompt.ModePlan {
-		return tools.DefaultReadOnlyPlan(cfg.EffectiveWorkspace(), fetch, search, sgPath, idx)
-	}
-	var execOpts *tools.ExecOptions
-	if len(cfg.ExecAllowlist) > 0 {
-		execOpts = &tools.ExecOptions{
-			TimeoutSeconds: cfg.ExecTimeoutSeconds,
-			MaxOutputBytes: cfg.ExecMaxOutputBytes,
-		}
-		if s != nil {
-			execOpts.ProgressWriter = s.progressOut
-		}
-		if s != nil && s.execAllow != nil {
-			execOpts.Session = s.execAllow
-			if s.scanner != nil {
-				execOpts.PromptOnDenied = s.execPromptDenied
+		reg = tools.DefaultReadOnly(cfg.EffectiveWorkspace(), fetch, search, sgPath, idx)
+	} else if mode == prompt.ModePlan {
+		reg = tools.DefaultReadOnlyPlan(cfg.EffectiveWorkspace(), fetch, search, sgPath, idx)
+	} else {
+		var execOpts *tools.ExecOptions
+		if len(cfg.ExecAllowlist) > 0 {
+			execOpts = &tools.ExecOptions{
+				TimeoutSeconds: cfg.ExecTimeoutSeconds,
+				MaxOutputBytes: cfg.ExecMaxOutputBytes,
 			}
-		} else {
-			execOpts.Allowlist = cfg.ExecAllowlist
+			if s != nil {
+				execOpts.ProgressWriter = s.progressOut
+			}
+			if s != nil && s.execAllow != nil {
+				execOpts.Session = s.execAllow
+				if s.scanner != nil {
+					execOpts.PromptOnDenied = s.execPromptDenied
+				}
+			} else {
+				execOpts.Allowlist = cfg.ExecAllowlist
+			}
 		}
+		reg = tools.Default(cfg.EffectiveWorkspace(), execOpts, fetch, search, sgPath, idx, memOpts)
 	}
-	return tools.Default(cfg.EffectiveWorkspace(), execOpts, fetch, search, sgPath, idx, memOpts)
+	if s != nil && s.mcpMgr != nil {
+		tools.RegisterMCPTools(reg, s.mcpMgr)
+	}
+	return reg
 }
 
 // buildAgentSystemPrompt assembles the layered agent system message (tools, repo notes, -system).

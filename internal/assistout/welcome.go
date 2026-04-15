@@ -88,6 +88,8 @@ type WelcomeParams struct {
 	Model     string
 	// ResumeSummary is a one-line summary of the session being resumed (e.g. turns + last user message). Empty when not resuming.
 	ResumeSummary string
+	// Version is the codient release (e.g. from codientcli.Version). Shown when non-empty.
+	Version string
 }
 
 // WriteWelcome prints a short colorful banner. Skipped when Quiet is true,
@@ -97,6 +99,9 @@ func WriteWelcome(w io.Writer, p WelcomeParams) {
 	resumeSummary := formatResumeSummary(p.ResumeSummary, maxResumeSummaryWidth(termWidth))
 
 	if p.Quiet {
+		if v := strings.TrimSpace(p.Version); v != "" {
+			fmt.Fprintf(w, "codient %s\n", v)
+		}
 		if resumeSummary != "" {
 			fmt.Fprintf(w, "codient: resuming · %s\n", resumeSummary)
 		}
@@ -110,20 +115,31 @@ func WriteWelcome(w io.Writer, p WelcomeParams) {
 	if p.Repl {
 		run = "Session"
 	}
-	ws := truncateWelcomePath(strings.TrimSpace(p.Workspace), 58)
-	model := truncateWelcomePath(strings.TrimSpace(p.Model), 52)
+	const (
+		labelVersion   = "Version "
+		labelWorkspace = "Workspace "
+		labelModel     = "Model "
+	)
+	wsVal := strings.TrimSpace(p.Workspace)
+	modelVal := strings.TrimSpace(p.Model)
+	wsLine := welcomeLabelLine(termWidth, labelWorkspace, wsVal)
+	modelLine := welcomeLabelLine(termWidth, labelModel, modelVal)
 
 	if p.Plain || !stderrInteractive() {
 		for _, row := range codientBlockASCII {
 			fmt.Fprintf(w, "  %s\n", row)
 		}
 		fmt.Fprintf(w, "  %s\n", welcomeTagline)
-		fmt.Fprintf(w, "  %s · mode %s\n", run, mode)
-		if ws != "" {
-			fmt.Fprintf(w, "  %s\n", ws)
+		if v := strings.TrimSpace(p.Version); v != "" {
+			vMax := maxWelcomeValueRunes(termWidth, labelVersion)
+			fmt.Fprintf(w, "  %s%s\n", labelVersion, truncateWelcomePath(v, vMax))
 		}
-		if model != "" {
-			fmt.Fprintf(w, "  model %s\n", model)
+		fmt.Fprintf(w, "  %s · mode %s\n", run, mode)
+		if wsLine != "" {
+			fmt.Fprintf(w, "  %s\n", wsLine)
+		}
+		if modelLine != "" {
+			fmt.Fprintf(w, "  %s\n", modelLine)
 		}
 		if resumeSummary != "" {
 			fmt.Fprintf(w, "  Resuming · %s\n", resumeSummary)
@@ -155,12 +171,17 @@ func WriteWelcome(w io.Writer, p WelcomeParams) {
 		Foreground(lipgloss.AdaptiveColor{Light: "#BE185D", Dark: "#E879F9"})
 
 	line1 := dim.Render(run+" · mode ") + modeHi.Render(mode)
-	boxLines := []string{"  " + line1}
-	if ws != "" {
-		boxLines = append(boxLines, "  "+dim.Render(ws))
+	var boxLines []string
+	if v := strings.TrimSpace(p.Version); v != "" {
+		vMax := maxWelcomeValueRunes(termWidth, labelVersion)
+		boxLines = append(boxLines, "  "+dim.Render(labelVersion+truncateWelcomePath(v, vMax)))
 	}
-	if model != "" {
-		boxLines = append(boxLines, "  "+dim.Render("model "+model))
+	boxLines = append(boxLines, "  "+line1)
+	if wsLine != "" {
+		boxLines = append(boxLines, "  "+dim.Render(wsLine))
+	}
+	if modelLine != "" {
+		boxLines = append(boxLines, "  "+dim.Render(modelLine))
 	}
 	boxInner := strings.Join(boxLines, "\n")
 
@@ -238,6 +259,39 @@ func truncateWelcomeTail(s string, max int) string {
 func stderrInteractive() bool {
 	st, err := os.Stderr.Stat()
 	return err == nil && (st.Mode()&os.ModeCharDevice) != 0
+}
+
+// maxWelcomeValueRunes is the maximum length (runes) for the value in a
+// "  Label value" welcome line so it fits within the terminal and bordered box.
+func maxWelcomeValueRunes(termWidth int, label string) int {
+	const leftIndent = 2
+	const lineOverhead = 12 // border, padding, indent slack, ellipsis
+	if termWidth <= 0 {
+		switch strings.TrimSuffix(strings.TrimSpace(label), " ") {
+		case "Workspace":
+			return 46
+		case "Model":
+			return 46
+		case "Version":
+			return 72
+		default:
+			return 46
+		}
+	}
+	lr := utf8.RuneCountInString(label)
+	max := termWidth - leftIndent - lr - lineOverhead
+	if max < 12 {
+		max = 12
+	}
+	return max
+}
+
+func welcomeLabelLine(termWidth int, label string, value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	return label + truncateWelcomePath(value, maxWelcomeValueRunes(termWidth, label))
 }
 
 func truncateWelcomePath(s string, max int) string {

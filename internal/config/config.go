@@ -106,6 +106,8 @@ type Config struct {
 	EmbeddingModel string
 	// UpdateNotify controls whether the interactive update prompt is shown on REPL startup (default true).
 	UpdateNotify bool
+	// MCPServers maps server IDs to their connection config. Nil/empty means no MCP servers.
+	MCPServers map[string]MCPServerConfig
 }
 
 // Load reads configuration from the persistent config file.
@@ -260,6 +262,7 @@ func Load() (*Config, error) {
 		AstGrep:              strings.TrimSpace(pc.AstGrep),
 		EmbeddingModel:       strings.TrimSpace(pc.EmbeddingModel),
 		UpdateNotify:         updateNotify,
+		MCPServers:           pc.MCPServers,
 	}
 	c.BaseURL = strings.TrimRight(c.BaseURL, "/")
 	if c.ExecTimeoutSeconds < 1 {

@@ -324,5 +324,44 @@ func sectionPerToolNotes(p Params) string {
 	if _, ok := set["echo"]; ok {
 		b.WriteString("- **echo** / **get_time**: Utility tools for sanity checks.\n")
 	}
+	writeMCPToolNotes(&b, names)
 	return strings.TrimSpace(b.String())
+}
+
+// writeMCPToolNotes appends a section about MCP tools if any are registered.
+func writeMCPToolNotes(b *strings.Builder, names []string) {
+	type serverInfo struct {
+		id    string
+		tools []string
+	}
+	servers := make(map[string]*serverInfo)
+	var order []string
+	for _, n := range names {
+		if !strings.HasPrefix(n, "mcp__") {
+			continue
+		}
+		rest := strings.TrimPrefix(n, "mcp__")
+		idx := strings.Index(rest, "__")
+		if idx < 0 {
+			continue
+		}
+		sid := rest[:idx]
+		tname := rest[idx+2:]
+		si, ok := servers[sid]
+		if !ok {
+			si = &serverInfo{id: sid}
+			servers[sid] = si
+			order = append(order, sid)
+		}
+		si.tools = append(si.tools, tname)
+	}
+	if len(order) == 0 {
+		return
+	}
+	b.WriteString("\n\n### MCP (external) tools\n\n")
+	b.WriteString("Some tools above come from **MCP servers** (Model Context Protocol). They are prefixed with `mcp__<server>__<tool>`. Call them exactly like any other tool.\n\n")
+	for _, sid := range order {
+		si := servers[sid]
+		fmt.Fprintf(b, "- **%s**: %s\n", sid, strings.Join(si.tools, ", "))
+	}
 }

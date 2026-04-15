@@ -19,6 +19,7 @@ import (
 	"codient/internal/assistout"
 	"codient/internal/config"
 	"codient/internal/designstore"
+	"codient/internal/mcpclient"
 	"codient/internal/openaiclient"
 	"codient/internal/projectinfo"
 	"codient/internal/prompt"
@@ -229,6 +230,17 @@ func Run() int {
 		memOpts:          memOpts,
 		execAllow:        execAllow,
 	}
+	if len(cfg.MCPServers) > 0 {
+		mgr := mcpclient.NewManager(Version)
+		warns := mgr.Connect(ctx, cfg.MCPServers)
+		for _, w := range warns {
+			fmt.Fprintf(os.Stderr, "codient: %s\n", w)
+		}
+		if len(mgr.ServerIDs()) > 0 {
+			s.mcpMgr = mgr
+		}
+	}
+
 	s.client = openaiclient.New(cfg)
 	s.registry = buildRegistry(cfg, agentMode, s, memOpts)
 	s.systemPrompt = buildAgentSystemPrompt(cfg, s.registry, agentMode, *system, repoInstr, projectCtx, mem, effectiveAutoCheckCmd(cfg))

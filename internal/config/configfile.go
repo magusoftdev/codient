@@ -86,6 +86,19 @@ type PersistentConfig struct {
 
 	// UpdateNotify opt-out: set to false to suppress the interactive update prompt on startup.
 	UpdateNotify *bool `json:"update_notify,omitempty"`
+
+	// MCP servers to connect to at session start.
+	MCPServers map[string]MCPServerConfig `json:"mcp_servers,omitempty"`
+}
+
+// MCPServerConfig describes a single MCP server connection.
+// Set Command for stdio transport or URL for Streamable HTTP transport.
+type MCPServerConfig struct {
+	Command string            `json:"command,omitempty"`
+	Args    []string          `json:"args,omitempty"`
+	Env     map[string]string `json:"env,omitempty"`
+	URL     string            `json:"url,omitempty"`
+	Headers map[string]string `json:"headers,omitempty"`
 }
 
 // StateDir returns the codient state directory (~/.codient, or CODIENT_STATE_DIR if set).
@@ -206,6 +219,7 @@ func ConfigToPersistent(cfg *Config) *PersistentConfig {
 		ProjectContext:     cfg.ProjectContext,
 		AstGrep:            cfg.AstGrep,
 		EmbeddingModel:     cfg.EmbeddingModel,
+		MCPServers:         cfg.MCPServers,
 	}
 	if !cfg.FetchPreapproved {
 		f := false

@@ -26,6 +26,7 @@ import (
 	"codient/internal/config"
 	"codient/internal/designstore"
 	"codient/internal/gitutil"
+	"codient/internal/mcpclient"
 	"codient/internal/openaiclient"
 	"codient/internal/planstore"
 	"codient/internal/projectinfo"
@@ -72,6 +73,8 @@ type session struct {
 	fetchPromptMu sync.Mutex               // serializes fetch allow prompts and post-lock re-checks
 
 	codeIndex *codeindex.Index // semantic search index; nil when embedding_model is not configured
+
+	mcpMgr *mcpclient.Manager // MCP server connections; nil when no mcp_servers configured
 
 	// Plan lifecycle state (non-nil when a structured plan is active).
 	currentPlan *planstore.Plan
@@ -484,6 +487,9 @@ func (s *session) showGitDiffIfBuild() {
 }
 
 func (s *session) runSingleTurn(ctx context.Context, user string) int {
+	if s.mcpMgr != nil {
+		defer s.mcpMgr.Close()
+	}
 	s.warnIfNotGitRepo()
 	assistout.WriteWelcome(os.Stderr, assistout.WelcomeParams{
 		Plain:     s.cfg.Plain,
@@ -492,6 +498,7 @@ func (s *session) runSingleTurn(ctx context.Context, user string) int {
 		Mode:      string(s.mode),
 		Workspace: s.cfg.EffectiveWorkspace(),
 		Model:     s.cfg.Model,
+		Version:   Version,
 	})
 	if s.cfg.Verbose {
 		fmt.Fprintf(os.Stderr, "codient: workspace=%q mode=%s tools=%s\n", s.cfg.EffectiveWorkspace(), s.mode, strings.Join(s.registry.Names(), ", "))
@@ -593,11 +600,16 @@ func (s *session) runSession(ctx context.Context, initialPrompt string, newSessi
 		Workspace:     ws,
 		Model:         s.cfg.Model,
 		ResumeSummary: resumeSummary,
+		Version:       Version,
 	})
 	if s.cfg.Verbose {
 		fmt.Fprintf(os.Stderr, "codient: workspace=%q mode=%s tools=%s\n", ws, s.mode, strings.Join(s.registry.Names(), ", "))
 	}
 	fmt.Fprintf(os.Stderr, "%s\n", assistout.ModeHint(s.cfg.Plain, string(s.mode)))
+
+	if s.mcpMgr != nil {
+		defer s.mcpMgr.Close()
+	}
 
 	sc := bufio.NewScanner(os.Stdin)
 	s.scanner = sc
@@ -952,6 +964,41 @@ func (s *session) buildSlashCommands(ctx context.Context, sc *bufio.Scanner) *sl
 		Run: func(string) error {
 			names := s.registry.Names()
 			fmt.Fprintf(os.Stderr, "Tools (%s mode): %s\n", s.mode, strings.Join(names, ", "))
+			return nil
+		},
+	})
+	cmds.Register(slashcmd.Command{
+		Name:        "mcp",
+		Usage:       "/mcp [server]",
+		Description: "list MCP servers and tools (no args = all servers, server = tools for that server)",
+		Run: func(args string) error {
+			if s.mcpMgr == nil {
+				fmt.Fprintf(os.Stderr, "No MCP servers configured. Add mcp_servers to ~/.codient/config.json.\n")
+				return nil
+			}
+			args = strings.TrimSpace(args)
+			if args == "" {
+				ids := s.mcpMgr.ServerIDs()
+				if len(ids) == 0 {
+					fmt.Fprintf(os.Stderr, "No MCP servers connected.\n")
+					return nil
+				}
+				fmt.Fprintf(os.Stderr, "MCP servers (%d connected):\n", len(ids))
+				for _, id := range ids {
+					tt := s.mcpMgr.ServerTools(id)
+					fmt.Fprintf(os.Stderr, "  %s (%d tools)\n", id, len(tt))
+				}
+				return nil
+			}
+			tt := s.mcpMgr.ServerTools(args)
+			if tt == nil {
+				fmt.Fprintf(os.Stderr, "MCP server %q not connected.\n", args)
+				return nil
+			}
+			fmt.Fprintf(os.Stderr, "MCP %s (%d tools):\n", args, len(tt))
+			for _, t := range tt {
+				fmt.Fprintf(os.Stderr, "  %-30s %s\n", t.Name, t.Description)
+			}
 			return nil
 		},
 	})

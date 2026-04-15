@@ -155,6 +155,8 @@ Run `/config` with no arguments to see all current values. `/config <key>` shows
 | `embedding_model` | Model id for `/v1/embeddings` (same base URL as chat). Enables the `semantic_search` tool; leave empty to disable | *(empty)* |
 | **Update** | | |
 | `update_notify` | Show interactive update prompt on REPL startup | `true` |
+| **MCP** | | |
+| `mcp_servers` | Map of MCP server IDs to connection configs (see [MCP servers](#mcp-model-context-protocol-servers)) | *(empty)* |
 
 When `fetch_url` receives `Content-Type: text/html`, the body is converted to simplified markdown (headings, links, lists, code) before being returned.
 
@@ -182,6 +184,41 @@ When **`embedding_model`** is set in config, codient indexes text files in the w
 - **When indexing runs:** After you start an interactive session, indexing begins automatically in the background—no separate command. stderr shows progress and completion (or an error if embeddings fail).
 - **Persistence:** The index is stored under **`<workspace>/.codient/index/embeddings.gob`**. On later sessions, unchanged files reuse cached vectors; only new or modified files are re-embedded. If you change **`embedding_model`**, the stored index is invalidated and rebuilt.
 - **Configure:** `/config embedding_model <model-id>`, set `embedding_model` in `~/.codient/config.json`, or use **`/setup`** (optional prompt after chat model selection).
+
+### MCP (Model Context Protocol) servers
+
+Codient can connect to external **MCP servers** and expose their tools to the agent alongside built-in tools. This lets you extend the agent with any MCP-compatible tool provider (databases, APIs, custom workflows, etc.).
+
+Configure MCP servers in `~/.codient/config.json` under the `mcp_servers` key. Each entry is a server ID mapped to its connection config:
+
+```json
+{
+  "mcp_servers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/home/user"],
+      "env": {}
+    },
+    "remote-api": {
+      "url": "https://api.example.com/mcp",
+      "headers": {"Authorization": "Bearer sk-xxx"}
+    }
+  }
+}
+```
+
+**Transport types:**
+
+- **stdio** (`command` + `args`): Spawns the server as a subprocess and communicates over stdin/stdout. Use for local MCP servers (e.g. `npx @modelcontextprotocol/server-filesystem`). Optional `env` passes environment variables to the process.
+- **Streamable HTTP** (`url`): Connects to a remote MCP server endpoint. Optional `headers` are sent with each request (useful for auth tokens).
+
+**How it works:**
+
+- On session start, codient connects to all configured servers and discovers their tools via `tools/list`.
+- MCP tools are registered in the tool registry with namespaced names: `mcp__<serverID>__<toolName>` (e.g. `mcp__filesystem__read_dir`). This prevents collisions with built-in tools.
+- The agent calls MCP tools the same way as built-in tools — no special handling needed.
+- If a server fails to connect, a warning is printed and the session continues without that server's tools.
+- Use the `/mcp` slash command to inspect connected servers and their tools.
 
 ### Auto-update
 
@@ -279,6 +316,7 @@ Inside a session you can use slash commands to control the agent:
 | `/model <name>` | Switch to a different model (shortcut for `/config model`) |
 | `/workspace <path>` | Change the workspace directory |
 | `/tools` | List tools available in current mode |
+| `/mcp [server]` | List connected MCP servers and tool counts; with a server name, list that server's tools |
 | `/status` | Show session state (mode, model, turns, tokens, auto-check, exec policy) |
 | `/log [path]` | Show logging status or enable JSONL logging to a file |
 | `/undo` | Undo the last build turn using git (restore modified files, remove new files from that turn). Requires a git repo. Use `/undo all` to revert every tracked turn in the stack. |

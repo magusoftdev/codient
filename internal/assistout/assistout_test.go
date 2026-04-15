@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestPrepareAssistantText_PlanMode(t *testing.T) {
@@ -44,6 +45,7 @@ func TestWriteWelcome_Plain(t *testing.T) {
 		Mode:      "plan",
 		Workspace: "/tmp/ws",
 		Model:     "m1",
+		Version:   "0.3.0",
 	})
 	s := buf.String()
 	if !strings.Contains(s, "█") || !strings.Contains(s, "Session") || !strings.Contains(s, "plan") {
@@ -51,6 +53,40 @@ func TestWriteWelcome_Plain(t *testing.T) {
 	}
 	if !strings.Contains(s, "OpenAI-compatible") {
 		t.Fatalf("expected OpenAI-compatible tagline: %q", s)
+	}
+	if !strings.Contains(s, "Version 0.3.0") {
+		t.Fatalf("expected version line: %q", s)
+	}
+	if !strings.Contains(s, "Workspace /tmp/ws") {
+		t.Fatalf("expected Workspace-prefixed path: %q", s)
+	}
+	if !strings.Contains(s, "Model m1") {
+		t.Fatalf("expected Model line: %q", s)
+	}
+}
+
+func TestWriteWelcome_Plain_LongWorkspaceTruncates(t *testing.T) {
+	long := "/very/long/path/prefix/" + strings.Repeat("x", 120)
+	var buf bytes.Buffer
+	WriteWelcome(&buf, WelcomeParams{
+		Plain:     true,
+		Repl:      true,
+		Mode:      "build",
+		Workspace: long,
+	})
+	s := buf.String()
+	if !strings.Contains(s, "Workspace ") {
+		t.Fatal("missing Workspace prefix")
+	}
+	if !strings.Contains(s, "…") {
+		t.Fatalf("expected ellipsis in truncated path: %q", s)
+	}
+	for _, line := range strings.Split(s, "\n") {
+		if strings.Contains(line, "Workspace ") {
+			if n := utf8.RuneCountInString(strings.TrimRight(line, "\r")); n > 72 {
+				t.Fatalf("workspace line too long (%d runes): %q", n, line)
+			}
+		}
 	}
 }
 
@@ -76,6 +112,15 @@ func TestWriteWelcome_Quiet(t *testing.T) {
 	WriteWelcome(&buf, WelcomeParams{Quiet: true, Plain: true, Mode: "build"})
 	if buf.Len() != 0 {
 		t.Fatalf("expected empty, got %q", buf.String())
+	}
+}
+
+func TestWriteWelcome_Quiet_Version(t *testing.T) {
+	var buf bytes.Buffer
+	WriteWelcome(&buf, WelcomeParams{Quiet: true, Plain: true, Mode: "build", Version: "1.0.0"})
+	s := buf.String()
+	if s != "codient 1.0.0\n" {
+		t.Fatalf("expected version line only, got %q", s)
 	}
 }
 
