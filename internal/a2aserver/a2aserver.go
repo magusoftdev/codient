@@ -15,11 +15,10 @@ import (
 	"github.com/a2aproject/a2a-go/v2/a2asrv"
 
 	"codient/internal/agent"
+	"codient/internal/agentfactory"
 	"codient/internal/agentlog"
 	"codient/internal/config"
-	"codient/internal/projectinfo"
 	"codient/internal/prompt"
-	"codient/internal/tools"
 )
 
 // Config holds everything the A2A server needs to handle incoming tasks.
@@ -112,8 +111,8 @@ func (e *executor) Execute(ctx context.Context, execCtx *a2asrv.ExecutorContext)
 			return
 		}
 
-		reg := registryForMode(e.cfg, mode)
-		sysprompt := systemPromptForMode(e.cfg, reg, mode)
+		reg := agentfactory.RegistryForMode(e.cfg, mode)
+		sysprompt := agentfactory.SystemPromptForMode(e.cfg, reg, mode, os.Stderr)
 
 		if e.llmForMode == nil {
 			msg := a2a.NewMessage(a2a.MessageRoleAgent, a2a.NewTextPart("server misconfigured: LLMForMode is nil"))
@@ -191,80 +190,3 @@ func resolveMode(meta map[string]any) prompt.Mode {
 	return m
 }
 
-func registryForMode(cfg *config.Config, mode prompt.Mode) *tools.Registry {
-	ws := cfg.EffectiveWorkspace()
-	netLimit := tools.NewNetworkLimiter(cfg.FetchWebRatePerSec, cfg.FetchWebRateBurst)
-	fetch := fetchOpts(cfg, netLimit)
-	search := searchOpts(cfg, netLimit)
-	sgPath := cfg.AstGrep
-	switch mode {
-	case prompt.ModeAsk:
-		return tools.DefaultReadOnly(ws, fetch, search, sgPath, nil)
-	case prompt.ModePlan:
-		return tools.DefaultReadOnlyPlan(ws, fetch, search, sgPath, nil)
-	default:
-		var execOpts *tools.ExecOptions
-		if len(cfg.ExecAllowlist) > 0 {
-			execOpts = &tools.ExecOptions{
-				TimeoutSeconds: cfg.ExecTimeoutSeconds,
-				MaxOutputBytes: cfg.ExecMaxOutputBytes,
-				Allowlist:      cfg.ExecAllowlist,
-			}
-		}
-		stateDir, _ := config.StateDir()
-		var memOpts *tools.MemoryOptions
-		if stateDir != "" || ws != "" {
-			memOpts = &tools.MemoryOptions{
-				StateDir:      stateDir,
-				WorkspaceRoot: ws,
-			}
-		}
-		return tools.Default(ws, execOpts, fetch, search, sgPath, nil, memOpts)
-	}
-}
-
-func fetchOpts(cfg *config.Config, netLimit *tools.RateLimiter) *tools.FetchOptions {
-	opts := &tools.FetchOptions{
-		AllowHosts:         append([]string(nil), cfg.FetchAllowHosts...),
-		MaxBytes:           cfg.FetchMaxBytes,
-		TimeoutSec:         cfg.FetchTimeoutSec,
-		IncludePreapproved: cfg.FetchPreapproved,
-		RateLimiter:        netLimit,
-	}
-	if len(opts.AllowHosts) == 0 && !opts.IncludePreapproved {
-		return nil
-	}
-	return opts
-}
-
-func searchOpts(cfg *config.Config, netLimit *tools.RateLimiter) *tools.SearchOptions {
-	return &tools.SearchOptions{
-		MaxResults:  cfg.SearchMaxResults,
-		TimeoutSec:  30,
-		RateLimiter: netLimit,
-	}
-}
-
-func systemPromptForMode(cfg *config.Config, reg *tools.Registry, mode prompt.Mode) string {
-	repoInstr, err := prompt.LoadRepoInstructions(cfg.EffectiveWorkspace())
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "codient: a2a: repo instructions: %v\n", err)
-	}
-	projCtx := projectinfo.Detect(cfg.EffectiveWorkspace())
-	stateDir, err := config.StateDir()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "codient: a2a: state dir: %v\n", err)
-	}
-	mem, err := prompt.LoadMemory(stateDir, cfg.EffectiveWorkspace())
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "codient: a2a: memory: %v\n", err)
-	}
-	return prompt.Build(prompt.Params{
-		Cfg:              cfg,
-		Reg:              reg,
-		Mode:             mode,
-		RepoInstructions: repoInstr,
-		ProjectContext:   projCtx,
-		Memory:           mem,
-	})
-}

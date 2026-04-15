@@ -191,6 +191,10 @@ func extractZip(data []byte) ([]byte, error) {
 
 // replaceBinary writes new binary data over the current executable using the
 // write-to-temp-then-rename pattern for atomicity.
+//
+// On Windows a running executable cannot be overwritten but CAN be renamed.
+// We move the current binary to <name>.old first, then put the new one in its
+// place. CleanupOldBinary removes the leftover on next startup.
 func replaceBinary(newBin []byte) error {
 	exe, err := os.Executable()
 	if err != nil {
@@ -223,11 +227,35 @@ func replaceBinary(newBin []byte) error {
 		return fmt.Errorf("chmod: %w", err)
 	}
 
+	if runtime.GOOS == "windows" {
+		oldPath := exe + ".old"
+		os.Remove(oldPath) // remove leftover from a prior update
+		if err := os.Rename(exe, oldPath); err != nil {
+			os.Remove(tmpPath)
+			return fmt.Errorf("move current binary aside: %w", err)
+		}
+	}
+
 	if err := os.Rename(tmpPath, exe); err != nil {
 		os.Remove(tmpPath)
 		return fmt.Errorf("replace binary: %w", err)
 	}
 	return nil
+}
+
+// CleanupOldBinary removes any <executable>.old file left over from a
+// previous self-update. Safe to call unconditionally on startup; errors
+// (including file-not-found) are silently ignored.
+func CleanupOldBinary() {
+	exe, err := os.Executable()
+	if err != nil {
+		return
+	}
+	exe, err = filepath.EvalSymlinks(exe)
+	if err != nil {
+		return
+	}
+	os.Remove(exe + ".old")
 }
 
 // skipFilePath returns the path to ~/.codient/update_skip.

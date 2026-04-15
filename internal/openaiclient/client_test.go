@@ -337,3 +337,67 @@ func TestNewDelegatesToNewFromParams(t *testing.T) {
 		t.Fatalf("base: got %q", c.base)
 	}
 }
+
+func TestNewForMode_UsesOverride(t *testing.T) {
+	cfg := &config.Config{
+		BaseURL:       "http://default/v1",
+		APIKey:        "default-key",
+		Model:         "default-model",
+		MaxConcurrent: 2,
+		ModeModels: map[string]config.ModeConnectionOverride{
+			"plan": {
+				BaseURL: "http://plan-server/v1",
+				APIKey:  "plan-key",
+				Model:   "plan-model",
+			},
+		},
+	}
+	c := NewForMode(cfg, "plan")
+	if c.Model() != "plan-model" {
+		t.Fatalf("Model: got %q want plan-model", c.Model())
+	}
+	if c.base != "http://plan-server/v1" {
+		t.Fatalf("base: got %q want http://plan-server/v1", c.base)
+	}
+	if c.apiKey != "plan-key" {
+		t.Fatalf("apiKey: got %q want plan-key", c.apiKey)
+	}
+}
+
+func TestNewForMode_FallsBackToDefaults(t *testing.T) {
+	cfg := &config.Config{
+		BaseURL:       "http://default/v1",
+		APIKey:        "default-key",
+		Model:         "default-model",
+		MaxConcurrent: 2,
+	}
+	c := NewForMode(cfg, "build")
+	if c.Model() != "default-model" {
+		t.Fatalf("Model: got %q want default-model", c.Model())
+	}
+	if c.base != "http://default/v1" {
+		t.Fatalf("base: got %q", c.base)
+	}
+}
+
+func TestNewForMode_PartialOverride(t *testing.T) {
+	cfg := &config.Config{
+		BaseURL:       "http://default/v1",
+		APIKey:        "default-key",
+		Model:         "default-model",
+		MaxConcurrent: 2,
+		ModeModels: map[string]config.ModeConnectionOverride{
+			"ask": {Model: "ask-model"},
+		},
+	}
+	c := NewForMode(cfg, "ask")
+	if c.Model() != "ask-model" {
+		t.Fatalf("Model: got %q want ask-model", c.Model())
+	}
+	if c.base != "http://default/v1" {
+		t.Fatalf("base should inherit: got %q", c.base)
+	}
+	if c.apiKey != "default-key" {
+		t.Fatalf("apiKey should inherit: got %q", c.apiKey)
+	}
+}

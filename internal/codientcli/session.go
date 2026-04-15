@@ -34,6 +34,7 @@ import (
 	"codient/internal/selfupdate"
 	"codient/internal/sessionstore"
 	"codient/internal/slashcmd"
+	"codient/internal/subagent"
 	"codient/internal/tools"
 )
 
@@ -102,6 +103,32 @@ func (s *session) newRunner() *agent.Runner {
 		}
 	}
 	return r
+}
+
+// delegateTaskFn returns the callback used by the delegate_task tool to run sub-agents.
+func (s *session) delegateTaskFn() tools.DelegateRunner {
+	return func(ctx context.Context, modeStr, task, extraContext string) (string, error) {
+		mode, err := prompt.ParseMode(modeStr)
+		if err != nil {
+			return "", err
+		}
+		progress := s.progressOut
+		if progress != nil {
+			progress = newPrefixWriter([]byte("  │ "), progress)
+		}
+		res, err := subagent.Run(ctx, subagent.RunParams{
+			Cfg:      s.cfg,
+			Mode:     mode,
+			Task:     task,
+			Context:  extraContext,
+			Log:      s.agentLog,
+			Progress: progress,
+		})
+		if err != nil {
+			return "", err
+		}
+		return res.Reply, nil
+	}
 }
 
 func (s *session) executeTurn(ctx context.Context, runner *agent.Runner, user string) (reply string, err error) {
@@ -1285,6 +1312,11 @@ func (s *session) handleConfig(ctx context.Context, args string) error {
 	case "embedding_model":
 		s.startCodeIndex(ctx)
 	}
+
+	if mode, _, ok := parseModeConfigKey(key); ok && mode == string(s.mode) {
+		s.client = openaiclient.NewForMode(s.cfg, mode)
+		s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory, effectiveAutoCheckCmd(s.cfg))
+	}
 	return nil
 }
 
@@ -1348,6 +1380,31 @@ func (s *session) printAllConfig() {
 		embModel = "(not configured)"
 	}
 	fmt.Fprintf(w, "  embedding_model:       %s\n", embModel)
+	fmt.Fprintf(w, "\n  -- Per-mode model overrides --\n")
+	for _, mode := range []string{"plan", "build", "ask"} {
+		ov := s.cfg.ModeModels[mode]
+		base, key, model := ov.BaseURL, ov.APIKey, ov.Model
+		if base == "" && key == "" && model == "" {
+			fmt.Fprintf(w, "  %s:                    (inherits top-level)\n", mode)
+			continue
+		}
+		if base == "" {
+			base = "(inherit)"
+		}
+		maskedKey := key
+		if len(maskedKey) > 4 {
+			maskedKey = maskedKey[:4] + strings.Repeat("*", len(maskedKey)-4)
+		}
+		if maskedKey == "" {
+			maskedKey = "(inherit)"
+		}
+		if model == "" {
+			model = "(inherit)"
+		}
+		fmt.Fprintf(w, "  %s_base_url:           %s\n", mode, base)
+		fmt.Fprintf(w, "  %s_api_key:            %s\n", mode, maskedKey)
+		fmt.Fprintf(w, "  %s_model:              %s\n", mode, model)
+	}
 	fmt.Fprintf(w, "\nSet a value: /config <key> <value>\n")
 }
 
@@ -1432,9 +1489,24 @@ func (s *session) getConfigValue(key string) (string, bool) {
 		return s.cfg.AstGrep, true
 	case "embedding_model":
 		return s.cfg.EmbeddingModel, true
-	default:
-		return "", false
 	}
+
+	if mode, field, ok := parseModeConfigKey(key); ok {
+		base, apiKey, model := s.cfg.ConnectionForMode(mode)
+		switch field {
+		case "base_url":
+			return base, true
+		case "api_key":
+			masked := apiKey
+			if len(masked) > 4 {
+				masked = masked[:4] + strings.Repeat("*", len(masked)-4)
+			}
+			return masked, true
+		case "model":
+			return model, true
+		}
+	}
+	return "", false
 }
 
 func (s *session) setConfig(key, value string) error {
@@ -1606,9 +1678,38 @@ func (s *session) setConfig(key, value string) error {
 	case "embedding_model":
 		s.cfg.EmbeddingModel = value
 	default:
+		if mode, field, ok := parseModeConfigKey(key); ok {
+			if s.cfg.ModeModels == nil {
+				s.cfg.ModeModels = make(map[string]config.ModeConnectionOverride)
+			}
+			ov := s.cfg.ModeModels[mode]
+			switch field {
+			case "base_url":
+				ov.BaseURL = strings.TrimRight(value, "/")
+			case "api_key":
+				ov.APIKey = value
+			case "model":
+				ov.Model = value
+			}
+			s.cfg.ModeModels[mode] = ov
+			return nil
+		}
 		return fmt.Errorf("unknown config key %q", key)
 	}
 	return nil
+}
+
+// parseModeConfigKey checks if key is a per-mode override like "plan_model" or "build_base_url".
+// Returns (mode, field, true) on match.
+func parseModeConfigKey(key string) (mode, field string, ok bool) {
+	for _, m := range []string{"plan", "build", "ask"} {
+		for _, f := range []string{"base_url", "api_key", "model"} {
+			if key == m+"_"+f {
+				return m, f, true
+			}
+		}
+	}
+	return "", "", false
 }
 
 // resolveAstGrep resolves the ast-grep binary path into cfg.AstGrep.

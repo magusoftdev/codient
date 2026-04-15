@@ -87,8 +87,19 @@ type PersistentConfig struct {
 	// UpdateNotify opt-out: set to false to suppress the interactive update prompt on startup.
 	UpdateNotify *bool `json:"update_notify,omitempty"`
 
+	// Per-mode connection overrides (build, ask, plan). Fields left empty inherit top-level.
+	Models map[string]ModeConnectionOverride `json:"models,omitempty"`
+
 	// MCP servers to connect to at session start.
 	MCPServers map[string]MCPServerConfig `json:"mcp_servers,omitempty"`
+}
+
+// ModeConnectionOverride holds optional per-mode overrides for base_url, api_key, and model.
+// Empty fields inherit from the top-level connection settings.
+type ModeConnectionOverride struct {
+	BaseURL string `json:"base_url,omitempty"`
+	APIKey  string `json:"api_key,omitempty"`
+	Model   string `json:"model,omitempty"`
 }
 
 // MCPServerConfig describes a single MCP server connection.
@@ -219,6 +230,7 @@ func ConfigToPersistent(cfg *Config) *PersistentConfig {
 		ProjectContext:     cfg.ProjectContext,
 		AstGrep:            cfg.AstGrep,
 		EmbeddingModel:     cfg.EmbeddingModel,
+		Models:             cfg.ModeModels,
 		MCPServers:         cfg.MCPServers,
 	}
 	if !cfg.FetchPreapproved {

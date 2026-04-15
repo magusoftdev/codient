@@ -258,3 +258,108 @@ func TestSummarizeArgs_StrReplace(t *testing.T) {
 		t.Errorf("new_string_len = %v", m["new_string_len"])
 	}
 }
+
+func TestSummarizeArgs_DelegateTask(t *testing.T) {
+	m := SummarizeArgs("delegate_task", []byte(`{"mode":"ask","task":"find all TODO comments in the codebase"}`))
+	if m["mode"] != "ask" {
+		t.Errorf("mode = %v", m["mode"])
+	}
+	if m["task"] != "find all TODO comments in the codebase" {
+		t.Errorf("task = %v", m["task"])
+	}
+	if _, ok := m["task_prefix"]; ok {
+		t.Error("short task should not be truncated")
+	}
+}
+
+func TestSummarizeArgs_DelegateTask_LongTask(t *testing.T) {
+	longTask := strings.Repeat("x", 200)
+	m := SummarizeArgs("delegate_task", []byte(`{"mode":"build","task":"`+longTask+`"}`))
+	if m["mode"] != "build" {
+		t.Errorf("mode = %v", m["mode"])
+	}
+	prefix, ok := m["task_prefix"].(string)
+	if !ok || len(prefix) != 120 {
+		t.Errorf("task_prefix length = %d, want 120", len(prefix))
+	}
+	if _, ok := m["task"]; ok {
+		t.Error("long task should use task_prefix, not task")
+	}
+}
+
+func TestWithSubAgent_NilLogger(t *testing.T) {
+	var l *Logger
+	child := l.WithSubAgent("ask", "gpt-4")
+	if child != nil {
+		t.Fatal("WithSubAgent on nil logger should return nil")
+	}
+	// nil child should not panic on emit
+	child.LLM(1, "gpt-4", 0, nil, 1)
+	child.ToolStart("echo", nil)
+	child.ToolEnd("echo", 0, nil, nil)
+}
+
+func TestWithSubAgent_TagsEvents(t *testing.T) {
+	var buf bytes.Buffer
+	parent := New(&buf)
+	child := parent.WithSubAgent("ask", "gpt-4.1-mini")
+
+	child.LLM(1, "gpt-4.1-mini", 0, nil, 1)
+
+	var m map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &m); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if m["subagent"] != true {
+		t.Errorf("subagent = %v, want true", m["subagent"])
+	}
+	if m["subagent_mode"] != "ask" {
+		t.Errorf("subagent_mode = %v", m["subagent_mode"])
+	}
+	if m["subagent_model"] != "gpt-4.1-mini" {
+		t.Errorf("subagent_model = %v", m["subagent_model"])
+	}
+	if m["type"] != "llm" {
+		t.Errorf("type = %v", m["type"])
+	}
+}
+
+func TestWithSubAgent_ParentUntagged(t *testing.T) {
+	var buf bytes.Buffer
+	parent := New(&buf)
+	_ = parent.WithSubAgent("ask", "gpt-4.1-mini")
+
+	parent.LLM(1, "gpt-4", 0, nil, 1)
+
+	var m map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &m); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if _, ok := m["subagent"]; ok {
+		t.Error("parent logger should not have subagent tag")
+	}
+}
+
+func TestWithSubAgent_ToolEvents(t *testing.T) {
+	var buf bytes.Buffer
+	parent := New(&buf)
+	child := parent.WithSubAgent("build", "gpt-4.1")
+
+	child.ToolStart("read_file", map[string]any{"path": "main.go"})
+
+	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("expected 1 line, got %d", len(lines))
+	}
+	var m map[string]any
+	json.Unmarshal([]byte(lines[0]), &m)
+	if m["type"] != "tool_start" {
+		t.Errorf("type = %v", m["type"])
+	}
+	if m["subagent"] != true {
+		t.Error("tool_start should be tagged as subagent")
+	}
+	if m["subagent_mode"] != "build" {
+		t.Errorf("subagent_mode = %v", m["subagent_mode"])
+	}
+}

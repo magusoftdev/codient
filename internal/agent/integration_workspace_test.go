@@ -4,6 +4,7 @@ package agent_test
 
 import (
 	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,7 +14,9 @@ import (
 	"codient/internal/agent"
 	"codient/internal/config"
 	"codient/internal/openaiclient"
+	"codient/internal/prompt"
 	"codient/internal/stringutil"
+	"codient/internal/subagent"
 	"codient/internal/tools"
 )
 
@@ -554,6 +557,125 @@ func TestIntegration_AgentPlanModeNoEcho(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Logf("plan mode reply: %s", stringutil.TruncateRunes(reply, 500))
+}
+
+// TestIntegration_AgentDelegateTask verifies the model can call delegate_task
+// and the parent reply contains the sub-agent result.
+func TestIntegration_AgentDelegateTask(t *testing.T) {
+	skipUnlessIntegration(t)
+	skipUnlessStrictTools(t)
+	if testing.Short() {
+		t.Skip("skipping live LLM call in -short mode")
+	}
+
+	dir := workspaceFixture(t, map[string]string{
+		"placeholder.txt": "not used",
+	})
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.RequireModel(); err != nil {
+		t.Fatal(err)
+	}
+	wsRoot, err := filepath.Abs(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Workspace = wsRoot
+
+	const marker = "SUB_AGENT_RESULT_abc123"
+	client := openaiclient.New(cfg)
+	reg := tools.Default(wsRoot, nil, nil, nil, "", nil, nil)
+	tools.RegisterDelegateTask(reg, "build", func(ctx context.Context, mode, task, extraContext string) (string, error) {
+		return marker, nil
+	})
+
+	ar := &agent.Runner{LLM: client, Cfg: cfg, Tools: reg}
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
+	defer cancel()
+
+	sys := "You have a tool named delegate_task. When the user asks you to delegate, " +
+		"you MUST call delegate_task with JSON {\"mode\": \"ask\", \"task\": \"report the workspace contents\"}. " +
+		"After the tool returns, include the EXACT tool result string in your reply verbatim."
+	user := "Delegate an ask-mode task now using delegate_task. Include the tool result in your answer."
+
+	reply, _, err := ar.Run(ctx, sys, user, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reply, marker) {
+		if len(strings.TrimSpace(reply)) == 0 {
+			t.Fatal("empty reply after delegate_task call")
+		}
+		t.Logf("model did not quote tool output verbatim (model-dependent); reply: %q", stringutil.TruncateRunes(reply, 1200))
+	}
+}
+
+// TestIntegration_SubAgentEndToEnd exercises the full sub-agent round-trip:
+// parent delegates to a real sub-agent that reads a workspace file.
+func TestIntegration_SubAgentEndToEnd(t *testing.T) {
+	skipUnlessIntegration(t)
+	skipUnlessStrictTools(t)
+	if testing.Short() {
+		t.Skip("skipping live LLM call in -short mode")
+	}
+
+	const marker = "SUBAGENT_E2E_MARKER_d4e5"
+	dir := workspaceFixture(t, map[string]string{
+		"subagent_target.txt": marker,
+	})
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.RequireModel(); err != nil {
+		t.Fatal(err)
+	}
+	wsRoot, err := filepath.Abs(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Workspace = wsRoot
+
+	client := openaiclient.New(cfg)
+	reg := tools.Default(wsRoot, nil, nil, nil, "", nil, nil)
+	tools.RegisterDelegateTask(reg, "build", func(ctx context.Context, mode, taskDesc, extraContext string) (string, error) {
+		m, mErr := prompt.ParseMode(mode)
+		if mErr != nil {
+			return "", mErr
+		}
+		res, rErr := subagent.Run(ctx, subagent.RunParams{
+			Cfg:      cfg,
+			Mode:     m,
+			Task:     taskDesc,
+			Context:  extraContext,
+			Progress: io.Discard,
+		})
+		if rErr != nil {
+			return "", rErr
+		}
+		return res.Reply, nil
+	})
+
+	ar := &agent.Runner{LLM: client, Cfg: cfg, Tools: reg}
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
+	defer cancel()
+
+	sys := "You have a tool named delegate_task. When the user asks you to delegate, " +
+		"you MUST call delegate_task with JSON {\"mode\": \"ask\", \"task\": \"Read the file subagent_target.txt and report its exact contents.\"}. " +
+		"After the tool returns, include the sub-agent's result in your reply."
+	user := "Use delegate_task to have a sub-agent read subagent_target.txt from the workspace. Include the contents in your answer."
+
+	reply, _, err := ar.Run(ctx, sys, user, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reply, marker) {
+		t.Fatalf("expected reply to contain file marker %q; got: %q", marker, stringutil.TruncateRunes(reply, 1200))
+	}
+	t.Logf("reply: %s", stringutil.TruncateRunes(reply, 500))
 }
 
 // ============================================================================

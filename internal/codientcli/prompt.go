@@ -48,11 +48,12 @@ func buildRegistry(cfg *config.Config, mode prompt.Mode, s *session, memOpts *to
 		idx = s.codeIndex
 	}
 	var reg *tools.Registry
-	if mode == prompt.ModeAsk {
+	switch mode {
+	case prompt.ModeAsk:
 		reg = tools.DefaultReadOnly(cfg.EffectiveWorkspace(), fetch, search, sgPath, idx)
-	} else if mode == prompt.ModePlan {
+	case prompt.ModePlan:
 		reg = tools.DefaultReadOnlyPlan(cfg.EffectiveWorkspace(), fetch, search, sgPath, idx)
-	} else {
+	default:
 		var execOpts *tools.ExecOptions
 		if len(cfg.ExecAllowlist) > 0 {
 			execOpts = &tools.ExecOptions{
@@ -75,6 +76,11 @@ func buildRegistry(cfg *config.Config, mode prompt.Mode, s *session, memOpts *to
 	}
 	if s != nil && s.mcpMgr != nil {
 		tools.RegisterMCPTools(reg, s.mcpMgr)
+	}
+	// Register delegate_task for the interactive parent session only.
+	// Sub-agent registries (built via agentfactory) never get this tool.
+	if s != nil {
+		tools.RegisterDelegateTask(reg, string(mode), s.delegateTaskFn())
 	}
 	return reg
 }

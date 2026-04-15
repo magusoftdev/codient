@@ -106,8 +106,30 @@ type Config struct {
 	EmbeddingModel string
 	// UpdateNotify controls whether the interactive update prompt is shown on REPL startup (default true).
 	UpdateNotify bool
+	// ModeModels holds per-mode connection overrides (build, ask, plan). Empty fields inherit top-level.
+	ModeModels map[string]ModeConnectionOverride
 	// MCPServers maps server IDs to their connection config. Nil/empty means no MCP servers.
 	MCPServers map[string]MCPServerConfig
+}
+
+// ConnectionForMode returns the effective base URL, API key, and model for the given mode.
+// Per-mode overrides take precedence; empty fields fall back to the top-level defaults.
+func (c *Config) ConnectionForMode(mode string) (baseURL, apiKey, model string) {
+	if ov, ok := c.ModeModels[mode]; ok {
+		baseURL = strings.TrimSpace(ov.BaseURL)
+		apiKey = strings.TrimSpace(ov.APIKey)
+		model = strings.TrimSpace(ov.Model)
+	}
+	if baseURL == "" {
+		baseURL = c.BaseURL
+	}
+	if apiKey == "" {
+		apiKey = c.APIKey
+	}
+	if model == "" {
+		model = c.Model
+	}
+	return
 }
 
 // Load reads configuration from the persistent config file.
@@ -262,6 +284,7 @@ func Load() (*Config, error) {
 		AstGrep:              strings.TrimSpace(pc.AstGrep),
 		EmbeddingModel:       strings.TrimSpace(pc.EmbeddingModel),
 		UpdateNotify:         updateNotify,
+		ModeModels:           pc.Models,
 		MCPServers:           pc.MCPServers,
 	}
 	c.BaseURL = strings.TrimRight(c.BaseURL, "/")

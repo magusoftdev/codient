@@ -311,7 +311,7 @@ Inside a session you can use slash commands to control the agent:
 | `/plan` (or `/p`; also `/design`, `/d`) | Switch to plan mode (read-only, structured implementation design) |
 | `/ask` (or `/a`) | Switch to ask mode (read-only Q&A) |
 | `/config [key] [value]` | View or set any configuration key (no args = show all, key = show one, key value = set and save) |
-| `/setup` | Guided setup wizard for API connection, chat model selection, and optional embedding model for semantic search |
+| `/setup` | Guided setup wizard for API connection, chat model selection, optional plan-mode model override, and optional embedding model for semantic search |
 | `/compact` | Summarize conversation history to save context space |
 | `/model <name>` | Switch to a different model (shortcut for `/config model`) |
 | `/workspace <path>` | Change the workspace directory |
@@ -363,6 +363,29 @@ These are read-only from the agent's perspective (capped at 32 KiB total) and co
 ### Plan mode and saved plans
 
 In **plan** mode, when the assistant's reply includes a **Ready to implement** section, codient saves the markdown under the workspace (by default `.codient/plans/<sessionID>/`). Plans are scoped to the session that created them. Filenames are `{task-slug}_{date-time}_{nanoseconds}.md` so runs never collide. The task slug comes from `-goal`, else `-task-file` basename, else the first line of your first message.
+
+### Sub-agents (task delegation)
+
+The agent has a **`delegate_task`** tool that spawns an isolated sub-agent to handle a self-contained task. This is always available — the model decides when delegation is useful (e.g. parallelizing codebase exploration across multiple areas).
+
+**How it works:**
+
+- The parent agent calls `delegate_task` with a **mode** (`build`, `ask`, or `plan`), a **task** description, and optional **context** snippets.
+- A fresh `agent.Runner` is created for the sub-agent with its own conversation history, tool registry matching the requested mode, and (optionally) a different model via [per-mode configuration](#config-file-reference-codientconfigjson).
+- The sub-agent runs to completion and its reply is returned to the parent as the tool result.
+- Sub-agents cannot spawn further sub-agents (recursion guard).
+
+**Mode restrictions (privilege escalation prevention):**
+
+| Parent mode | Allowed sub-agent modes |
+|-------------|------------------------|
+| **build** | `build`, `ask`, `plan` |
+| **ask** | `ask` only |
+| **plan** | `ask` only |
+
+Read-only parent modes (ask, plan) can only delegate to read-only sub-agents, preventing a plan/ask session from gaining write access through delegation.
+
+**Per-mode models** let you route sub-agents to different LLM backends. For example, a local model for build-mode edits and a remote API for ask-mode research — see the `models` key in config.
 
 ### Streaming
 

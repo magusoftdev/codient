@@ -160,6 +160,12 @@ func TestReplaceBinary(t *testing.T) {
 	// the OS. We verify extractBinary produces correct output above.
 }
 
+func TestCleanupOldBinary(t *testing.T) {
+	// CleanupOldBinary is best-effort and silently ignores errors.
+	// Verify it doesn't panic when there is nothing to clean up.
+	CleanupOldBinary()
+}
+
 // --- helpers ---
 
 func buildTarGz(t *testing.T, name string, content []byte) []byte {

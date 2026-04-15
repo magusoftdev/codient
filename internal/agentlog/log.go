@@ -14,8 +14,9 @@ import (
 
 // Logger writes one JSON object per line. Safe for concurrent use.
 type Logger struct {
-	w  io.Writer
-	mu sync.Mutex
+	w     io.Writer
+	mu    *sync.Mutex
+	extra map[string]any // fields merged into every emitted event
 }
 
 // New creates a logger; if w is nil, returns nil (no-op).
@@ -23,7 +24,24 @@ func New(w io.Writer) *Logger {
 	if w == nil {
 		return nil
 	}
-	return &Logger{w: w}
+	return &Logger{w: w, mu: &sync.Mutex{}}
+}
+
+// WithSubAgent returns a child logger that tags every event with sub-agent metadata.
+// Shares the parent's writer and mutex. If l is nil, returns nil.
+func (l *Logger) WithSubAgent(mode, model string) *Logger {
+	if l == nil {
+		return nil
+	}
+	return &Logger{
+		w:  l.w,
+		mu: l.mu,
+		extra: map[string]any{
+			"subagent":       true,
+			"subagent_mode":  mode,
+			"subagent_model": model,
+		},
+	}
 }
 
 // NewFile opens path for append (create if needed).
@@ -32,7 +50,7 @@ func NewFile(path string) (*Logger, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Logger{w: f}, nil
+	return &Logger{w: f, mu: &sync.Mutex{}}, nil
 }
 
 func (l *Logger) emit(v map[string]any) {
@@ -40,6 +58,9 @@ func (l *Logger) emit(v map[string]any) {
 		return
 	}
 	v["ts"] = time.Now().UTC().Format(time.RFC3339Nano)
+	for k, ev := range l.extra {
+		v[k] = ev
+	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if err := json.NewEncoder(l.w).Encode(v); err != nil {
@@ -214,6 +235,18 @@ func SummarizeArgs(name string, argsJSON []byte) map[string]any {
 		}
 		if s, ok := raw["suffix"].(string); ok {
 			m["suffix"] = s
+		}
+	case "delegate_task":
+		if mode, ok := raw["mode"].(string); ok {
+			m["mode"] = mode
+		}
+		if task, ok := raw["task"].(string); ok {
+			r := []rune(task)
+			if len(r) > 120 {
+				m["task_prefix"] = string(r[:120])
+			} else {
+				m["task"] = task
+			}
 		}
 	case "echo":
 		if msg, ok := raw["message"].(string); ok {

@@ -59,6 +59,10 @@ func Build(p Params) string {
 		b.WriteString("\n\n")
 		b.WriteString(sectionPlanMode())
 	}
+	if hasDelegateTask(p.Reg) {
+		b.WriteString("\n\n")
+		b.WriteString(sectionDelegation(mode))
+	}
 	if p.ReviewMode {
 		b.WriteString("\n\n")
 		b.WriteString(sectionReviewMode())
@@ -231,6 +235,43 @@ func sectionDebugging() string {
 - If stuck after a few attempts, summarize evidence and ask the user for one decision.`
 }
 
+func hasDelegateTask(reg *tools.Registry) bool {
+	for _, n := range reg.Names() {
+		if n == "delegate_task" {
+			return true
+		}
+	}
+	return false
+}
+
+func sectionDelegation(mode Mode) string {
+	if mode == ModeBuild {
+		return `## Task delegation (delegate_task)
+
+You can delegate self-contained tasks to sub-agents using delegate_task. Each sub-agent gets a fresh conversation with full workspace access matching its mode. Use this to parallelize work:
+
+- **ask** sub-agents for read-only research (investigate multiple modules at the same time)
+- **build** sub-agents for independent code changes that do not conflict with each other
+- **plan** sub-agents for generating a focused sub-design
+
+Guidelines:
+- Do NOT delegate the entire user request — break it into meaningful, independent sub-tasks.
+- Sub-agents have NO knowledge of the parent conversation. Include all necessary context in the task and context parameters.
+- Multiple delegate_task calls in the same response run in parallel — use this for concurrent exploration.
+- Prefer delegate_task over sequential tool calls when exploring unrelated parts of the codebase.`
+	}
+	return `## Task delegation (delegate_task)
+
+You can delegate research tasks to read-only sub-agents using delegate_task. Sub-agents run in ask mode with read/search/grep access only — they cannot modify files or run commands.
+
+Use this to **parallelize codebase exploration**: investigate multiple modules, search for different patterns, or gather information from several areas simultaneously. Multiple delegate_task calls in the same response run in parallel.
+
+Guidelines:
+- Sub-agents have NO knowledge of the parent conversation. Include all necessary context in the task and context parameters.
+- Keep tasks focused and self-contained — each sub-agent should answer one specific question.
+- Synthesize sub-agent results yourself rather than passing raw output to the user.`
+}
+
 func sectionDynamicTools(cfg *config.Config, reg *tools.Registry) string {
 	names := reg.Names()
 	return fmt.Sprintf(`## Tools available in this session
@@ -320,6 +361,9 @@ func sectionPerToolNotes(p Params) string {
 	}
 	if _, ok := set["memory_update"]; ok {
 		b.WriteString("- **memory_update**: Persist knowledge across sessions. Use `scope` **global** for user-wide preferences or **workspace** for project-specific conventions. Use `action` **append** to add entries or **replace_section** to update a `## Heading` section. Keep entries concise (bullet points). Record: project conventions (build commands, naming patterns, architecture decisions), user preferences (style, verbosity), and important past decisions. Do **not** store secrets, credentials, or transient session details.\n")
+	}
+	if _, ok := set["delegate_task"]; ok {
+		b.WriteString("- **delegate_task**: Spawn a sub-agent with its own fresh context. The sub-agent runs to completion and returns its reply as the tool result. Multiple concurrent delegate_task calls run in parallel. See the **Task delegation** section above for guidelines.\n")
 	}
 	if _, ok := set["echo"]; ok {
 		b.WriteString("- **echo** / **get_time**: Utility tools for sanity checks.\n")

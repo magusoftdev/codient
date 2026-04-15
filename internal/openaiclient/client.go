@@ -72,6 +72,12 @@ func New(cfg *config.Config) *Client {
 	return NewFromParams(cfg.BaseURL, cfg.APIKey, cfg.Model, cfg.MaxConcurrent)
 }
 
+// NewForMode builds a client using per-mode connection overrides (falling back to top-level).
+func NewForMode(cfg *config.Config, mode string) *Client {
+	base, key, model := cfg.ConnectionForMode(mode)
+	return NewFromParams(base, key, model, cfg.MaxConcurrent)
+}
+
 // Model returns the configured model id.
 func (c *Client) Model() string {
 	return string(c.model)

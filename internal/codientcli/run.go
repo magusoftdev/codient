@@ -55,6 +55,8 @@ func Run() int {
 	)
 	flag.Parse()
 
+	selfupdate.CleanupOldBinary()
+
 	if *showVersion {
 		fmt.Println(Version)
 		return 0

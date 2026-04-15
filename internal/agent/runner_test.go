@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/openai/openai-go/v3"
@@ -658,6 +659,231 @@ func TestRunner_PostReplyCheckFiresOnce(t *testing.T) {
 	}
 	if out != "final answer" {
 		t.Fatalf("expected second reply, got %q", out)
+	}
+}
+
+func TestRunner_DelegateTaskIntegration(t *testing.T) {
+	// The parent LLM calls delegate_task, then returns the sub-agent result.
+	delegateCall := `{
+  "id": "d1",
+  "object": "chat.completion",
+  "created": 1,
+  "model": "parent-model",
+  "choices": [{
+    "index": 0,
+    "message": {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [{
+        "id": "call_delegate",
+        "type": "function",
+        "function": {
+          "name": "delegate_task",
+          "arguments": "{\"mode\":\"ask\",\"task\":\"find main.go\",\"context\":\"look in the root\"}"
+        }
+      }]
+    },
+    "finish_reason": "tool_calls"
+  }]
+}`
+	parentFinal := `{
+  "id": "d2",
+  "object": "chat.completion",
+  "created": 2,
+  "model": "parent-model",
+  "choices": [{
+    "index": 0,
+    "message": {
+      "role": "assistant",
+      "content": "The sub-agent found the file."
+    },
+    "finish_reason": "stop"
+  }]
+}`
+	llm := &captureLLM{model: "parent-model", script: []string{delegateCall, parentFinal}}
+
+	reg := tools.NewRegistry()
+	reg.Register(mustEchoTool(t))
+
+	var delegatedMode, delegatedTask, delegatedCtx string
+	tools.RegisterDelegateTask(reg, "build", func(_ context.Context, mode, task, ctx string) (string, error) {
+		delegatedMode = mode
+		delegatedTask = task
+		delegatedCtx = ctx
+		return "found main.go at root/main.go", nil
+	})
+
+	cfg := &config.Config{}
+	r := &Runner{LLM: llm, Cfg: cfg, Tools: reg}
+	out, _, err := r.Run(context.Background(), "sys", "find main.go", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if delegatedMode != "ask" {
+		t.Fatalf("delegated mode: got %q want ask", delegatedMode)
+	}
+	if delegatedTask != "find main.go" {
+		t.Fatalf("delegated task: got %q", delegatedTask)
+	}
+	if delegatedCtx != "look in the root" {
+		t.Fatalf("delegated context: got %q", delegatedCtx)
+	}
+	if out != "The sub-agent found the file." {
+		t.Fatalf("final reply: got %q", out)
+	}
+	if llm.calls != 2 {
+		t.Fatalf("expected 2 LLM calls, got %d", llm.calls)
+	}
+	// Verify the tool result was included in the second LLM call
+	if !strings.Contains(string(llm.MsgJSON[1]), "found main.go at root/main.go") {
+		t.Fatalf("second LLM call should contain delegate result: %s", string(llm.MsgJSON[1]))
+	}
+}
+
+func TestRunner_DelegateTask_PrivilegeEscalationBlocked(t *testing.T) {
+	// Ask-mode parent tries to delegate to build mode — should be rejected.
+	delegateCall := `{
+  "id": "d1",
+  "object": "chat.completion",
+  "created": 1,
+  "model": "m",
+  "choices": [{
+    "index": 0,
+    "message": {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [{
+        "id": "call_delegate",
+        "type": "function",
+        "function": {
+          "name": "delegate_task",
+          "arguments": "{\"mode\":\"build\",\"task\":\"write a file\"}"
+        }
+      }]
+    },
+    "finish_reason": "tool_calls"
+  }]
+}`
+	final := `{
+  "id": "d2",
+  "object": "chat.completion",
+  "created": 2,
+  "model": "m",
+  "choices": [{
+    "index": 0,
+    "message": {
+      "role": "assistant",
+      "content": "escalation failed as expected"
+    },
+    "finish_reason": "stop"
+  }]
+}`
+	llm := &captureLLM{model: "m", script: []string{delegateCall, final}}
+	reg := tools.NewRegistry()
+	var delegateCalled bool
+	tools.RegisterDelegateTask(reg, "ask", func(_ context.Context, _, _, _ string) (string, error) {
+		delegateCalled = true
+		return "should not reach here", nil
+	})
+
+	cfg := &config.Config{}
+	r := &Runner{LLM: llm, Cfg: cfg, Tools: reg}
+	out, _, err := r.Run(context.Background(), "", "try escalation", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if delegateCalled {
+		t.Fatal("delegate runner should NOT have been called for disallowed mode")
+	}
+	// The tool error should be in the second LLM call messages
+	if !strings.Contains(string(llm.MsgJSON[1]), "not allowed") {
+		t.Fatalf("second LLM call should contain mode rejection error: %s", string(llm.MsgJSON[1]))
+	}
+	if out != "escalation failed as expected" {
+		t.Fatalf("got %q", out)
+	}
+}
+
+func TestRunner_DelegateTask_ParallelCalls(t *testing.T) {
+	// Two parallel delegate_task calls in one round.
+	parallelRound := `{
+  "id": "p1",
+  "object": "chat.completion",
+  "created": 1,
+  "model": "m",
+  "choices": [{
+    "index": 0,
+    "message": {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [
+        {
+          "id": "call_a",
+          "type": "function",
+          "function": {
+            "name": "delegate_task",
+            "arguments": "{\"mode\":\"ask\",\"task\":\"task A\"}"
+          }
+        },
+        {
+          "id": "call_b",
+          "type": "function",
+          "function": {
+            "name": "delegate_task",
+            "arguments": "{\"mode\":\"ask\",\"task\":\"task B\"}"
+          }
+        }
+      ]
+    },
+    "finish_reason": "tool_calls"
+  }]
+}`
+	final := `{
+  "id": "p2",
+  "object": "chat.completion",
+  "created": 2,
+  "model": "m",
+  "choices": [{
+    "index": 0,
+    "message": {
+      "role": "assistant",
+      "content": "both tasks completed"
+    },
+    "finish_reason": "stop"
+  }]
+}`
+	llm := &captureLLM{model: "m", script: []string{parallelRound, final}}
+	reg := tools.NewRegistry()
+
+	var mu sync.Mutex
+	var tasks []string
+	tools.RegisterDelegateTask(reg, "build", func(_ context.Context, _, task, _ string) (string, error) {
+		mu.Lock()
+		tasks = append(tasks, task)
+		mu.Unlock()
+		return "result for " + task, nil
+	})
+
+	cfg := &config.Config{}
+	r := &Runner{LLM: llm, Cfg: cfg, Tools: reg}
+	out, _, err := r.Run(context.Background(), "", "do both", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != "both tasks completed" {
+		t.Fatalf("got %q", out)
+	}
+	if len(tasks) != 2 {
+		t.Fatalf("expected 2 delegated tasks, got %d", len(tasks))
+	}
+	// The results should appear in the second LLM call
+	msg2 := string(llm.MsgJSON[1])
+	if !strings.Contains(msg2, "result for task A") {
+		t.Fatalf("missing result for task A: %s", msg2)
+	}
+	if !strings.Contains(msg2, "result for task B") {
+		t.Fatalf("missing result for task B: %s", msg2)
 	}
 }
 
