@@ -194,7 +194,8 @@ func MessageRole(raw json.RawMessage) string {
 	return ""
 }
 
-// MessageContent extracts the text content from a raw JSON message.
+// MessageContent extracts a text preview from a raw JSON message. For multipart
+// user content, text parts are joined and image parts appear as "[image]".
 func MessageContent(raw json.RawMessage) string {
 	var probe struct {
 		Content json.RawMessage `json:"content"`
@@ -202,11 +203,42 @@ func MessageContent(raw json.RawMessage) string {
 	if json.Unmarshal(raw, &probe) != nil {
 		return ""
 	}
+	if len(probe.Content) == 0 {
+		return ""
+	}
 	var s string
 	if json.Unmarshal(probe.Content, &s) == nil {
 		return s
 	}
-	return string(probe.Content)
+	var parts []json.RawMessage
+	if json.Unmarshal(probe.Content, &parts) != nil {
+		return ""
+	}
+	var b strings.Builder
+	for i, pr := range parts {
+		if i > 0 {
+			b.WriteString(" ")
+		}
+		var part struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+			// image_url block (OpenAI chat format)
+			ImageURL struct {
+				URL string `json:"url"`
+			} `json:"image_url"`
+		}
+		if json.Unmarshal(pr, &part) != nil {
+			continue
+		}
+		if part.ImageURL.URL != "" || part.Type == "image_url" {
+			b.WriteString("[image]")
+			continue
+		}
+		if part.Text != "" {
+			b.WriteString(part.Text)
+		}
+	}
+	return strings.TrimSpace(b.String())
 }
 
 func countUserMessages(msgs []json.RawMessage) int {

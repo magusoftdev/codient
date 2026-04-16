@@ -10,6 +10,8 @@ import (
 	"io"
 	"strings"
 
+	"github.com/openai/openai-go/v3"
+
 	"codient/internal/agent"
 	"codient/internal/agentfactory"
 	"codient/internal/agentlog"
@@ -63,7 +65,7 @@ func Run(ctx context.Context, p RunParams) (Result, error) {
 		userMsg = fmt.Sprintf("[Context from parent agent]\n%s\n\n[Task]\n%s", c, userMsg)
 	}
 
-	reply, _, _, err := runner.RunConversation(ctx, sys, nil, userMsg, nil)
+	reply, _, _, err := runner.RunConversation(ctx, sys, nil, openai.UserMessage(userMsg), nil)
 	if err != nil {
 		return Result{}, err
 	}

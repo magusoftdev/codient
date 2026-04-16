@@ -111,7 +111,7 @@ func TestRunner_WithStreamWriterUsesChatCompletionWhenToolsPresent(t *testing.T)
 	reg.Register(mustEchoTool(t))
 	cfg := &config.Config{StreamWithTools: false}
 	r := &Runner{LLM: llm, Cfg: cfg, Tools: reg}
-	out, _, err := r.Run(context.Background(), "", "call echo", io.Discard)
+	out, _, err := r.Run(context.Background(), "", openai.UserMessage("call echo"), io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,7 +142,7 @@ func TestRunner_DirectReply(t *testing.T) {
 	reg := tools.NewRegistry()
 	cfg := &config.Config{}
 	r := &Runner{LLM: llm, Cfg: cfg, Tools: reg}
-	out, _, err := r.Run(context.Background(), "", "hi", nil)
+	out, _, err := r.Run(context.Background(), "", openai.UserMessage("hi"), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -193,7 +193,7 @@ func TestRunner_ToolThenReply(t *testing.T) {
 	reg.Register(mustEchoTool(t))
 	cfg := &config.Config{}
 	r := &Runner{LLM: llm, Cfg: cfg, Tools: reg}
-	out, _, err := r.Run(context.Background(), "", "call echo", nil)
+	out, _, err := r.Run(context.Background(), "", openai.UserMessage("call echo"), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -247,7 +247,7 @@ func TestRunner_ToolErrorSurfaced(t *testing.T) {
 	reg.Register(mustEchoTool(t))
 	cfg := &config.Config{}
 	r := &Runner{LLM: llm, Cfg: cfg, Tools: reg}
-	out, _, err := r.Run(context.Background(), "", "x", nil)
+	out, _, err := r.Run(context.Background(), "", openai.UserMessage("x"), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -260,7 +260,7 @@ func TestRunner_EmptyChoices(t *testing.T) {
 	js := `{"id":"x","object":"chat.completion","created":1,"model":"m","choices":[]}`
 	llm := &mockLLM{model: "m", script: []string{js}}
 	r := &Runner{LLM: llm, Cfg: &config.Config{}, Tools: tools.NewRegistry()}
-	_, _, err := r.Run(context.Background(), "", "hi", nil)
+	_, _, err := r.Run(context.Background(), "", openai.UserMessage("hi"), nil)
 	if err == nil || !strings.Contains(err.Error(), "empty choices") {
 		t.Fatalf("err=%v", err)
 	}
@@ -280,7 +280,7 @@ func TestRunner_SystemPrompt(t *testing.T) {
 }`
 	llm := &mockLLM{model: "m", script: []string{js}}
 	r := &Runner{LLM: llm, Cfg: &config.Config{}, Tools: tools.NewRegistry()}
-	_, _, err := r.Run(context.Background(), "sys", "user", nil)
+	_, _, err := r.Run(context.Background(), "sys", openai.UserMessage("user"), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -422,7 +422,7 @@ func TestRunner_AutoCheckInjectsOnFailure(t *testing.T) {
 			return AutoCheckOutcome{Inject: "[auto-check] BUILD FAIL", Progress: "auto-check: test · exit=1"}
 		},
 	}
-	_, _, err := r.Run(context.Background(), "", "edit", nil)
+	_, _, err := r.Run(context.Background(), "", openai.UserMessage("edit"), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -481,7 +481,7 @@ func TestRunner_AutoCheckSilentOnSuccess(t *testing.T) {
 			return AutoCheckOutcome{Progress: "auto-check: ok"}
 		},
 	}
-	_, _, err := r.Run(context.Background(), "", "edit", nil)
+	_, _, err := r.Run(context.Background(), "", openai.UserMessage("edit"), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -542,7 +542,7 @@ func TestRunner_AutoCheckSkipsReadOnly(t *testing.T) {
 			return AutoCheckOutcome{Inject: "should not run"}
 		},
 	}
-	out, _, err := r.Run(context.Background(), "", "read", nil)
+	out, _, err := r.Run(context.Background(), "", openai.UserMessage("read"), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -595,7 +595,7 @@ func TestRunner_PostReplyCheckInjects(t *testing.T) {
 			return ""
 		},
 	}
-	out, _, err := r.Run(context.Background(), "", "suggest improvements", nil)
+	out, _, err := r.Run(context.Background(), "", openai.UserMessage("suggest improvements"), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -650,7 +650,7 @@ func TestRunner_PostReplyCheckFiresOnce(t *testing.T) {
 			return "verify"
 		},
 	}
-	out, _, err := r.Run(context.Background(), "", "suggest", nil)
+	out, _, err := r.Run(context.Background(), "", openai.UserMessage("suggest"), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -715,7 +715,7 @@ func TestRunner_DelegateTaskIntegration(t *testing.T) {
 
 	cfg := &config.Config{}
 	r := &Runner{LLM: llm, Cfg: cfg, Tools: reg}
-	out, _, err := r.Run(context.Background(), "sys", "find main.go", nil)
+	out, _, err := r.Run(context.Background(), "sys", openai.UserMessage("find main.go"), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -789,7 +789,7 @@ func TestRunner_DelegateTask_PrivilegeEscalationBlocked(t *testing.T) {
 
 	cfg := &config.Config{}
 	r := &Runner{LLM: llm, Cfg: cfg, Tools: reg}
-	out, _, err := r.Run(context.Background(), "", "try escalation", nil)
+	out, _, err := r.Run(context.Background(), "", openai.UserMessage("try escalation"), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -867,7 +867,7 @@ func TestRunner_DelegateTask_ParallelCalls(t *testing.T) {
 
 	cfg := &config.Config{}
 	r := &Runner{LLM: llm, Cfg: cfg, Tools: reg}
-	out, _, err := r.Run(context.Background(), "", "do both", nil)
+	out, _, err := r.Run(context.Background(), "", openai.UserMessage("do both"), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -906,7 +906,7 @@ func TestRunner_PostReplyCheckNilNoop(t *testing.T) {
 	reg := tools.NewRegistry()
 	cfg := &config.Config{}
 	r := &Runner{LLM: llm, Cfg: cfg, Tools: reg}
-	out, _, err := r.Run(context.Background(), "", "question", nil)
+	out, _, err := r.Run(context.Background(), "", openai.UserMessage("question"), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1,0 +1,50 @@
+package codientcli
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+
+	"codient/internal/imageutil"
+)
+
+func TestBuildUserMessage_textOnly(t *testing.T) {
+	m, err := buildUserMessage("", "hello", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.OfUser == nil || !m.OfUser.Content.OfString.Valid() {
+		t.Fatalf("expected string user content")
+	}
+}
+
+func TestBuildUserMessage_withImageParts(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "t.png")
+	// Minimal valid 1x1 PNG
+	b := []byte{
+		0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+		0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+		0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+		0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4,
+		0x89, 0x00, 0x00, 0x00, 0x0a, 0x49, 0x44, 0x41,
+		0x54, 0x78, 0x9c, 0x63, 0x00, 0x01, 0x00, 0x00,
+		0x05, 0x00, 0x01, 0x0d, 0x0a, 0x2d, 0xb4, 0x00,
+		0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae,
+		0x42, 0x60, 0x82,
+	}
+	if err := os.WriteFile(path, b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	img, err := imageutil.LoadImage(path, imageutil.DefaultMaxBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := buildUserMessage(dir, "describe this", []imageutil.ImageAttachment{img})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.OfUser == nil || len(m.OfUser.Content.OfArrayOfContentParts) < 2 {
+		t.Fatalf("expected multipart user message")
+	}
+}

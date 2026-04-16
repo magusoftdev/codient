@@ -7,6 +7,8 @@ import (
 	"os"
 	"strings"
 
+	"github.com/openai/openai-go/v3"
+
 	"codient/internal/assistout"
 	"codient/internal/planstore"
 	"codient/internal/prompt"
@@ -45,7 +47,7 @@ func (s *session) executeFromPlan(ctx context.Context, plan *planstore.Plan) err
 		preModified, preUntracked := s.captureSnapshot()
 		histLen := len(s.history)
 		s.turn++
-		reply, err := s.executeTurn(ctx, runner, userMsg)
+		reply, err := s.executeTurn(ctx, runner, openai.UserMessage(userMsg))
 		if err != nil {
 			return err
 		}
@@ -103,7 +105,7 @@ func (s *session) executeAllSteps(ctx context.Context, plan *planstore.Plan) err
 	preModified, preUntracked := s.captureSnapshot()
 	histLen := len(s.history)
 	s.turn++
-	reply, err := s.executeTurn(ctx, runner, userMsg)
+	reply, err := s.executeTurn(ctx, runner, openai.UserMessage(userMsg))
 	if err != nil {
 		return err
 	}
@@ -147,7 +149,7 @@ func (s *session) finishExecution(ctx context.Context, plan *planstore.Plan) err
 		preM, preU := s.captureSnapshot()
 		hLen := len(s.history)
 		s.turn++
-		fixReply, fixErr := s.executeTurn(ctx, fixRunner, "Fix the verification failures described above.")
+		fixReply, fixErr := s.executeTurn(ctx, fixRunner, openai.UserMessage("Fix the verification failures described above."))
 		if fixErr != nil {
 			fmt.Fprintf(os.Stderr, "agent: %v\n", fixErr)
 		} else {

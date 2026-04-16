@@ -17,6 +17,8 @@ import (
 	"codient/internal/config"
 	"codient/internal/openaiclient"
 	"codient/internal/tools"
+
+	"github.com/openai/openai-go/v3"
 )
 
 // End-to-end agent tests with a live OpenAI-compatible server.
@@ -59,7 +61,7 @@ func TestIntegration_AgentDirectReply(t *testing.T) {
 	ar := &agent.Runner{LLM: client, Cfg: cfg, Tools: reg}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
-	reply, _, err := ar.Run(ctx, "You are a helpful assistant.", "Respond with exactly: AGENT_OK", nil)
+	reply, _, err := ar.Run(ctx, "You are a helpful assistant.", openai.UserMessage("Respond with exactly: AGENT_OK"), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +86,7 @@ func TestIntegration_AgentUsesEchoTool(t *testing.T) {
 	const mark = "CODIENT_TOOL_MARK_42"
 	sys := "You have a function tool named echo. When the user asks you to echo a message, you MUST call echo with JSON {\"message\": <their exact string>} and nothing else until the tool returns. After the tool returns, you MUST include the exact tool result string in your reply."
 	user := "Use the echo tool now with message exactly: " + mark + ". Then include the tool result verbatim in your answer."
-	reply, _, err := ar.Run(ctx, sys, user, nil)
+	reply, _, err := ar.Run(ctx, sys, openai.UserMessage(user), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +113,7 @@ func TestIntegration_AgentUsesEchoTool_WithStreamWriter(t *testing.T) {
 	const mark = "CODIENT_STREAM_TOOL_MARK_99"
 	sys := "You have a function tool named echo. When the user asks you to echo a message, you MUST call echo with JSON {\"message\": <their exact string>} and nothing else until the tool returns."
 	user := "Use the echo tool now with message exactly: " + mark
-	reply, _, err := ar.Run(ctx, sys, user, io.Discard)
+	reply, _, err := ar.Run(ctx, sys, openai.UserMessage(user), io.Discard)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +132,7 @@ func TestIntegration_AgentUsesGetTimeTool(t *testing.T) {
 	defer cancel()
 	sys := "You have a function tool named get_time (no arguments). When the user asks for the time, you MUST call get_time once, then reply in plain text and include the exact RFC3339 timestamp string returned by the tool."
 	user := "What is the current time? Call get_time and include the tool result in your answer."
-	reply, _, err := ar.Run(ctx, sys, user, nil)
+	reply, _, err := ar.Run(ctx, sys, openai.UserMessage(user), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,7 +155,7 @@ func TestIntegration_AgentUsesEchoTwice(t *testing.T) {
 	const a, b = "CODIENT_DUAL_A_7f3c", "CODIENT_DUAL_B_8e1d"
 	sys := "You have a function tool named echo. You MUST call echo exactly twice in order: first {\"message\": \"" + a + "\"}, then {\"message\": \"" + b + "\"}. After both tools return, reply in one short sentence that contains both substrings exactly."
 	user := "Perform the two echo calls as instructed in the system message, then answer."
-	reply, _, err := ar.Run(ctx, sys, user, nil)
+	reply, _, err := ar.Run(ctx, sys, openai.UserMessage(user), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -176,7 +178,7 @@ func TestIntegration_AgentReadFileWorkspace(t *testing.T) {
 	const want = "READ_UNIQUE_CONTENT_4b21c8f3"
 	sys := "You have read_file. When asked to read a file, you MUST call read_file with JSON {\"path\": \"codient_read_test.txt\"} (path relative to workspace root) and then quote or summarize the exact file contents."
 	user := "Read codient_read_test.txt from the workspace and include its full text in your reply."
-	reply, _, err := ar.Run(ctx, sys, user, nil)
+	reply, _, err := ar.Run(ctx, sys, openai.UserMessage(user), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,7 +202,7 @@ func TestIntegration_AgentListDirWorkspace(t *testing.T) {
 	marker := "codient_listdir_marker.go"
 	sys := "You have list_dir. When asked to list the workspace root, you MUST call list_dir with JSON {\"path\": \".\", \"max_depth\": 0} and then confirm whether " + marker + " appears in the listing."
 	user := "List files in the workspace root (not recursive). Does " + marker + " exist here?"
-	reply, _, err := ar.Run(ctx, sys, user, nil)
+	reply, _, err := ar.Run(ctx, sys, openai.UserMessage(user), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -223,7 +225,7 @@ func TestIntegration_AgentGrepWorkspace(t *testing.T) {
 	defer cancel()
 	sys := "You have grep. To find a string in the workspace, you MUST call grep with JSON {\"pattern\": \"" + needle + "\", \"literal\": true, \"path_prefix\": \"notes\"} and then state whether the token was found."
 	user := "Search the workspace for the literal string " + needle + " under the notes/ directory."
-	reply, _, err := ar.Run(ctx, sys, user, nil)
+	reply, _, err := ar.Run(ctx, sys, openai.UserMessage(user), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -246,7 +248,7 @@ func TestIntegration_AgentSearchFilesWorkspace(t *testing.T) {
 	defer cancel()
 	sys := "You have search_files. To find a file by name substring, you MUST call search_files with JSON {\"substring\": \"" + base + "\"} and report one matching path."
 	user := "Find files whose path contains the substring " + base + "."
-	reply, _, err := ar.Run(ctx, sys, user, nil)
+	reply, _, err := ar.Run(ctx, sys, openai.UserMessage(user), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -278,7 +280,7 @@ func TestIntegration_AgentRunCommandGoVersion(t *testing.T) {
 	defer cancel()
 	sys := "You have run_command. When asked to print the Go toolchain version, you MUST call run_command with JSON {\"argv\": [\"go\", \"version\"], \"cwd\": \".\"} and then summarize stdout."
 	user := "Run `go version` in the workspace root and report the output."
-	reply, _, err := ar.Run(ctx, sys, user, nil)
+	reply, _, err := ar.Run(ctx, sys, openai.UserMessage(user), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -19,6 +19,7 @@ import (
 	"github.com/openai/openai-go/v3/shared"
 
 	"codient/internal/agent"
+	"codient/internal/imageutil"
 	"codient/internal/agentlog"
 	"codient/internal/assistout"
 	"codient/internal/astgrep"
@@ -93,6 +94,10 @@ type session struct {
 
 	// tokenTracker accumulates API-reported token usage for the REPL session.
 	tokenTracker *tokentracker.Tracker
+
+	// Multimodal: images from -image (first turn) or /image (next message).
+	initialImages []imageutil.ImageAttachment
+	pendingImages []imageutil.ImageAttachment
 }
 
 type undoEntry struct {
@@ -147,7 +152,7 @@ func (s *session) delegateTaskFn() tools.DelegateRunner {
 	}
 }
 
-func (s *session) executeTurn(ctx context.Context, runner *agent.Runner, user string) (reply string, err error) {
+func (s *session) executeTurn(ctx context.Context, runner *agent.Runner, user openai.ChatCompletionMessageParamUnion) (reply string, err error) {
 	if err := s.cfg.RequireModel(); err != nil {
 		return "", err
 	}
@@ -436,7 +441,28 @@ func (s *session) captureSnapshot() (modified, untracked []string) {
 	return modified, untracked
 }
 
-func (s *session) runSingleTurn(ctx context.Context, user string) int {
+// userMessageForTurn builds the API user message from text, optional @image: paths,
+// and images queued via -image (first turn only) or /image.
+func (s *session) userMessageForTurn(text string) (openai.ChatCompletionMessageParamUnion, string, error) {
+	var attach []imageutil.ImageAttachment
+	attach = append(attach, s.pendingImages...)
+	s.pendingImages = nil
+	if s.turn == 0 {
+		attach = append(s.initialImages, attach...)
+		s.initialImages = nil
+	}
+	msg, err := buildUserMessage(s.cfg.EffectiveWorkspace(), text, attach)
+	if err != nil {
+		return openai.ChatCompletionMessageParamUnion{}, "", err
+	}
+	line := agent.UserMessageText(msg)
+	if strings.TrimSpace(line) == "" && len(attach) > 0 {
+		line = "[image]"
+	}
+	return msg, line, nil
+}
+
+func (s *session) runSingleTurn(ctx context.Context, user string, extra []imageutil.ImageAttachment) int {
 	if s.mcpMgr != nil {
 		defer s.mcpMgr.Close()
 	}
@@ -459,8 +485,13 @@ func (s *session) runSingleTurn(ctx context.Context, user string) int {
 		fmt.Fprintf(os.Stderr, "task: %v\n", err)
 		return 2
 	}
+	msg, err := buildUserMessage(s.cfg.EffectiveWorkspace(), user, extra)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "image: %v\n", err)
+		return 2
+	}
 	runner := s.newRunner()
-	reply, err := s.executeTurn(ctx, runner, user)
+	reply, err := s.executeTurn(ctx, runner, msg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "agent: %v\n", err)
 		return 1
@@ -606,15 +637,20 @@ func (s *session) runSession(ctx context.Context, initialPrompt string, newSessi
 			fmt.Fprintf(os.Stderr, "task: %v\n", err)
 			return 2
 		}
+		userMsg, commitLine, err := s.userMessageForTurn(user)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "image: %v\n", err)
+			return 2
+		}
 		preModified, preUntracked := s.captureSnapshot()
 		histLen := len(s.history)
 		s.turn++
-		reply, err := s.executeTurn(ctx, runner, user)
+		reply, err := s.executeTurn(ctx, runner, userMsg)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "agent: %v\n", err)
 			return 1
 		}
-		s.pushUndoIfChanged(preModified, preUntracked, histLen, user)
+		s.pushUndoIfChanged(preModified, preUntracked, histLen, commitLine)
 		maybeSaveDesign(os.Stderr, ws, s.designSaveDir, s.sessionID, s.mode, reply, s.taskSlug, s.cfg.DesignSave)
 		s.lastReply = assistout.PrepareAssistantText(reply, s.mode == prompt.ModePlan)
 		s.autoSave()
@@ -659,15 +695,20 @@ func (s *session) runSession(ctx context.Context, initialPrompt string, newSessi
 		if s.taskSlug == "" {
 			s.taskSlug = designstore.TaskSlug(s.goal, s.taskFile, line)
 		}
+		userMsg, commitLine, err := s.userMessageForTurn(user)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "image: %v\n", err)
+			return 2
+		}
 		preModified, preUntracked := s.captureSnapshot()
 		histLen := len(s.history)
 		s.turn++
-		reply, err := s.executeTurn(ctx, runner, user)
+		reply, err := s.executeTurn(ctx, runner, userMsg)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "agent: %v\n", err)
 			return 1
 		}
-		s.pushUndoIfChanged(preModified, preUntracked, histLen, user)
+		s.pushUndoIfChanged(preModified, preUntracked, histLen, commitLine)
 		maybeSaveDesign(os.Stderr, ws, s.designSaveDir, s.sessionID, s.mode, reply, s.taskSlug, s.cfg.DesignSave)
 		s.lastReply = assistout.PrepareAssistantText(reply, s.mode == prompt.ModePlan)
 		s.autoSave()
@@ -811,6 +852,28 @@ func (s *session) buildSlashCommands(ctx context.Context, sc *bufio.Scanner) *sl
 		Run: func(string) error {
 			fmt.Fprint(os.Stderr, cmds.Help())
 			fmt.Fprint(os.Stderr, "\nTip: end a line with \\ for multiline input. Pasting multiline text is also supported.\n")
+			fmt.Fprint(os.Stderr, "Images: /image path.png attaches to your next message; or use @image:path in text; or codient -image path.png …\n")
+			return nil
+		},
+	})
+	cmds.Register(slashcmd.Command{
+		Name:        "image",
+		Usage:       "/image <path>",
+		Description: "attach an image (PNG, JPEG, GIF, WebP) to your next message",
+		Run: func(args string) error {
+			path := strings.TrimSpace(args)
+			if path == "" {
+				return fmt.Errorf("usage: /image <path-to-image>")
+			}
+			a, err := imageutil.LoadImage(path, imageutil.DefaultMaxBytes)
+			if err != nil {
+				return err
+			}
+			if a.OrigBytes >= imageutil.WarnLargeBytes {
+				fmt.Fprintf(os.Stderr, "codient: warning: large image %q (%d bytes)\n", path, a.OrigBytes)
+			}
+			s.pendingImages = append(s.pendingImages, a)
+			fmt.Fprintf(os.Stderr, "codient: attached %q for next message (%d image(s) pending)\n", filepath.Base(path), len(s.pendingImages))
 			return nil
 		},
 	})
@@ -849,6 +912,7 @@ func (s *session) buildSlashCommands(ctx context.Context, sc *bufio.Scanner) *sl
 			s.undoStack = nil
 			s.currentPlan = nil
 			s.planPhase = ""
+			s.pendingImages = nil
 			if s.tokenTracker != nil {
 				s.tokenTracker.Reset()
 			}
@@ -871,6 +935,7 @@ func (s *session) buildSlashCommands(ctx context.Context, sc *bufio.Scanner) *sl
 			s.undoStack = nil
 			s.currentPlan = nil
 			s.planPhase = ""
+			s.pendingImages = nil
 			if s.tokenTracker != nil {
 				s.tokenTracker.Reset()
 			}

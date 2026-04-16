@@ -13,6 +13,7 @@ import (
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/a2aproject/a2a-go/v2/a2asrv"
+	"github.com/openai/openai-go/v3"
 
 	"codient/internal/agent"
 	"codient/internal/agentfactory"
@@ -133,7 +134,7 @@ func (e *executor) Execute(ctx context.Context, execCtx *a2asrv.ExecutorContext)
 			Log:   e.log,
 		}
 
-		reply, _, _, err := runner.RunConversation(ctx, sysprompt, nil, userPrompt, nil)
+		reply, _, _, err := runner.RunConversation(ctx, sysprompt, nil, openai.UserMessage(userPrompt), nil)
 		if err != nil {
 			errMsg := a2a.NewMessage(a2a.MessageRoleAgent, a2a.NewTextPart(err.Error()))
 			yield(a2a.NewStatusUpdateEvent(execCtx, a2a.TaskStateFailed, errMsg), nil)

@@ -84,7 +84,7 @@ type Runner struct {
 // Run carries out one user turn (no prior conversation history).
 // streamTo is where assistant text deltas are written when streaming (e.g. os.Stdout); nil disables streaming.
 // streamed is true when the reply was written incrementally (caller skips glamour for that turn).
-func (r *Runner) Run(ctx context.Context, system, user string, streamTo io.Writer) (reply string, streamed bool, err error) {
+func (r *Runner) Run(ctx context.Context, system string, user openai.ChatCompletionMessageParamUnion, streamTo io.Writer) (reply string, streamed bool, err error) {
 	reply, _, streamed, err = r.RunConversation(ctx, system, nil, user, streamTo)
 	return reply, streamed, err
 }
@@ -94,7 +94,7 @@ func (r *Runner) Run(ctx context.Context, system, user string, streamTo io.Write
 // Returns the assistant's final text and updated history (including this turn), suitable for REPL.
 // streamTo selects streaming for this turn only (nil = non-streaming completion).
 // streamed is true when the final reply was produced via streaming (skip glamour in the caller).
-func (r *Runner) RunConversation(ctx context.Context, system string, history []openai.ChatCompletionMessageParamUnion, user string, streamTo io.Writer) (string, []openai.ChatCompletionMessageParamUnion, bool, error) {
+func (r *Runner) RunConversation(ctx context.Context, system string, history []openai.ChatCompletionMessageParamUnion, user openai.ChatCompletionMessageParamUnion, streamTo io.Writer) (string, []openai.ChatCompletionMessageParamUnion, bool, error) {
 	msgs := make([]openai.ChatCompletionMessageParamUnion, 0, len(history)+16)
 	sys := strings.TrimSpace(system)
 	sysOffset := 0
@@ -103,7 +103,8 @@ func (r *Runner) RunConversation(ctx context.Context, system string, history []o
 		sysOffset = 1
 	}
 	msgs = append(msgs, history...)
-	msgs = append(msgs, openai.UserMessage(user))
+	userText := UserMessageText(user)
+	msgs = append(msgs, user)
 
 	apiTools := r.Tools.OpenAITools()
 	toolsOverhead := 0
@@ -285,7 +286,7 @@ func (r *Runner) RunConversation(ctx context.Context, system string, history []o
 				if r.PostReplyCheck != nil {
 					if inject := r.PostReplyCheck(ctx, PostReplyCheckInfo{
 						Reply:     content,
-						User:      user,
+						User:      userText,
 						TurnTools: turnTools,
 					}); inject != "" {
 						r.PostReplyCheck = nil

@@ -18,6 +18,8 @@ import (
 	"codient/internal/stringutil"
 	"codient/internal/subagent"
 	"codient/internal/tools"
+
+	"github.com/openai/openai-go/v3"
 )
 
 // ============================================================================
@@ -33,7 +35,7 @@ func TestIntegration_AgentWriteFile(t *testing.T) {
 	const marker = "WRITE_FILE_CONTENT_c3a7b1e0"
 	sys := "You have write_file. When asked to create a file, you MUST call write_file with JSON {\"path\": \"output.txt\", \"content\": \"" + marker + "\\n\"} and then confirm the file was created."
 	user := "Create a file named output.txt with the content: " + marker
-	reply, _, err := ar.Run(ctx, sys, user, nil)
+	reply, _, err := ar.Run(ctx, sys, openai.UserMessage(user), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,7 +59,7 @@ func TestIntegration_AgentStrReplace(t *testing.T) {
 	defer cancel()
 	sys := `You have str_replace. To replace text in a file, call str_replace with JSON {"path": "target.txt", "old_string": "OLD_TOKEN_f9e2", "new_string": "NEW_TOKEN_a1b2"}. Then confirm the replacement.`
 	user := "In target.txt, replace OLD_TOKEN_f9e2 with NEW_TOKEN_a1b2."
-	reply, _, err := ar.Run(ctx, sys, user, nil)
+	reply, _, err := ar.Run(ctx, sys, openai.UserMessage(user), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +88,7 @@ func TestIntegration_AgentPatchFile(t *testing.T) {
 	sys := `You have patch_file. Apply a unified diff to patch_me.txt that replaces the line "PATCH_OLD_aa11" with "PATCH_NEW_bb22". ` +
 		`Call patch_file with JSON {"path": "patch_me.txt", "diff": "--- a/patch_me.txt\n+++ b/patch_me.txt\n@@ -1,3 +1,3 @@\n line1\n-PATCH_OLD_aa11\n+PATCH_NEW_bb22\n line3\n"}. Then confirm.`
 	user := "Patch patch_me.txt: replace the line PATCH_OLD_aa11 with PATCH_NEW_bb22 using a unified diff."
-	reply, _, err := ar.Run(ctx, sys, user, nil)
+	reply, _, err := ar.Run(ctx, sys, openai.UserMessage(user), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,7 +113,7 @@ func TestIntegration_AgentInsertLines(t *testing.T) {
 	defer cancel()
 	sys := `You have insert_lines. To insert text after line 2 of insert_target.txt, call insert_lines with JSON {"path": "insert_target.txt", "after_line": 2, "content": "INSERTED_LINE_cc33\n"}. Then confirm.`
 	user := "Insert the line INSERTED_LINE_cc33 after line 2 of insert_target.txt."
-	reply, _, err := ar.Run(ctx, sys, user, nil)
+	reply, _, err := ar.Run(ctx, sys, openai.UserMessage(user), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,7 +144,7 @@ func TestIntegration_AgentGlobFiles(t *testing.T) {
 	defer cancel()
 	sys := `You have glob_files. To find .go files, call glob_files with JSON {"pattern": "**/*.go"}. Then list the matching paths in your reply.`
 	user := "Find all .go files in the workspace using glob_files."
-	reply, _, err := ar.Run(ctx, sys, user, nil)
+	reply, _, err := ar.Run(ctx, sys, openai.UserMessage(user), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -164,7 +166,7 @@ func TestIntegration_AgentEnsureDir(t *testing.T) {
 	defer cancel()
 	sys := `You have ensure_dir. To create a directory, call ensure_dir with JSON {"path": "new_dir/sub"}. Then confirm it was created.`
 	user := "Create the directory new_dir/sub using ensure_dir."
-	reply, _, err := ar.Run(ctx, sys, user, nil)
+	reply, _, err := ar.Run(ctx, sys, openai.UserMessage(user), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -188,7 +190,7 @@ func TestIntegration_AgentPathStat(t *testing.T) {
 	defer cancel()
 	sys := `You have path_stat. To get info about a file, call path_stat with JSON {"path": "stat_target.txt"}. Report the file type and size.`
 	user := "Use path_stat on stat_target.txt and tell me its type and size."
-	reply, _, err := ar.Run(ctx, sys, user, nil)
+	reply, _, err := ar.Run(ctx, sys, openai.UserMessage(user), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -209,7 +211,7 @@ func TestIntegration_AgentMovePath(t *testing.T) {
 	defer cancel()
 	sys := `You have move_path. To rename a file, call move_path with JSON {"from": "move_src.txt", "to": "move_dst.txt"}. Then confirm.`
 	user := "Rename move_src.txt to move_dst.txt using move_path."
-	reply, _, err := ar.Run(ctx, sys, user, nil)
+	reply, _, err := ar.Run(ctx, sys, openai.UserMessage(user), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -236,7 +238,7 @@ func TestIntegration_AgentCopyPath(t *testing.T) {
 	defer cancel()
 	sys := `You have copy_path. To copy a file, call copy_path with JSON {"from": "copy_src.txt", "to": "copy_dst.txt"}. Then confirm both files exist.`
 	user := "Copy copy_src.txt to copy_dst.txt using copy_path."
-	reply, _, err := ar.Run(ctx, sys, user, nil)
+	reply, _, err := ar.Run(ctx, sys, openai.UserMessage(user), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -264,7 +266,7 @@ func TestIntegration_AgentRemovePath(t *testing.T) {
 	defer cancel()
 	sys := `You have remove_path. To delete a file, call remove_path with JSON {"path": "to_delete.txt"}. Then confirm it was removed.`
 	user := "Delete to_delete.txt using remove_path."
-	reply, _, err := ar.Run(ctx, sys, user, nil)
+	reply, _, err := ar.Run(ctx, sys, openai.UserMessage(user), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -296,7 +298,7 @@ func TestIntegration_AgentRunShell(t *testing.T) {
 	defer cancel()
 	sys := `You have run_shell. To run a shell command, call run_shell with JSON {"command": "go version", "cwd": "."}. Then report the output.`
 	user := "Run 'go version' using run_shell and tell me the output."
-	reply, _, err := ar.Run(ctx, sys, user, nil)
+	reply, _, err := ar.Run(ctx, sys, openai.UserMessage(user), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -319,7 +321,7 @@ func TestIntegration_AgentFetchURL(t *testing.T) {
 	defer cancel()
 	sys := `You have fetch_url. To fetch a web page, call fetch_url with JSON {"url": "https://example.com"}. Then summarize the HTTP status and page title.`
 	user := "Fetch https://example.com using fetch_url and tell me the HTTP status and page title."
-	reply, _, err := ar.Run(ctx, sys, user, nil)
+	reply, _, err := ar.Run(ctx, sys, openai.UserMessage(user), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -356,7 +358,7 @@ func TestIntegration_AgentMultiTurn(t *testing.T) {
 
 	// Turn 1: establish a fact
 	const secret = "MULTI_TURN_SECRET_7x9q"
-	reply1, history, _, err := ar.RunConversation(ctx, sys, nil, "Remember this code: "+secret+". Just say OK.", nil)
+	reply1, history, _, err := ar.RunConversation(ctx, sys, nil, openai.UserMessage("Remember this code: "+secret+". Just say OK."), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -366,7 +368,7 @@ func TestIntegration_AgentMultiTurn(t *testing.T) {
 	}
 
 	// Turn 2: recall the fact
-	reply2, _, _, err := ar.RunConversation(ctx, sys, history, "What was the code I asked you to remember? Reply with just the code.", nil)
+	reply2, _, _, err := ar.RunConversation(ctx, sys, history, openai.UserMessage("What was the code I asked you to remember? Reply with just the code."), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -412,7 +414,7 @@ func TestIntegration_AgentAutoCheck(t *testing.T) {
 
 	sys := `You have write_file. When asked to create a file, call write_file with JSON {"path": "autocheck_test.txt", "content": "hello\n"} and then confirm.`
 	user := "Create autocheck_test.txt with content 'hello'."
-	_, _, err = ar.Run(ctx, sys, user, nil)
+	_, _, err = ar.Run(ctx, sys, openai.UserMessage(user), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -456,7 +458,7 @@ func TestIntegration_AgentPostReplyCheck(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
 	defer cancel()
 
-	reply, _, err := ar.Run(ctx, "You are a helpful assistant.", "Say hello.", nil)
+	reply, _, err := ar.Run(ctx, "You are a helpful assistant.", openai.UserMessage("Say hello."), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -497,7 +499,7 @@ func TestIntegration_AgentReadOnlyMode(t *testing.T) {
 
 	sys := "You have read_file. Read readonly_file.txt and quote its content. You do NOT have write_file."
 	user := "Read readonly_file.txt and tell me its contents."
-	reply, _, err := ar.Run(ctx, sys, user, nil)
+	reply, _, err := ar.Run(ctx, sys, openai.UserMessage(user), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -552,7 +554,7 @@ func TestIntegration_AgentPlanModeNoEcho(t *testing.T) {
 
 	sys := "You are a planning assistant. You have read_file and list_dir. Analyze the workspace and outline a plan."
 	user := "What files are in the workspace? Read plan_file.txt and summarize what you find."
-	reply, _, err := ar.Run(ctx, sys, user, nil)
+	reply, _, err := ar.Run(ctx, sys, openai.UserMessage(user), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -600,7 +602,7 @@ func TestIntegration_AgentDelegateTask(t *testing.T) {
 		"After the tool returns, include the EXACT tool result string in your reply verbatim."
 	user := "Delegate an ask-mode task now using delegate_task. Include the tool result in your answer."
 
-	reply, _, err := ar.Run(ctx, sys, user, nil)
+	reply, _, err := ar.Run(ctx, sys, openai.UserMessage(user), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -668,7 +670,7 @@ func TestIntegration_SubAgentEndToEnd(t *testing.T) {
 		"After the tool returns, include the sub-agent's result in your reply."
 	user := "Use delegate_task to have a sub-agent read subagent_target.txt from the workspace. Include the contents in your answer."
 
-	reply, _, err := ar.Run(ctx, sys, user, nil)
+	reply, _, err := ar.Run(ctx, sys, openai.UserMessage(user), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

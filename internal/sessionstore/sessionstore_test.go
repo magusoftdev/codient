@@ -128,6 +128,36 @@ func TestMessageContent(t *testing.T) {
 	}
 }
 
+func TestMessageContent_multipartUser(t *testing.T) {
+	parts := []openai.ChatCompletionContentPartUnionParam{
+		openai.TextContentPart("bug screenshot"),
+		openai.ImageContentPart(openai.ChatCompletionContentPartImageImageURLParam{URL: "data:image/png;base64,Zm9v"}),
+	}
+	msgs := FromOpenAI([]openai.ChatCompletionMessageParamUnion{
+		openai.UserMessage(parts),
+	})
+	c := MessageContent(msgs[0])
+	if !strings.Contains(c, "bug screenshot") || !strings.Contains(c, "[image]") {
+		t.Fatalf("got %q", c)
+	}
+}
+
+func TestFromOpenAI_ToOpenAI_multipartUser(t *testing.T) {
+	parts := []openai.ChatCompletionContentPartUnionParam{
+		openai.TextContentPart("x"),
+		openai.ImageContentPart(openai.ChatCompletionContentPartImageImageURLParam{URL: "data:image/png;base64,QQ"}),
+	}
+	original := []openai.ChatCompletionMessageParamUnion{openai.UserMessage(parts)}
+	stored := FromOpenAI(original)
+	back, err := ToOpenAI(stored)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(back) != 1 || back[0].OfUser == nil {
+		t.Fatalf("roundtrip user message")
+	}
+}
+
 func TestList(t *testing.T) {
 	tmp := t.TempDir()
 	s1 := &SessionState{ID: "older", Workspace: tmp, Mode: "ask",

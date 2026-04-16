@@ -292,7 +292,19 @@ codient -new-session
 
 # Different workspace root
 codient -workspace /path/to/repo
+
+# Attach images (vision-capable chat models), single-shot or first REPL turn
+codient -image ./screenshot.png -prompt "What error is this?"
+codient -image a.png,b.png -prompt "Compare these mockups"
 ```
+
+### Images and vision
+
+Use a **vision-capable** model (e.g. GPT-4o, Claude 3.5+, many local multimodal servers). Codient sends images as base64 **data URIs** in the standard OpenAI chat format (`image_url` parts).
+
+- **CLI:** `-image path` or repeat `-image` for multiple paths. Comma-separated lists work (`-image a.png,b.png`). Applies to the **first user message** in a REPL session, or to a **single-shot** `-prompt` / stdin run. Combines with `-stream` (no tools).
+- **REPL:** `/image path/to.png` queues an image for your **next** message (repeat to attach several). You can also embed paths in text: `@image:screenshot.png` or `@image:"C:\path\with spaces.png"` (paths are relative to the workspace when not absolute).
+- **Limits:** PNG, JPEG, GIF, WebP; max **20 MiB** per file (warning above **5 MiB**). Large images still count toward context—use `/compact` if needed.
 
 Use `-help` for all flags. Notable options:
 
@@ -307,6 +319,7 @@ Use `-help` for all flags. Notable options:
 - **`-progress`** — agent progress on stderr
 - **`-log`** — append JSONL events (LLM rounds, tools; each `llm` event may include `prompt_tokens`, `completion_tokens`, `total_tokens` when the server reports usage)
 - **`-goal` / `-task-file`** — merged into the first user turn as a task directive
+- **`-image`** — attach one or more image files to the first user turn (REPL) or to a one-shot prompt (`-stream` supported); see [Images and vision](#images-and-vision)
 - **`-design-save-dir`** — where to save completed plans
 - **`-a2a` / `-a2a-addr`** — run an [A2A](https://github.com/a2aproject/A2A) protocol server instead of the interactive CLI (default listen `:8080`)
 
@@ -344,6 +357,7 @@ Inside a session you can use slash commands to control the agent:
 | `/branch [name]` | Show current branch, or switch to an existing branch, or create and checkout `name`. |
 | `/pr [draft]` | Push `HEAD` to `origin` and open a GitHub pull request with **`gh`** (base branch = protected branch left behind, or `origin` default). Pass `draft` for a draft PR. |
 | `/memory` (or `/mem`) | View, edit, or clear cross-session memory files. Subcommands: `show` (default), `edit [global\|workspace]`, `clear [global\|workspace]`, `reload`. |
+| `/image <path>` | Attach an image file to your **next** message (vision models). Repeat to queue multiple images. |
 | `/new` (or `/n`) | Start a brand new session (fresh ID, history, and design namespace) |
 | `/clear` | Reset conversation history (same session) |
 | `/help` (or `/h`, `/?`) | Show available commands |

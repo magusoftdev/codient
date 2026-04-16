@@ -19,6 +19,7 @@ import (
 	"codient/internal/assistout"
 	"codient/internal/config"
 	"codient/internal/designstore"
+	"codient/internal/imageutil"
 	"codient/internal/mcpclient"
 	"codient/internal/openaiclient"
 	"codient/internal/projectinfo"
@@ -54,6 +55,16 @@ func Run() int {
 		showVersion   = flag.Bool("version", false, "print version and exit")
 		update        = flag.Bool("update", false, "update codient to the latest release and exit")
 	)
+	var imageFlagPaths []string
+	flag.Func("image", "attach image file(s): comma-separated paths; repeat -image for more (first REPL turn or single-shot; use with vision-capable models)", func(s string) error {
+		for _, p := range strings.Split(s, ",") {
+			p = strings.TrimSpace(p)
+			if p != "" {
+				imageFlagPaths = append(imageFlagPaths, p)
+			}
+		}
+		return nil
+	})
 	flag.Parse()
 
 	selfupdate.CleanupOldBinary()
@@ -171,7 +182,12 @@ func Run() int {
 			fmt.Fprintf(os.Stderr, "provide -prompt or pipe a message on stdin\n")
 			return 2
 		}
-		return runBareStream(ctx, client, *system, user)
+		attached, err := loadImagePaths(imageFlagPaths)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "image: %v\n", err)
+			return 2
+		}
+		return runBareStream(ctx, client, cfg.EffectiveWorkspace(), *system, user, attached)
 	}
 
 	var logFile *os.File
@@ -249,6 +265,13 @@ func Run() int {
 	s.registry = buildRegistry(cfg, agentMode, s, memOpts)
 	s.systemPrompt = buildAgentSystemPrompt(cfg, s.registry, agentMode, *system, repoInstr, projectCtx, mem, effectiveAutoCheckCmd(cfg))
 
+	attached, err := loadImagePaths(imageFlagPaths)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "image: %v\n", err)
+		return 2
+	}
+	s.initialImages = attached
+
 	// Determine whether to enter the REPL session.
 	// REPL is the default when stdin is a TTY (interactive), or when -repl is explicit.
 	stdinIsTTY := stdinIsInteractive()
@@ -277,7 +300,7 @@ func Run() int {
 		fmt.Fprintf(os.Stderr, "provide -prompt or pipe a message on stdin\n")
 		return 2
 	}
-	return s.runSingleTurn(ctx, user)
+	return s.runSingleTurn(ctx, user, attached)
 }
 
 func stdinIsInteractive() bool {
@@ -288,12 +311,17 @@ func stdinIsInteractive() bool {
 	return (stat.Mode() & os.ModeCharDevice) != 0
 }
 
-func runBareStream(ctx context.Context, client *openaiclient.Client, system, user string) int {
+func runBareStream(ctx context.Context, client *openaiclient.Client, workspace, system, user string, attached []imageutil.ImageAttachment) int {
 	msgs := make([]openai.ChatCompletionMessageParamUnion, 0, 2)
 	if strings.TrimSpace(system) != "" {
 		msgs = append(msgs, openai.SystemMessage(strings.TrimSpace(system)))
 	}
-	msgs = append(msgs, openai.UserMessage(user))
+	userMsg, err := buildUserMessage(workspace, user, attached)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "image: %v\n", err)
+		return 2
+	}
+	msgs = append(msgs, userMsg)
 	params := openai.ChatCompletionNewParams{
 		Model:    shared.ChatModel(client.Model()),
 		Messages: msgs,
