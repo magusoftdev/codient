@@ -292,12 +292,15 @@ func TestStreamChatCompletion_MockServer(t *testing.T) {
 
 	c := New(testConfig(srv.URL+"/v1", "m"))
 	var buf bytes.Buffer
-	err := c.StreamChatCompletion(context.Background(), openai.ChatCompletionNewParams{
+	res, err := c.StreamChatCompletion(context.Background(), openai.ChatCompletionNewParams{
 		Model:    shared.ChatModel("m"),
 		Messages: []openai.ChatCompletionMessageParamUnion{openai.UserMessage("hi")},
 	}, &buf)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if res == nil {
+		t.Fatal("expected completion")
 	}
 	if buf.String() != "Hello" {
 		t.Fatalf("got %q", buf.String())

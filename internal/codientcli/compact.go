@@ -12,6 +12,7 @@ import (
 
 	"codient/internal/sessionstore"
 	"codient/internal/tokenest"
+	"codient/internal/tokentracker"
 )
 
 // compactHistory uses the LLM to summarize the conversation history, replacing
@@ -60,6 +61,13 @@ func (s *session) compactHistory(ctx context.Context) error {
 	res, err := s.client.ChatCompletion(ctx, params)
 	if err != nil {
 		return fmt.Errorf("compact LLM call: %w", err)
+	}
+	if s.tokenTracker != nil {
+		s.tokenTracker.Add(tokentracker.Usage{
+			PromptTokens:     res.Usage.PromptTokens,
+			CompletionTokens: res.Usage.CompletionTokens,
+			TotalTokens:      res.Usage.TotalTokens,
+		})
 	}
 	if len(res.Choices) == 0 || res.Choices[0].Message.Content == "" {
 		return fmt.Errorf("compact: empty response from model")

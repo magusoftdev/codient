@@ -97,6 +97,9 @@ type PersistentConfig struct {
 	GitProtectedBranches string `json:"git_protected_branches,omitempty"`
 	// GitAutoCommit defaults to true when omitted: auto-commit after each build turn that changes files.
 	GitAutoCommit *bool `json:"git_auto_commit,omitempty"`
+
+	// CostPerMTok overrides built-in pricing for cost estimates (USD per 1M input/output tokens).
+	CostPerMTok *CostPerMTok `json:"cost_per_mtok,omitempty"`
 }
 
 // ModeConnectionOverride holds optional per-mode overrides for base_url, api_key, and model.
@@ -259,6 +262,7 @@ func ConfigToPersistent(cfg *Config) *PersistentConfig {
 		f := false
 		pc.UpdateNotify = &f
 	}
+	pc.CostPerMTok = cfg.CostPerMTok
 	return pc
 }
 

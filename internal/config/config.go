@@ -113,6 +113,15 @@ type Config struct {
 	GitProtectedBranches []string
 	// GitAutoCommit enables auto-commit after each build turn that changes files (default true).
 	GitAutoCommit bool
+
+	// CostPerMTok, when set, overrides built-in model pricing for session cost estimates (USD per 1M tokens).
+	CostPerMTok *CostPerMTok
+}
+
+// CostPerMTok holds optional USD per million input/output tokens for cost display.
+type CostPerMTok struct {
+	Input  float64 `json:"input,omitempty"`
+	Output float64 `json:"output,omitempty"`
 }
 
 // ConnectionForMode returns the effective base URL, API key, and model for the given mode.
@@ -300,6 +309,7 @@ func Load() (*Config, error) {
 		MCPServers:           pc.MCPServers,
 		GitProtectedBranches: protectedBranches,
 		GitAutoCommit:        gitAutoCommit,
+		CostPerMTok:          pc.CostPerMTok,
 	}
 	c.BaseURL = strings.TrimRight(c.BaseURL, "/")
 	if c.ExecTimeoutSeconds < 1 {

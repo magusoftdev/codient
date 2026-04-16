@@ -16,6 +16,7 @@ import (
 	"codient/internal/agentlog"
 	"codient/internal/config"
 	"codient/internal/tokenest"
+	"codient/internal/tokentracker"
 	"codient/internal/tools"
 )
 
@@ -62,6 +63,8 @@ type Runner struct {
 	Cfg   *config.Config
 	Tools *tools.Registry
 	Log   *agentlog.Logger
+	// Tracker accumulates API-reported token usage; optional.
+	Tracker *tokentracker.Tracker
 	// Progress, when non-nil (e.g. os.Stderr), receives human-readable lines during the tool loop.
 	Progress io.Writer
 	// AutoCheck runs once after a tool batch that successfully used a mutating tool.
@@ -136,12 +139,19 @@ func (r *Runner) RunConversation(ctx context.Context, system string, history []o
 		}
 		llmRound++
 		llmDur := time.Since(t0)
+		var logU *agentlog.TokenUsage
+		if res != nil && err == nil {
+			if r.Tracker != nil {
+				r.Tracker.Add(usageFromCompletionUsage(res.Usage))
+			}
+			logU = logUsageFromCompletion(res.Usage)
+		}
 		if r.Log != nil {
 			n := 0
 			if res != nil {
 				n = len(res.Choices)
 			}
-			r.Log.LLM(llmRound, r.LLM.Model(), llmDur, err, n)
+			r.Log.LLM(llmRound, r.LLM.Model(), llmDur, err, n, logU)
 		}
 		if err != nil {
 			if r.Progress != nil {
@@ -253,7 +263,8 @@ func (r *Runner) RunConversation(ctx context.Context, system string, history []o
 						consecutiveToolFails = 0
 					}
 					if r.Progress != nil && len(toolParts) > 0 {
-						fmt.Fprintf(r.Progress, "%sllm %s  ·  %s\n", progressNestedIndent, formatProgressDur(llmDur), strings.Join(toolParts, " · "))
+						suf := roundUsageSuffix(res)
+						fmt.Fprintf(r.Progress, "%sllm %s  ·  %s%s\n", progressNestedIndent, formatProgressDur(llmDur), strings.Join(toolParts, " · "), suf)
 					}
 					if consecutiveToolFails >= maxConsecutiveToolFails && r.Progress != nil {
 						fmt.Fprintf(r.Progress, "  ⚠ %d consecutive tool failures — requesting text reply\n", consecutiveToolFails)
@@ -263,7 +274,8 @@ func (r *Runner) RunConversation(ctx context.Context, system string, history []o
 			}
 
 			if r.Progress != nil {
-				fmt.Fprintf(r.Progress, "%sllm %s  ·  reply\n", progressNestedIndent, formatProgressDur(llmDur))
+				suf := roundUsageSuffix(res)
+				fmt.Fprintf(r.Progress, "%sllm %s  ·  reply%s\n", progressNestedIndent, formatProgressDur(llmDur), suf)
 			}
 			if msg.Content != "" {
 				content := msg.Content
@@ -408,7 +420,8 @@ func (r *Runner) RunConversation(ctx context.Context, system string, history []o
 			consecutiveToolFails = 0
 		}
 		if r.Progress != nil && len(toolParts) > 0 {
-			fmt.Fprintf(r.Progress, "%sllm %s  ·  %s\n", progressNestedIndent, formatProgressDur(llmDur), strings.Join(toolParts, " · "))
+			suf := roundUsageSuffix(res)
+			fmt.Fprintf(r.Progress, "%sllm %s  ·  %s%s\n", progressNestedIndent, formatProgressDur(llmDur), strings.Join(toolParts, " · "), suf)
 		}
 		if consecutiveToolFails >= maxConsecutiveToolFails && r.Progress != nil {
 			fmt.Fprintf(r.Progress, "  ⚠ %d consecutive tool failures — requesting text reply\n", consecutiveToolFails)
@@ -437,6 +450,36 @@ func (r *Runner) autoCheckAfterMutations(ctx context.Context, results []autoChec
 	}
 	out := r.AutoCheck(ctx)
 	return out.Inject, out.Progress
+}
+
+func usageFromCompletionUsage(u openai.CompletionUsage) tokentracker.Usage {
+	return tokentracker.Usage{
+		PromptTokens:     u.PromptTokens,
+		CompletionTokens: u.CompletionTokens,
+		TotalTokens:      u.TotalTokens,
+	}
+}
+
+func logUsageFromCompletion(u openai.CompletionUsage) *agentlog.TokenUsage {
+	if u.PromptTokens == 0 && u.CompletionTokens == 0 && u.TotalTokens == 0 {
+		return nil
+	}
+	return &agentlog.TokenUsage{
+		PromptTokens:     u.PromptTokens,
+		CompletionTokens: u.CompletionTokens,
+		TotalTokens:      u.TotalTokens,
+	}
+}
+
+func roundUsageSuffix(res *openai.ChatCompletion) string {
+	if res == nil {
+		return ""
+	}
+	u := usageFromCompletionUsage(res.Usage)
+	if !u.HasAny() {
+		return ""
+	}
+	return " · " + tokentracker.FormatLine(u)
 }
 
 func parseExitCodeFromRunOutput(s string) string {

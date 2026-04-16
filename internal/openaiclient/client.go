@@ -120,10 +120,11 @@ func (c *Client) ChatCompletion(ctx context.Context, params openai.ChatCompletio
 }
 
 // StreamChatCompletion streams a chat completion with no tools; writes assistant text deltas to w.
+// Returns the accumulated completion (including usage when the server sends it).
 // Acquires the same LLM semaphore as non-streaming calls.
-func (c *Client) StreamChatCompletion(ctx context.Context, params openai.ChatCompletionNewParams, w io.Writer) error {
+func (c *Client) StreamChatCompletion(ctx context.Context, params openai.ChatCompletionNewParams, w io.Writer) (*openai.ChatCompletion, error) {
 	if err := c.llmSem.acquire(ctx); err != nil {
-		return err
+		return nil, err
 	}
 	defer c.llmSem.release()
 
@@ -131,17 +132,25 @@ func (c *Client) StreamChatCompletion(ctx context.Context, params openai.ChatCom
 		IncludeUsage: openai.Bool(true),
 	}
 	stream := c.oa.Chat.Completions.NewStreaming(ctx, params)
+	var acc openai.ChatCompletionAccumulator
 	for stream.Next() {
 		chunk := stream.Current()
+		if !acc.AddChunk(chunk) {
+			return nil, fmt.Errorf("chat stream: chunk accumulation failed")
+		}
 		for _, ch := range chunk.Choices {
 			if ch.Delta.Content != "" {
 				if _, err := io.WriteString(w, ch.Delta.Content); err != nil {
-					return err
+					return nil, err
 				}
 			}
 		}
 	}
-	return stream.Err()
+	if err := stream.Err(); err != nil {
+		return nil, err
+	}
+	out := acc.ChatCompletion
+	return &out, nil
 }
 
 // ChatCompletionStream streams a completion (with or without tools), writes assistant

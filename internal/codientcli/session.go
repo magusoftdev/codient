@@ -35,6 +35,7 @@ import (
 	"codient/internal/sessionstore"
 	"codient/internal/slashcmd"
 	"codient/internal/subagent"
+	"codient/internal/tokentracker"
 	"codient/internal/tools"
 )
 
@@ -89,6 +90,9 @@ type session struct {
 	// Plan lifecycle state (non-nil when a structured plan is active).
 	currentPlan *planstore.Plan
 	planPhase   planstore.Phase
+
+	// tokenTracker accumulates API-reported token usage for the REPL session.
+	tokenTracker *tokentracker.Tracker
 }
 
 type undoEntry struct {
@@ -105,6 +109,7 @@ func (s *session) newRunner() *agent.Runner {
 		Log: s.agentLog, Progress: s.progressOut,
 		ProgressPlain: s.cfg.Plain,
 		ProgressMode:  string(s.mode),
+		Tracker:       s.tokenTracker,
 	}
 	if s.mode == prompt.ModeBuild {
 		if cmd := effectiveAutoCheckCmd(s.cfg); cmd != "" {
@@ -133,6 +138,7 @@ func (s *session) delegateTaskFn() tools.DelegateRunner {
 			Context:  extraContext,
 			Log:      s.agentLog,
 			Progress: progress,
+			Tracker:  s.tokenTracker,
 		})
 		if err != nil {
 			return "", err
@@ -144,6 +150,9 @@ func (s *session) delegateTaskFn() tools.DelegateRunner {
 func (s *session) executeTurn(ctx context.Context, runner *agent.Runner, user string) (reply string, err error) {
 	if err := s.cfg.RequireModel(); err != nil {
 		return "", err
+	}
+	if s.tokenTracker != nil {
+		s.tokenTracker.MarkTurnStart()
 	}
 	fmt.Fprint(os.Stderr, "\n")
 	writePlanDraftPreamble(os.Stdout, s.mode, s.lastReply)
@@ -177,6 +186,7 @@ func (s *session) executeTurn(ctx context.Context, runner *agent.Runner, user st
 	if err := finishAssistantTurn(os.Stdout, reply, s.richOutput, s.mode == prompt.ModePlan, streamed); err != nil {
 		return "", fmt.Errorf("write: %w", err)
 	}
+	s.printTurnTokenSummary()
 	return reply, nil
 }
 
@@ -216,7 +226,7 @@ func makePostReplyCheck(s *session, progress io.Writer) func(context.Context, ag
 				fmt.Fprintf(progress, "%s\n", line)
 			}
 		}
-		want, err := postReplyGateWantsVerification(ctx, s.client, info)
+		want, err := postReplyGateWantsVerification(ctx, s.client, s.tokenTracker, info)
 		if err != nil || !want {
 			return ""
 		}
@@ -224,7 +234,7 @@ func makePostReplyCheck(s *session, progress io.Writer) func(context.Context, ag
 	}
 }
 
-func postReplyGateWantsVerification(ctx context.Context, client *openaiclient.Client, info agent.PostReplyCheckInfo) (bool, error) {
+func postReplyGateWantsVerification(ctx context.Context, client *openaiclient.Client, tr *tokentracker.Tracker, info agent.PostReplyCheckInfo) (bool, error) {
 	if client == nil {
 		return false, fmt.Errorf("nil client")
 	}
@@ -238,6 +248,13 @@ func postReplyGateWantsVerification(ctx context.Context, client *openaiclient.Cl
 	res, err := client.ChatCompletion(ctx, params)
 	if err != nil {
 		return false, err
+	}
+	if tr != nil {
+		tr.Add(tokentracker.Usage{
+			PromptTokens:     res.Usage.PromptTokens,
+			CompletionTokens: res.Usage.CompletionTokens,
+			TotalTokens:      res.Usage.TotalTokens,
+		})
 	}
 	if len(res.Choices) == 0 {
 		return false, nil
@@ -832,6 +849,9 @@ func (s *session) buildSlashCommands(ctx context.Context, sc *bufio.Scanner) *sl
 			s.undoStack = nil
 			s.currentPlan = nil
 			s.planPhase = ""
+			if s.tokenTracker != nil {
+				s.tokenTracker.Reset()
+			}
 			fmt.Fprintf(os.Stderr, "codient: history cleared\n")
 			s.autoSave()
 			return nil
@@ -851,6 +871,9 @@ func (s *session) buildSlashCommands(ctx context.Context, sc *bufio.Scanner) *sl
 			s.undoStack = nil
 			s.currentPlan = nil
 			s.planPhase = ""
+			if s.tokenTracker != nil {
+				s.tokenTracker.Reset()
+			}
 			if len(s.cfg.ExecAllowlist) > 0 {
 				s.execAllow = tools.NewSessionExecAllow(s.cfg.ExecAllowlist)
 				s.registry = buildRegistry(s.cfg, s.mode, s, s.memOpts)
@@ -893,6 +916,18 @@ func (s *session) buildSlashCommands(ctx context.Context, sc *bufio.Scanner) *sl
 			if ps := s.planStatusLine(); ps != "" {
 				fmt.Fprintf(os.Stderr, "  plan:      %s\n", ps)
 			}
+			if extra := s.formatCostStatusLine(); extra != "" {
+				fmt.Fprint(os.Stderr, extra)
+			}
+			return nil
+		},
+	})
+	cmds.Register(slashcmd.Command{
+		Name:        "cost",
+		Aliases:     []string{"tokens"},
+		Description: "show session token usage and estimated cost",
+		Run: func(string) error {
+			s.printCostCommand()
 			return nil
 		},
 	})
@@ -1319,6 +1354,12 @@ func (s *session) printAllConfig() {
 		embModel = "(not configured)"
 	}
 	fmt.Fprintf(w, "  embedding_model:       %s\n", embModel)
+	fmt.Fprintf(w, "\n  -- Cost estimate --\n")
+	if s.cfg.CostPerMTok != nil {
+		fmt.Fprintf(w, "  cost_per_mtok:         %g %g (input output USD per 1M)\n", s.cfg.CostPerMTok.Input, s.cfg.CostPerMTok.Output)
+	} else {
+		fmt.Fprintf(w, "  cost_per_mtok:         (built-in table; set two numbers to override)\n")
+	}
 	fmt.Fprintf(w, "\n  -- Per-mode model overrides --\n")
 	for _, mode := range []string{"plan", "build", "ask"} {
 		ov := s.cfg.ModeModels[mode]
@@ -1428,6 +1469,11 @@ func (s *session) getConfigValue(key string) (string, bool) {
 		return s.cfg.AstGrep, true
 	case "embedding_model":
 		return s.cfg.EmbeddingModel, true
+	case "cost_per_mtok":
+		if s.cfg.CostPerMTok == nil {
+			return "(not set — built-in pricing table when available)", true
+		}
+		return fmt.Sprintf("%g %g (input output USD per 1M tokens)", s.cfg.CostPerMTok.Input, s.cfg.CostPerMTok.Output), true
 	case "git_auto_commit":
 		return strconv.FormatBool(s.cfg.GitAutoCommit), true
 	case "git_protected_branches":
@@ -1620,6 +1666,24 @@ func (s *session) setConfig(key, value string) error {
 		s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory, effectiveAutoCheckCmd(s.cfg))
 	case "embedding_model":
 		s.cfg.EmbeddingModel = value
+	case "cost_per_mtok":
+		fields := strings.Fields(value)
+		if len(fields) == 0 || strings.EqualFold(fields[0], "off") || strings.EqualFold(fields[0], "clear") {
+			s.cfg.CostPerMTok = nil
+			return nil
+		}
+		if len(fields) != 2 {
+			return fmt.Errorf("cost_per_mtok expects two numbers (USD per 1M input and output tokens), or \"off\"")
+		}
+		in, err1 := strconv.ParseFloat(fields[0], 64)
+		out, err2 := strconv.ParseFloat(fields[1], 64)
+		if err1 != nil || err2 != nil {
+			return fmt.Errorf("cost_per_mtok: invalid number")
+		}
+		if in < 0 || out < 0 {
+			return fmt.Errorf("cost_per_mtok: rates must be non-negative")
+		}
+		s.cfg.CostPerMTok = &config.CostPerMTok{Input: in, Output: out}
 	case "git_auto_commit":
 		b, err := parseBool(value)
 		if err != nil {

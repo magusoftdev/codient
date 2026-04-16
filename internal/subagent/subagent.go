@@ -16,6 +16,7 @@ import (
 	"codient/internal/config"
 	"codient/internal/openaiclient"
 	"codient/internal/prompt"
+	"codient/internal/tokentracker"
 )
 
 // Result is returned after a sub-agent completes.
@@ -33,6 +34,7 @@ type RunParams struct {
 	Context  string // optional extra context prepended to the task
 	Log      *agentlog.Logger
 	Progress io.Writer // nested progress lines written here (already prefixed by caller)
+	Tracker  *tokentracker.Tracker
 }
 
 // Run executes a single sub-agent turn: builds a mode-specific Runner with per-mode
@@ -53,6 +55,7 @@ func Run(ctx context.Context, p RunParams) (Result, error) {
 		Progress:      p.Progress,
 		ProgressPlain: p.Cfg.Plain,
 		ProgressMode:  string(p.Mode),
+		Tracker:       p.Tracker,
 	}
 
 	userMsg := strings.TrimSpace(p.Task)

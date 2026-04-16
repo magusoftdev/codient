@@ -24,6 +24,7 @@ import (
 	"codient/internal/projectinfo"
 	"codient/internal/prompt"
 	"codient/internal/selfupdate"
+	"codient/internal/tokentracker"
 	"codient/internal/tools"
 )
 
@@ -231,6 +232,7 @@ func Run() int {
 		memory:           mem,
 		memOpts:          memOpts,
 		execAllow:        execAllow,
+		tokenTracker:     &tokentracker.Tracker{},
 	}
 	if len(cfg.MCPServers) > 0 {
 		mgr := mcpclient.NewManager(Version)
@@ -296,9 +298,17 @@ func runBareStream(ctx context.Context, client *openaiclient.Client, system, use
 		Model:    shared.ChatModel(client.Model()),
 		Messages: msgs,
 	}
-	if err := client.StreamChatCompletion(ctx, params, os.Stdout); err != nil {
+	res, err := client.StreamChatCompletion(ctx, params, os.Stdout)
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "\nstream: %v\n", err)
 		return 1
+	}
+	if res != nil {
+		u := res.Usage
+		if u.PromptTokens > 0 || u.CompletionTokens > 0 || u.TotalTokens > 0 {
+			fmt.Fprintf(os.Stderr, "\ntokens: %d prompt / %d completion / %d total\n",
+				u.PromptTokens, u.CompletionTokens, u.TotalTokens)
+		}
 	}
 	fmt.Fprintln(os.Stdout)
 	return 0

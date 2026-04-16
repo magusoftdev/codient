@@ -68,8 +68,16 @@ func (l *Logger) emit(v map[string]any) {
 	}
 }
 
+// TokenUsage is optional API-reported token usage for one completion.
+type TokenUsage struct {
+	PromptTokens     int64
+	CompletionTokens int64
+	TotalTokens      int64
+}
+
 // LLM records a chat completion round (after the HTTP call).
-func (l *Logger) LLM(round int, model string, duration time.Duration, err error, numChoices int) {
+// usage may be nil when the provider did not return usage metadata.
+func (l *Logger) LLM(round int, model string, duration time.Duration, err error, numChoices int, usage *TokenUsage) {
 	m := map[string]any{
 		"type":        "llm",
 		"round":       round,
@@ -79,6 +87,11 @@ func (l *Logger) LLM(round int, model string, duration time.Duration, err error,
 	}
 	if err != nil {
 		m["error"] = err.Error()
+	}
+	if usage != nil && (usage.PromptTokens > 0 || usage.CompletionTokens > 0 || usage.TotalTokens > 0) {
+		m["prompt_tokens"] = usage.PromptTokens
+		m["completion_tokens"] = usage.CompletionTokens
+		m["total_tokens"] = usage.TotalTokens
 	}
 	l.emit(m)
 }

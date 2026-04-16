@@ -2,6 +2,8 @@
 
 **codient** is a command-line agent for any **OpenAI-compatible** chat API (local server, cloud provider, etc.). It runs multi-step tool use against your workspace—read and search files, run allowlisted commands, optional HTTPS fetch and web search, and write access in **build** mode. **Ask** and **plan** modes use a read-only tool set and different system prompts: ask for exploration, plan for structured implementation plans with clarifying questions.
 
+When the API returns usage metadata, codient aggregates **prompt and completion tokens** per session and shows **estimated cost** using a built-in pricing table or your `cost_per_mtok` override. See [Token usage and cost estimates](#token-usage-and-cost-estimates).
+
 **Repository:** [github.com/vaughanb/codient](https://github.com/vaughanb/codient)
 
 ## Requirements
@@ -158,10 +160,22 @@ Run `/config` with no arguments to see all current values. `/config <key>` shows
 | **Tools** | | |
 | `ast_grep` | ast-grep binary path: `auto` (default), explicit path, or `off` to disable | *(auto)* |
 | `embedding_model` | Model id for `/v1/embeddings` (same base URL as chat). Enables the `semantic_search` tool; leave empty to disable | *(empty)* |
+| `cost_per_mtok` | Optional `{"input":N,"output":N}` USD per 1M tokens — overrides built-in pricing for `/cost` and session cost estimates | *(built-in table)* |
 | **Update** | | |
 | `update_notify` | Show interactive update prompt on REPL startup | `true` |
 | **MCP** | | |
 | `mcp_servers` | Map of MCP server IDs to connection configs (see [MCP servers](#mcp-model-context-protocol-servers)) | *(empty)* |
+
+### Token usage and cost estimates
+
+Codient records **API-reported** token counts from chat completions when the server includes a `usage` object (OpenAI-compatible). Many local inference stacks omit this; cloud APIs usually populate it. Totals are **per REPL session** and include agent turns, `/compact`, the ask-mode verification gate, and **`delegate_task`** sub-agents.
+
+- **`/cost`** (alias **`/tokens`**) — prompt, completion, and total tokens plus an estimated dollar amount when pricing is known.
+- **`/status`** — session token totals and estimated cost when available.
+- **Progress output** (`-progress` or default TTY stderr) — appends token counts to each completed model round when usage is present.
+- **`-log` JSONL** — each `type: "llm"` line may include `prompt_tokens`, `completion_tokens`, and `total_tokens`.
+
+**Pricing:** By default, codient matches your configured **`model`** id against a small built-in table (USD per million input/output tokens). Set **`cost_per_mtok`** in `config.json` to override, for example `{"input": 2.5, "output": 10}`, or in the REPL: **`/config cost_per_mtok 2.5 10`**. Use **`/config cost_per_mtok off`** to clear the override. Estimates are indicative only; use your provider’s billing for authoritative costs.
 
 When `fetch_url` receives `Content-Type: text/html`, the body is converted to simplified markdown (headings, links, lists, code) before being returned.
 
@@ -291,7 +305,7 @@ Use `-help` for all flags. Notable options:
 - **`-stream` / `-stream-reply`** — streaming behavior
 - **`-plain`** — raw assistant text
 - **`-progress`** — agent progress on stderr
-- **`-log`** — append JSONL events (LLM rounds, tools)
+- **`-log`** — append JSONL events (LLM rounds, tools; each `llm` event may include `prompt_tokens`, `completion_tokens`, `total_tokens` when the server reports usage)
 - **`-goal` / `-task-file`** — merged into the first user turn as a task directive
 - **`-design-save-dir`** — where to save completed plans
 - **`-a2a` / `-a2a-addr`** — run an [A2A](https://github.com/a2aproject/A2A) protocol server instead of the interactive CLI (default listen `:8080`)
@@ -322,7 +336,8 @@ Inside a session you can use slash commands to control the agent:
 | `/workspace <path>` | Change the workspace directory |
 | `/tools` | List tools available in current mode |
 | `/mcp [server]` | List connected MCP servers and tool counts; with a server name, list that server's tools |
-| `/status` | Show session state (mode, model, turns, tokens, auto-check, exec policy) |
+| `/status` | Show session state (mode, model, turns, estimated context, API token totals, auto-check, exec policy) |
+| `/cost` (or `/tokens`) | Show session token counts (prompt/completion/total) and estimated cost |
 | `/log [path]` | Show logging status or enable JSONL logging to a file |
 | `/undo` | Undo the last build turn. With **`git_auto_commit`** (default): removes the last codient commit (`HEAD~1`). Otherwise: restores tracked files and deletes new files from that turn. `/undo all` resets the repo to the commit at session start (auto-commit) or reverts all working-tree changes (legacy). Requires a git repo. |
 | `/diff [path]` | Print a colored `git diff` vs `HEAD` (optional workspace-relative file). |

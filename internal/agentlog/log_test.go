@@ -26,7 +26,7 @@ func TestNew_NonNilWriter(t *testing.T) {
 
 func TestNilLogger_NoOp(t *testing.T) {
 	var l *Logger
-	l.LLM(1, "gpt-4", time.Second, nil, 1)
+	l.LLM(1, "gpt-4", time.Second, nil, 1, nil)
 	l.ToolStart("read_file", nil)
 	l.ToolEnd("read_file", time.Second, nil, nil)
 }
@@ -34,7 +34,7 @@ func TestNilLogger_NoOp(t *testing.T) {
 func TestLLM_Success(t *testing.T) {
 	var buf bytes.Buffer
 	l := New(&buf)
-	l.LLM(1, "gpt-4", 500*time.Millisecond, nil, 1)
+	l.LLM(1, "gpt-4", 500*time.Millisecond, nil, 1, nil)
 
 	var m map[string]any
 	if err := json.Unmarshal(buf.Bytes(), &m); err != nil {
@@ -57,10 +57,24 @@ func TestLLM_Success(t *testing.T) {
 	}
 }
 
+func TestLLM_WithUsage(t *testing.T) {
+	var buf bytes.Buffer
+	l := New(&buf)
+	u := &TokenUsage{PromptTokens: 100, CompletionTokens: 50, TotalTokens: 150}
+	l.LLM(1, "gpt-4o", 500*time.Millisecond, nil, 1, u)
+	var m map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &m); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if m["prompt_tokens"] != float64(100) || m["completion_tokens"] != float64(50) {
+		t.Fatalf("tokens: %+v", m)
+	}
+}
+
 func TestLLM_Error(t *testing.T) {
 	var buf bytes.Buffer
 	l := New(&buf)
-	l.LLM(2, "gpt-4", time.Second, errors.New("timeout"), 0)
+	l.LLM(2, "gpt-4", time.Second, errors.New("timeout"), 0, nil)
 
 	var m map[string]any
 	if err := json.Unmarshal(buf.Bytes(), &m); err != nil {
@@ -294,7 +308,7 @@ func TestWithSubAgent_NilLogger(t *testing.T) {
 		t.Fatal("WithSubAgent on nil logger should return nil")
 	}
 	// nil child should not panic on emit
-	child.LLM(1, "gpt-4", 0, nil, 1)
+	child.LLM(1, "gpt-4", 0, nil, 1, nil)
 	child.ToolStart("echo", nil)
 	child.ToolEnd("echo", 0, nil, nil)
 }
@@ -304,7 +318,7 @@ func TestWithSubAgent_TagsEvents(t *testing.T) {
 	parent := New(&buf)
 	child := parent.WithSubAgent("ask", "gpt-4.1-mini")
 
-	child.LLM(1, "gpt-4.1-mini", 0, nil, 1)
+	child.LLM(1, "gpt-4.1-mini", 0, nil, 1, nil)
 
 	var m map[string]any
 	if err := json.Unmarshal(buf.Bytes(), &m); err != nil {
@@ -329,7 +343,7 @@ func TestWithSubAgent_ParentUntagged(t *testing.T) {
 	parent := New(&buf)
 	_ = parent.WithSubAgent("ask", "gpt-4.1-mini")
 
-	parent.LLM(1, "gpt-4", 0, nil, 1)
+	parent.LLM(1, "gpt-4", 0, nil, 1, nil)
 
 	var m map[string]any
 	if err := json.Unmarshal(buf.Bytes(), &m); err != nil {
