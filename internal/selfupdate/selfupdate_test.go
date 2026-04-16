@@ -6,8 +6,11 @@ import (
 	"bytes"
 	"compress/gzip"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"testing"
+	"time"
 )
 
 func TestParseSemver(t *testing.T) {
@@ -164,6 +167,114 @@ func TestCleanupOldBinary(t *testing.T) {
 	// CleanupOldBinary is best-effort and silently ignores errors.
 	// Verify it doesn't panic when there is nothing to clean up.
 	CleanupOldBinary()
+}
+
+// TestReplaceBinaryRunningProcess builds a real executable, runs it (so the OS
+// applies the same file locks as a real CLI), and verifies replaceBinaryAt
+// succeeds where a direct rename onto the running binary fails on Windows.
+func TestReplaceBinaryRunningProcess(t *testing.T) {
+	root := t.TempDir()
+	srcDir := filepath.Join(root, "sleeper")
+	if err := os.MkdirAll(srcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mainGo := filepath.Join(srcDir, "main.go")
+	sleeperSrc := `package main
+
+import "time"
+
+func main() {
+	time.Sleep(24 * time.Hour)
+}
+`
+	if err := os.WriteFile(mainGo, []byte(sleeperSrc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Tiny module so `go build` works outside the codient tree (t.TempDir).
+	if err := os.WriteFile(filepath.Join(srcDir, "go.mod"), []byte("module sleepertest\n\ngo 1.26.2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	exeSuffix := ""
+	if runtime.GOOS == "windows" {
+		exeSuffix = ".exe"
+	}
+	out := filepath.Join(root, binaryName+exeSuffix)
+
+	build := exec.Command("go", "build", "-o", out, ".")
+	build.Dir = srcDir
+	build.Env = os.Environ()
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("go build sleeper: %v\n%s", err, output)
+	}
+
+	cmd := exec.Command(out)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+			_, _ = cmd.Process.Wait()
+		}
+	}()
+
+	time.Sleep(200 * time.Millisecond)
+
+	// A direct rename onto a running executable should fail on Windows.
+	tmpDirect, err := os.CreateTemp(root, "direct-*.tmp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpPath := tmpDirect.Name()
+	if _, err := tmpDirect.Write([]byte("direct-overwrite-attempt")); err != nil {
+		t.Fatal(err)
+	}
+	if err := tmpDirect.Close(); err != nil {
+		t.Fatal(err)
+	}
+	err = os.Rename(tmpPath, out)
+	if runtime.GOOS == "windows" {
+		if err == nil {
+			t.Fatal("expected direct rename over running exe to fail on Windows")
+		}
+		_ = os.Remove(tmpPath)
+	} else if err != nil {
+		_ = os.Remove(tmpPath)
+	}
+
+	newBin := []byte("NEW_SELFUPDATE_TEST_PAYLOAD_OK")
+	if err := replaceBinaryAt(out, newBin); err != nil {
+		t.Fatalf("replaceBinaryAt: %v", err)
+	}
+
+	got, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(newBin) {
+		t.Fatalf("binary content: got %q want %q", got, newBin)
+	}
+
+	oldPath := out + ".old"
+	if runtime.GOOS == "windows" {
+		if _, err := os.Stat(oldPath); err != nil {
+			t.Fatalf("expected %s after rename-aside on Windows: %v", oldPath, err)
+		}
+	}
+
+	if cmd.Process != nil {
+		_ = cmd.Process.Kill()
+		_, _ = cmd.Process.Wait()
+	}
+	cmd.Process = nil
+
+	cleanupOldBinaryAt(out)
+	if runtime.GOOS == "windows" {
+		if _, err := os.Stat(oldPath); !os.IsNotExist(err) {
+			t.Fatalf("expected %s removed after cleanupOldBinaryAt", oldPath)
+		}
+	}
 }
 
 // --- helpers ---

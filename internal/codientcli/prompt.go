@@ -74,6 +74,9 @@ func buildRegistry(cfg *config.Config, mode prompt.Mode, s *session, memOpts *to
 		}
 		reg = tools.Default(cfg.EffectiveWorkspace(), execOpts, fetch, search, sgPath, idx, memOpts)
 	}
+	if s != nil && mode == prompt.ModeBuild {
+		tools.RegisterCreatePullRequest(reg, s.gitPullRequestContextFn())
+	}
 	if s != nil && s.mcpMgr != nil {
 		tools.RegisterMCPTools(reg, s.mcpMgr)
 	}

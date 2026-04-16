@@ -12,6 +12,8 @@
 **Optional:**
 
 - [ast-grep](https://ast-grep.github.io/) — for the `find_references` structural code search tool. Codient auto-detects or offers to download it on first interactive session.
+- [Git](https://git-scm.com/) — required for undo, auto-commit, and diff features in a workspace that is a git repository.
+- [GitHub CLI](https://cli.github.com/) (`gh`) — optional; required for `/pr` and the `create_pull_request` tool (push + open a PR).
 
 ## Install
 
@@ -138,6 +140,9 @@ Run `/config` with no arguments to see all current values. `/config <key>` shows
 | **Auto** | | |
 | `autocompact_threshold` | Context usage % that triggers compaction (0 disables) | `75` |
 | `autocheck_cmd` | Shell command after file edits (empty = auto-detect, `off` = disable) | *(auto)* |
+| **Git (build mode)** | | |
+| `git_auto_commit` | After each build turn that changes files, commit with message `codient: turn N` (set `false` for legacy file-restore `/undo` without commits) | `true` |
+| `git_protected_branches` | Comma-separated branch names; when the first change lands on one of these, codient creates `codient/<task-slug>` and commits there | `main,master,develop` |
 | **UI/Output** | | |
 | `plain` | Raw assistant text (no markdown/ANSI) | `false` |
 | `quiet` | Suppress the welcome banner | `false` |
@@ -319,12 +324,23 @@ Inside a session you can use slash commands to control the agent:
 | `/mcp [server]` | List connected MCP servers and tool counts; with a server name, list that server's tools |
 | `/status` | Show session state (mode, model, turns, tokens, auto-check, exec policy) |
 | `/log [path]` | Show logging status or enable JSONL logging to a file |
-| `/undo` | Undo the last build turn using git (restore modified files, remove new files from that turn). Requires a git repo. Use `/undo all` to revert every tracked turn in the stack. |
+| `/undo` | Undo the last build turn. With **`git_auto_commit`** (default): removes the last codient commit (`HEAD~1`). Otherwise: restores tracked files and deletes new files from that turn. `/undo all` resets the repo to the commit at session start (auto-commit) or reverts all working-tree changes (legacy). Requires a git repo. |
+| `/diff [path]` | Print a colored `git diff` vs `HEAD` (optional workspace-relative file). |
+| `/branch [name]` | Show current branch, or switch to an existing branch, or create and checkout `name`. |
+| `/pr [draft]` | Push `HEAD` to `origin` and open a GitHub pull request with **`gh`** (base branch = protected branch left behind, or `origin` default). Pass `draft` for a draft PR. |
 | `/memory` (or `/mem`) | View, edit, or clear cross-session memory files. Subcommands: `show` (default), `edit [global\|workspace]`, `clear [global\|workspace]`, `reload`. |
 | `/new` (or `/n`) | Start a brand new session (fresh ID, history, and design namespace) |
 | `/clear` | Reset conversation history (same session) |
 | `/help` (or `/h`, `/?`) | Show available commands |
 | `/exit` (or `/quit`, `/q`) | Quit the session |
+
+### Git workflow (build mode)
+
+In a git workspace, **build** mode can **auto-commit** each turn that changes files (`git_auto_commit`, default `true`). Each commit uses subject **`codient: turn N`** and a body copied from your user message (truncated to 200 characters). Configure **`git_protected_branches`** (default `main`, `master`, `develop`): if the first commit would land on one of those branches, codient creates and checks out **`codient/<task-slug>`** (with numeric suffixes if the name already exists) so you do not commit directly to e.g. `main`.
+
+Set **`git_auto_commit`** to **`false`** to restore the older behavior: no commits; `/undo` restores files from the working tree snapshot instead of removing the last commit.
+
+The **`create_pull_request`** tool (build mode only) and the **`/pr`** slash command push the current branch to **`origin`** and run **`gh pr create`**. The PR base branch is the protected branch you left when codient created `codient/...`, when applicable; otherwise it follows **`origin/HEAD`** (usually `main`).
 
 ### Session persistence
 

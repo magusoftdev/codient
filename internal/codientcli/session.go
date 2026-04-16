@@ -54,7 +54,7 @@ type session struct {
 	userSystem       string
 	repoInstructions string
 	projectContext   string
-	memory           string              // cross-session memory (global + workspace), loaded at startup
+	memory           string               // cross-session memory (global + workspace), loaded at startup
 	memOpts          *tools.MemoryOptions // passed to build-mode registry for memory_update tool
 
 	// REPL state
@@ -65,6 +65,15 @@ type session struct {
 	taskSlug  string
 
 	undoStack []undoEntry // per-turn undo records (most recent at end)
+
+	// Git workflow (build mode + git repo)
+	gitSessionStartCommit   string // HEAD at session capture; undo-all resets here when git_auto_commit is on
+	gitSessionStartBranch   string
+	gitMergeTargetBranch    string // protected branch left when auto-creating codient/* (PR merge base)
+	gitCodientCreatedBranch string // branch codient created from a protected branch, if any
+	gitBranchEnsured        bool   // lazy auto-branch has run once this session
+	lastBuildTurnHadChanges bool   // last pushUndoIfChanged saw file changes
+	lastTurnGitCommit       bool   // last turn successfully created a codient auto-commit
 
 	// stdinScanner is set for the interactive REPL; used for exec allow prompts.
 	scanner   *bufio.Scanner
@@ -86,6 +95,7 @@ type undoEntry struct {
 	modifiedFiles []string // tracked files modified during this turn (restore via git checkout)
 	createdFiles  []string // untracked files created during this turn (delete)
 	historyLen    int      // len(s.history) before this turn started
+	commitSHA     string   // non-empty when git_auto_commit recorded this turn as a commit
 }
 
 func (s *session) newRunner() *agent.Runner {
@@ -399,18 +409,6 @@ func (s *session) warnIfNotGitRepo() {
 	}
 }
 
-func (s *session) showGitDiffSummary() {
-	ws := s.cfg.EffectiveWorkspace()
-	if ws == "" || !gitutil.IsRepo(ws) {
-		return
-	}
-	summary, err := gitutil.DiffSummary(ws)
-	if err != nil || summary == "" {
-		return
-	}
-	fmt.Fprintf(os.Stderr, "\ncodient: files changed:\n%s\n", summary)
-}
-
 func (s *session) captureSnapshot() (modified, untracked []string) {
 	ws := s.cfg.EffectiveWorkspace()
 	if s.mode != prompt.ModeBuild || ws == "" || !gitutil.IsRepo(ws) {
@@ -419,98 +417,6 @@ func (s *session) captureSnapshot() (modified, untracked []string) {
 	modified, _ = gitutil.DiffFiles(ws)
 	untracked, _ = gitutil.UntrackedFiles(ws)
 	return modified, untracked
-}
-
-func (s *session) pushUndoIfChanged(preModified, preUntracked []string, histLen int) {
-	postModified, postUntracked := s.captureSnapshot()
-	entry := computeUndoEntry(preModified, preUntracked, postModified, postUntracked, histLen)
-	if entry != nil {
-		s.undoStack = append(s.undoStack, *entry)
-	}
-}
-
-func (s *session) undoLast(ws string) error {
-	if len(s.undoStack) == 0 {
-		fmt.Fprintf(os.Stderr, "codient: nothing to undo — no build-mode turns in this session\n")
-		return nil
-	}
-
-	entry := s.undoStack[len(s.undoStack)-1]
-	s.undoStack = s.undoStack[:len(s.undoStack)-1]
-
-	// Preview what will be reverted.
-	nMod := len(entry.modifiedFiles)
-	nNew := len(entry.createdFiles)
-	for _, f := range entry.modifiedFiles {
-		fmt.Fprintf(os.Stderr, "  restore: %s\n", f)
-	}
-	for _, f := range entry.createdFiles {
-		fmt.Fprintf(os.Stderr, "  remove:  %s\n", f)
-	}
-
-	if nMod > 0 {
-		if err := gitutil.RestoreFiles(ws, entry.modifiedFiles); err != nil {
-			return err
-		}
-	}
-	for _, f := range entry.createdFiles {
-		os.Remove(filepath.Join(ws, f))
-	}
-
-	msgsTrimmed := len(s.history) - entry.historyLen
-	s.history = s.history[:entry.historyLen]
-	if s.turn > 0 {
-		s.turn--
-	}
-
-	// Update lastReply from the new final assistant message, or clear it.
-	s.lastReply = ""
-	for i := len(s.history) - 1; i >= 0; i-- {
-		b, _ := json.Marshal(s.history[i])
-		raw := string(b)
-		if strings.Contains(raw, `"role":"assistant"`) {
-			s.lastReply = raw
-			break
-		}
-	}
-
-	s.autoSave()
-	fmt.Fprintf(os.Stderr, "codient: undid last turn (%d files restored, %d files removed, %d messages trimmed)\n", nMod, nNew, msgsTrimmed)
-	return nil
-}
-
-func (s *session) undoAll(ws string) error {
-	before, _ := gitutil.DiffSummary(ws)
-	untracked, _ := gitutil.UntrackedFiles(ws)
-	if before == "" && len(untracked) == 0 {
-		fmt.Fprintf(os.Stderr, "codient: no changes to undo\n")
-		return nil
-	}
-	if before != "" {
-		fmt.Fprintf(os.Stderr, "codient: reverting changes:\n%s\n", before)
-	}
-	if len(untracked) > 0 {
-		fmt.Fprintf(os.Stderr, "codient: removing %d untracked file(s)\n", len(untracked))
-	}
-
-	if err := gitutil.RestoreAll(ws); err != nil {
-		return err
-	}
-	if err := gitutil.CleanUntracked(ws); err != nil {
-		return err
-	}
-
-	s.undoStack = nil
-	fmt.Fprintf(os.Stderr, "codient: all changes reverted\n")
-	return nil
-}
-
-// showGitDiffIfBuild prints git diff --stat after a successful build-mode turn.
-func (s *session) showGitDiffIfBuild() {
-	if s.mode != prompt.ModeBuild {
-		return
-	}
-	s.showGitDiffSummary()
 }
 
 func (s *session) runSingleTurn(ctx context.Context, user string) int {
@@ -575,8 +481,11 @@ func (s *session) maybePromptUpdate(sc *bufio.Scanner) {
 			fmt.Fprintf(os.Stderr, "codient: update failed: %v\n", err)
 			return
 		}
-		fmt.Fprintf(os.Stderr, "codient: updated to %s — please restart codient\n", newVer)
-		os.Exit(0)
+		fmt.Fprintf(os.Stderr, "codient: updated to %s — restarting...\n", newVer)
+		if err := selfupdate.Restart(); err != nil {
+			fmt.Fprintf(os.Stderr, "codient: restart failed: %v — please restart codient manually\n", err)
+			os.Exit(0)
+		}
 	}
 	if err := selfupdate.SaveSkippedVersion(stateDir, tag); err == nil {
 		fmt.Fprintf(os.Stderr, "codient: skipped %s (won't ask again for this version)\n", newVer)
@@ -618,6 +527,7 @@ func (s *session) runSession(ctx context.Context, initialPrompt string, newSessi
 
 	config.SaveLastMode(string(s.mode))
 
+	s.captureGitSessionState(ws)
 	s.warnIfNotGitRepo()
 	assistout.WriteWelcome(os.Stderr, assistout.WelcomeParams{
 		Plain:         s.cfg.Plain,
@@ -687,7 +597,7 @@ func (s *session) runSession(ctx context.Context, initialPrompt string, newSessi
 			fmt.Fprintf(os.Stderr, "agent: %v\n", err)
 			return 1
 		}
-		s.pushUndoIfChanged(preModified, preUntracked, histLen)
+		s.pushUndoIfChanged(preModified, preUntracked, histLen, user)
 		maybeSaveDesign(os.Stderr, ws, s.designSaveDir, s.sessionID, s.mode, reply, s.taskSlug, s.cfg.DesignSave)
 		s.lastReply = assistout.PrepareAssistantText(reply, s.mode == prompt.ModePlan)
 		s.autoSave()
@@ -740,7 +650,7 @@ func (s *session) runSession(ctx context.Context, initialPrompt string, newSessi
 			fmt.Fprintf(os.Stderr, "agent: %v\n", err)
 			return 1
 		}
-		s.pushUndoIfChanged(preModified, preUntracked, histLen)
+		s.pushUndoIfChanged(preModified, preUntracked, histLen, user)
 		maybeSaveDesign(os.Stderr, ws, s.designSaveDir, s.sessionID, s.mode, reply, s.taskSlug, s.cfg.DesignSave)
 		s.lastReply = assistout.PrepareAssistantText(reply, s.mode == prompt.ModePlan)
 		s.autoSave()
@@ -946,6 +856,7 @@ func (s *session) buildSlashCommands(ctx context.Context, sc *bufio.Scanner) *sl
 				s.registry = buildRegistry(s.cfg, s.mode, s, s.memOpts)
 				s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory, effectiveAutoCheckCmd(s.cfg))
 			}
+			s.captureGitSessionState(s.cfg.EffectiveWorkspace())
 			fmt.Fprintf(os.Stderr, "codient: new session %s\n", s.sessionID)
 			fmt.Fprintf(os.Stderr, "%s\n", assistout.ModeHint(s.cfg.Plain, string(s.mode)))
 			s.autoSave()
@@ -1076,6 +987,7 @@ func (s *session) buildSlashCommands(ctx context.Context, sc *bufio.Scanner) *sl
 			s.projectContext = projectinfo.Detect(s.cfg.EffectiveWorkspace())
 			s.registry = buildRegistry(s.cfg, s.mode, s, s.memOpts)
 			s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory, effectiveAutoCheckCmd(s.cfg))
+			s.captureGitSessionState(s.cfg.EffectiveWorkspace())
 			s.warnIfNotGitRepo()
 			fmt.Fprintf(os.Stderr, "codient: workspace set to %s\n", path)
 			return nil
@@ -1121,6 +1033,30 @@ func (s *session) buildSlashCommands(ctx context.Context, sc *bufio.Scanner) *sl
 				return s.undoAll(ws)
 			}
 			return s.undoLast(ws)
+		},
+	})
+	cmds.Register(slashcmd.Command{
+		Name:        "diff",
+		Usage:       "/diff [path]",
+		Description: "show colored git diff vs HEAD (optional file path under workspace)",
+		Run: func(args string) error {
+			return s.handleDiff(args)
+		},
+	})
+	cmds.Register(slashcmd.Command{
+		Name:        "branch",
+		Usage:       "/branch [name]",
+		Description: "show current branch, switch to an existing branch, or create and checkout a new branch",
+		Run: func(args string) error {
+			return s.handleBranch(args)
+		},
+	})
+	cmds.Register(slashcmd.Command{
+		Name:        "pr",
+		Usage:       "/pr [draft]",
+		Description: "push current branch and open a GitHub pull request (requires gh CLI)",
+		Run: func(args string) error {
+			return s.handlePR(args)
 		},
 	})
 	cmds.Register(slashcmd.Command{
@@ -1357,6 +1293,9 @@ func (s *session) printAllConfig() {
 	fmt.Fprintf(w, "\n  -- Auto --\n")
 	fmt.Fprintf(w, "  autocompact_threshold: %d\n", s.cfg.AutoCompactPct)
 	fmt.Fprintf(w, "  autocheck_cmd:         %s\n", s.cfg.AutoCheckCmd)
+	fmt.Fprintf(w, "\n  -- Git (build mode) --\n")
+	fmt.Fprintf(w, "  git_auto_commit:       %v\n", s.cfg.GitAutoCommit)
+	fmt.Fprintf(w, "  git_protected_branches: %s\n", strings.Join(s.cfg.GitProtectedBranches, ","))
 	fmt.Fprintf(w, "\n  -- UI/Output --\n")
 	fmt.Fprintf(w, "  plain:                 %v\n", s.cfg.Plain)
 	fmt.Fprintf(w, "  quiet:                 %v\n", s.cfg.Quiet)
@@ -1489,6 +1428,10 @@ func (s *session) getConfigValue(key string) (string, bool) {
 		return s.cfg.AstGrep, true
 	case "embedding_model":
 		return s.cfg.EmbeddingModel, true
+	case "git_auto_commit":
+		return strconv.FormatBool(s.cfg.GitAutoCommit), true
+	case "git_protected_branches":
+		return strings.Join(s.cfg.GitProtectedBranches, ","), true
 	}
 
 	if mode, field, ok := parseModeConfigKey(key); ok {
@@ -1677,6 +1620,17 @@ func (s *session) setConfig(key, value string) error {
 		s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory, effectiveAutoCheckCmd(s.cfg))
 	case "embedding_model":
 		s.cfg.EmbeddingModel = value
+	case "git_auto_commit":
+		b, err := parseBool(value)
+		if err != nil {
+			return fmt.Errorf("git_auto_commit must be true or false")
+		}
+		s.cfg.GitAutoCommit = b
+	case "git_protected_branches":
+		s.cfg.GitProtectedBranches = config.ParseGitProtectedBranches(value)
+		if len(s.cfg.GitProtectedBranches) == 0 {
+			s.cfg.GitProtectedBranches = []string{"main", "master", "develop"}
+		}
 	default:
 		if mode, field, ok := parseModeConfigKey(key); ok {
 			if s.cfg.ModeModels == nil {

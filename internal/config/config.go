@@ -31,7 +31,6 @@ const (
 	MaxFetchWebRateBurst  = 50
 )
 
-
 // Config holds runtime settings.
 type Config struct {
 	BaseURL       string
@@ -110,6 +109,10 @@ type Config struct {
 	ModeModels map[string]ModeConnectionOverride
 	// MCPServers maps server IDs to their connection config. Nil/empty means no MCP servers.
 	MCPServers map[string]MCPServerConfig
+	// GitProtectedBranches lists short branch names that trigger lazy auto-branch to codient/<slug> in build mode (default main, master, develop).
+	GitProtectedBranches []string
+	// GitAutoCommit enables auto-commit after each build turn that changes files (default true).
+	GitAutoCommit bool
 }
 
 // ConnectionForMode returns the effective base URL, API key, and model for the given mode.
@@ -249,6 +252,15 @@ func Load() (*Config, error) {
 		updateNotify = *pc.UpdateNotify
 	}
 
+	gitAutoCommit := true
+	if pc.GitAutoCommit != nil {
+		gitAutoCommit = *pc.GitAutoCommit
+	}
+	protectedBranches := ParseGitProtectedBranches(pc.GitProtectedBranches)
+	if len(protectedBranches) == 0 {
+		protectedBranches = []string{"main", "master", "develop"}
+	}
+
 	c := &Config{
 		BaseURL:              baseURL,
 		APIKey:               apiKey,
@@ -286,6 +298,8 @@ func Load() (*Config, error) {
 		UpdateNotify:         updateNotify,
 		ModeModels:           pc.Models,
 		MCPServers:           pc.MCPServers,
+		GitProtectedBranches: protectedBranches,
+		GitAutoCommit:        gitAutoCommit,
 	}
 	c.BaseURL = strings.TrimRight(c.BaseURL, "/")
 	if c.ExecTimeoutSeconds < 1 {
@@ -400,7 +414,28 @@ func parseExecAllowlist(s string) []string {
 	return out
 }
 
-// parseFetchAllowHosts parses fetch_allow_hosts (comma-separated hostnames, no schemes or paths).
+// ParseGitProtectedBranches parses comma-separated git branch names (lowercased, trimmed).
+func ParseGitProtectedBranches(s string) []string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil
+	}
+	seen := make(map[string]struct{})
+	var out []string
+	for _, part := range strings.Split(s, ",") {
+		b := strings.ToLower(strings.TrimSpace(part))
+		if b == "" {
+			continue
+		}
+		if _, ok := seen[b]; ok {
+			continue
+		}
+		seen[b] = struct{}{}
+		out = append(out, b)
+	}
+	return out
+}
+
 func parseFetchAllowHosts(s string) []string {
 	s = strings.TrimSpace(s)
 	if s == "" {

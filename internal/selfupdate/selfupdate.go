@@ -12,10 +12,12 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -130,6 +132,19 @@ func Apply(tag string) error {
 	return replaceBinary(bin)
 }
 
+// replaceBinary resolves the current executable path and delegates to replaceBinaryAt.
+func replaceBinary(newBin []byte) error {
+	exe, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("locate executable: %w", err)
+	}
+	exe, err = filepath.EvalSymlinks(exe)
+	if err != nil {
+		return fmt.Errorf("resolve symlinks: %w", err)
+	}
+	return replaceBinaryAt(exe, newBin)
+}
+
 // extractBinary pulls the codient binary out of a tar.gz or zip archive.
 func extractBinary(data []byte, ext string) ([]byte, error) {
 	if ext == "zip" {
@@ -189,22 +204,13 @@ func extractZip(data []byte) ([]byte, error) {
 	return nil, fmt.Errorf("binary %q not found in archive", binaryName)
 }
 
-// replaceBinary writes new binary data over the current executable using the
+// replaceBinaryAt writes new binary data over the executable at exe using the
 // write-to-temp-then-rename pattern for atomicity.
 //
 // On Windows a running executable cannot be overwritten but CAN be renamed.
 // We move the current binary to <name>.old first, then put the new one in its
-// place. CleanupOldBinary removes the leftover on next startup.
-func replaceBinary(newBin []byte) error {
-	exe, err := os.Executable()
-	if err != nil {
-		return fmt.Errorf("locate executable: %w", err)
-	}
-	exe, err = filepath.EvalSymlinks(exe)
-	if err != nil {
-		return fmt.Errorf("resolve symlinks: %w", err)
-	}
-
+// place. cleanupOldBinaryAt removes the leftover on next startup.
+func replaceBinaryAt(exe string, newBin []byte) error {
 	dir := filepath.Dir(exe)
 	tmp, err := os.CreateTemp(dir, binaryName+"-update-*.tmp")
 	if err != nil {
@@ -243,6 +249,11 @@ func replaceBinary(newBin []byte) error {
 	return nil
 }
 
+// cleanupOldBinaryAt removes exe+".old" if present. Errors are ignored.
+func cleanupOldBinaryAt(exe string) {
+	os.Remove(exe + ".old")
+}
+
 // CleanupOldBinary removes any <executable>.old file left over from a
 // previous self-update. Safe to call unconditionally on startup; errors
 // (including file-not-found) are silently ignored.
@@ -255,7 +266,36 @@ func CleanupOldBinary() {
 	if err != nil {
 		return
 	}
-	os.Remove(exe + ".old")
+	cleanupOldBinaryAt(exe)
+}
+
+// Restart re-executes the current binary with the same arguments and
+// environment. On Unix this replaces the process in-place via execve(2).
+// On Windows (where execve is unavailable) it spawns the new binary as a
+// child, waits for it to exit, then terminates the current process.
+// If Restart returns, an error occurred.
+func Restart() error {
+	exe, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("locate executable: %w", err)
+	}
+
+	if runtime.GOOS != "windows" {
+		return syscall.Exec(exe, os.Args, os.Environ())
+	}
+
+	cmd := exec.Command(exe, os.Args[1:]...)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			os.Exit(exitErr.ExitCode())
+		}
+		return err
+	}
+	os.Exit(0)
+	return nil // unreachable
 }
 
 // skipFilePath returns the path to ~/.codient/update_skip.

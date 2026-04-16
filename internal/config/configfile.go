@@ -92,6 +92,11 @@ type PersistentConfig struct {
 
 	// MCP servers to connect to at session start.
 	MCPServers map[string]MCPServerConfig `json:"mcp_servers,omitempty"`
+
+	// Git workflow (build mode): comma-separated branch names that trigger lazy auto-branch (default: main,master,develop).
+	GitProtectedBranches string `json:"git_protected_branches,omitempty"`
+	// GitAutoCommit defaults to true when omitted: auto-commit after each build turn that changes files.
+	GitAutoCommit *bool `json:"git_auto_commit,omitempty"`
 }
 
 // ModeConnectionOverride holds optional per-mode overrides for base_url, api_key, and model.
@@ -200,38 +205,43 @@ func SavePersistentConfig(pc *PersistentConfig) error {
 // ConfigToPersistent builds a PersistentConfig from the runtime Config for saving.
 func ConfigToPersistent(cfg *Config) *PersistentConfig {
 	pc := &PersistentConfig{
-		BaseURL:            cfg.BaseURL,
-		APIKey:             cfg.APIKey,
-		Model:              cfg.Model,
-		Mode:               cfg.Mode,
-		Workspace:          cfg.Workspace,
-		MaxConcurrent:      cfg.MaxConcurrent,
-		ExecAllowlist:      strings.Join(cfg.ExecAllowlist, ","),
-		ExecTimeoutSec:     cfg.ExecTimeoutSeconds,
-		ExecMaxOutBytes:    cfg.ExecMaxOutputBytes,
-		ContextWindow:      cfg.ContextWindowTokens,
-		ContextReserve:     cfg.ContextReserveTokens,
-		MaxLLMRetries:      cfg.MaxLLMRetries,
-		StreamWithTools:    cfg.StreamWithTools,
-		FetchAllowHosts:    strings.Join(cfg.FetchAllowHosts, ","),
-		FetchMaxBytes:      cfg.FetchMaxBytes,
-		FetchTimeoutSec:    cfg.FetchTimeoutSec,
-		FetchWebRatePerSec: cfg.FetchWebRatePerSec,
-		FetchWebRateBurst:  cfg.FetchWebRateBurst,
-		SearchMaxResults:   cfg.SearchMaxResults,
-		AutoCompactPct:     cfg.AutoCompactPct,
-		AutoCheckCmd:       cfg.AutoCheckCmd,
-		Plain:              cfg.Plain,
-		Quiet:              cfg.Quiet,
-		Verbose:            cfg.Verbose,
-		LogPath:            cfg.LogPath,
-		Progress:           cfg.Progress,
-		DesignSaveDir:      cfg.DesignSaveDir,
-		ProjectContext:     cfg.ProjectContext,
-		AstGrep:            cfg.AstGrep,
-		EmbeddingModel:     cfg.EmbeddingModel,
-		Models:             cfg.ModeModels,
-		MCPServers:         cfg.MCPServers,
+		BaseURL:              cfg.BaseURL,
+		APIKey:               cfg.APIKey,
+		Model:                cfg.Model,
+		Mode:                 cfg.Mode,
+		Workspace:            cfg.Workspace,
+		MaxConcurrent:        cfg.MaxConcurrent,
+		ExecAllowlist:        strings.Join(cfg.ExecAllowlist, ","),
+		ExecTimeoutSec:       cfg.ExecTimeoutSeconds,
+		ExecMaxOutBytes:      cfg.ExecMaxOutputBytes,
+		ContextWindow:        cfg.ContextWindowTokens,
+		ContextReserve:       cfg.ContextReserveTokens,
+		MaxLLMRetries:        cfg.MaxLLMRetries,
+		StreamWithTools:      cfg.StreamWithTools,
+		FetchAllowHosts:      strings.Join(cfg.FetchAllowHosts, ","),
+		FetchMaxBytes:        cfg.FetchMaxBytes,
+		FetchTimeoutSec:      cfg.FetchTimeoutSec,
+		FetchWebRatePerSec:   cfg.FetchWebRatePerSec,
+		FetchWebRateBurst:    cfg.FetchWebRateBurst,
+		SearchMaxResults:     cfg.SearchMaxResults,
+		AutoCompactPct:       cfg.AutoCompactPct,
+		AutoCheckCmd:         cfg.AutoCheckCmd,
+		Plain:                cfg.Plain,
+		Quiet:                cfg.Quiet,
+		Verbose:              cfg.Verbose,
+		LogPath:              cfg.LogPath,
+		Progress:             cfg.Progress,
+		DesignSaveDir:        cfg.DesignSaveDir,
+		ProjectContext:       cfg.ProjectContext,
+		AstGrep:              cfg.AstGrep,
+		EmbeddingModel:       cfg.EmbeddingModel,
+		Models:               cfg.ModeModels,
+		MCPServers:           cfg.MCPServers,
+		GitProtectedBranches: strings.Join(cfg.GitProtectedBranches, ","),
+	}
+	if !cfg.GitAutoCommit {
+		f := false
+		pc.GitAutoCommit = &f
 	}
 	if !cfg.FetchPreapproved {
 		f := false

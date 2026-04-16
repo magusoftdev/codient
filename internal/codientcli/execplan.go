@@ -49,7 +49,7 @@ func (s *session) executeFromPlan(ctx context.Context, plan *planstore.Plan) err
 		if err != nil {
 			return err
 		}
-		s.pushUndoIfChanged(preModified, preUntracked, histLen)
+		s.pushUndoIfChanged(preModified, preUntracked, histLen, userMsg)
 		s.lastReply = assistout.PrepareAssistantText(reply, false)
 
 		markGroupDone(plan, gi)
@@ -107,7 +107,7 @@ func (s *session) executeAllSteps(ctx context.Context, plan *planstore.Plan) err
 	if err != nil {
 		return err
 	}
-	s.pushUndoIfChanged(preModified, preUntracked, histLen)
+	s.pushUndoIfChanged(preModified, preUntracked, histLen, userMsg)
 	s.lastReply = assistout.PrepareAssistantText(reply, false)
 
 	for i := range plan.Steps {
@@ -151,7 +151,7 @@ func (s *session) finishExecution(ctx context.Context, plan *planstore.Plan) err
 		if fixErr != nil {
 			fmt.Fprintf(os.Stderr, "agent: %v\n", fixErr)
 		} else {
-			s.pushUndoIfChanged(preM, preU, hLen)
+			s.pushUndoIfChanged(preM, preU, hLen, "Fix the verification failures described above.")
 			s.lastReply = assistout.PrepareAssistantText(fixReply, false)
 			s.autoSave()
 			s.showGitDiffIfBuild()

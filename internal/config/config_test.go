@@ -64,6 +64,19 @@ func TestLoad_Defaults(t *testing.T) {
 	if c.FetchWebRatePerSec != 0 || c.FetchWebRateBurst != 0 {
 		t.Fatalf("default fetch web rate should be off: got %d/%d", c.FetchWebRatePerSec, c.FetchWebRateBurst)
 	}
+	if !c.GitAutoCommit {
+		t.Fatal("expected GitAutoCommit true by default")
+	}
+	if len(c.GitProtectedBranches) != 3 || c.GitProtectedBranches[0] != "main" {
+		t.Fatalf("default GitProtectedBranches: %#v", c.GitProtectedBranches)
+	}
+}
+
+func TestParseGitProtectedBranches(t *testing.T) {
+	got := ParseGitProtectedBranches(" Main , develop ,main ")
+	if len(got) != 2 || got[0] != "main" || got[1] != "develop" {
+		t.Fatalf("got %#v", got)
+	}
 }
 
 func TestLoad_FromConfigFile(t *testing.T) {
