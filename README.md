@@ -298,6 +298,36 @@ codient -image ./screenshot.png -prompt "What error is this?"
 codient -image a.png,b.png -prompt "Compare these mockups"
 ```
 
+### Headless / CI mode (`-print`)
+
+Use **`-print`** (alias **`-p`**) for a **single non-interactive turn**: no REPL, no welcome banner, suitable for scripts and CI. This forces the same path as piping a prompt on stdin, but makes automation explicit. Combine with **`-prompt`** or stdin.
+
+| Flag | Meaning |
+|------|---------|
+| **`-output-format text`** (default) | Assistant reply on stdout; errors on stderr |
+| **`-output-format json`** | One JSON object on stdout with `reply`, `tools_used`, `files_modified`, optional `tokens` / `cost_usd`, `exit_reason`, and `error` on failure |
+| **`-output-format stream-json`** | JSONL on stdout: same event shapes as **`-log`** (`llm`, `tool_start`, `tool_end`), plus a final `{"type":"result",...}` line |
+| **`-auto-approve off`** (default) | Same as today: non-interactive sessions deny exec/fetch prompts unless allowlisted |
+| **`-auto-approve exec`** | Allow **run_command** / **run_shell** when not on the allowlist (no prompt) |
+| **`-auto-approve fetch`** | Allow **fetch_url** to hosts not on the allowlist (no prompt) |
+| **`-auto-approve all`** | Both exec and fetch |
+| **`-max-turns N`** | Cap LLM rounds for this user turn (`0` = unlimited) |
+| **`-max-cost USD`** | Stop when **estimated** session cost exceeds the limit (requires usage metadata and known pricing via **`cost_per_mtok`** or the built-in model table) |
+
+**`-log`** still appends JSONL to a file. With **`-output-format stream-json`**, events are written to **stdout** and optionally duplicated to the log file if **`-log`** is set.
+
+Examples:
+
+```bash
+codient -print -prompt "List top-level files" -mode ask
+
+codient -print -mode build -auto-approve all -output-format json -prompt "Run fmt" -max-turns 25
+
+echo "Fix the typo in README" | codient -print -output-format json
+```
+
+For long-running HTTP integration, see **`-a2a`** below.
+
 ### Images and vision
 
 Use a **vision-capable** model (e.g. GPT-4o, Claude 3.5+, many local multimodal servers). Codient sends images as base64 **data URIs** in the standard OpenAI chat format (`image_url` parts).
@@ -322,6 +352,10 @@ Use `-help` for all flags. Notable options:
 - **`-image`** — attach one or more image files to the first user turn (REPL) or to a one-shot prompt (`-stream` supported); see [Images and vision](#images-and-vision)
 - **`-design-save-dir`** — where to save completed plans
 - **`-a2a` / `-a2a-addr`** — run an [A2A](https://github.com/a2aproject/A2A) protocol server instead of the interactive CLI (default listen `:8080`)
+- **`-print` / `-p`** — headless single-turn mode for CI/scripts; see [Headless / CI mode](#headless--ci-mode--print)
+- **`-output-format`** — with `-print`: `text`, `json`, or `stream-json`
+- **`-auto-approve`** — with `-print`: `off`, `exec`, `fetch`, or `all`
+- **`-max-turns`** / **`-max-cost`** — guardrails for `-print` (see [Headless / CI mode](#headless--ci-mode--print))
 
 ### A2A server
 

@@ -12,6 +12,9 @@ import (
 // execPromptDenied is bound to the REPL session: prompts on stderr, reads from the session scanner.
 func (s *session) execPromptDenied(ctx context.Context, deniedKey string, argv []string) tools.ExecPromptChoice {
 	_ = ctx
+	if s.autoApprove.allowsExec() {
+		return tools.ExecPromptAllowAll
+	}
 	if s.scanner == nil || !stdinIsInteractive() {
 		fmt.Fprintf(os.Stderr, "codient: command %q is not on the exec allowlist (non-interactive; denied)\n", deniedKey)
 		return tools.ExecPromptDeny

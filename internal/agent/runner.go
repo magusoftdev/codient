@@ -20,6 +20,9 @@ import (
 	"codient/internal/tools"
 )
 
+// EstimateSessionCostFn maps cumulative session usage to estimated USD; ok false means unknown (skip budget check).
+type EstimateSessionCostFn func(u tokentracker.Usage) (costUSD float64, ok bool)
+
 // ChatClient is the LLM surface the agent needs (implemented by *openaiclient.Client).
 type ChatClient interface {
 	ChatCompletion(ctx context.Context, params openai.ChatCompletionNewParams) (*openai.ChatCompletion, error)
@@ -79,6 +82,12 @@ type Runner struct {
 	ProgressPlain bool
 	// ProgressMode is build|ask|plan; colors the thinking/intent bullet to match the REPL mode.
 	ProgressMode string
+	// MaxTurns caps LLM completion rounds for this user turn (0 = unlimited). Used for CI guardrails.
+	MaxTurns int
+	// MaxCostUSD caps estimated cumulative session cost in USD (0 = unlimited). Requires EstimateSessionCost.
+	MaxCostUSD float64
+	// EstimateSessionCost estimates USD for Tracker.Session() after each LLM call; optional.
+	EstimateSessionCost EstimateSessionCostFn
 }
 
 // Run carries out one user turn (no prior conversation history).
@@ -119,6 +128,9 @@ func (r *Runner) RunConversation(ctx context.Context, system string, history []o
 	var turnTools []string
 
 	for {
+		if r.MaxTurns > 0 && llmRound >= r.MaxTurns {
+			return "", nil, false, fmt.Errorf("%w: limit %d LLM rounds", ErrMaxTurns, r.MaxTurns)
+		}
 		msgs = truncateHistory(msgs, sysOffset, r.Cfg.ContextWindowTokens, r.Cfg.ContextReserveTokens, toolsOverhead)
 		params := openai.ChatCompletionNewParams{
 			Model:    shared.ChatModel(r.LLM.Model()),
@@ -144,6 +156,12 @@ func (r *Runner) RunConversation(ctx context.Context, system string, history []o
 		if res != nil && err == nil {
 			if r.Tracker != nil {
 				r.Tracker.Add(usageFromCompletionUsage(res.Usage))
+			}
+			if r.MaxCostUSD > 0 && r.EstimateSessionCost != nil && r.Tracker != nil {
+				cost, ok := r.EstimateSessionCost(r.Tracker.Session())
+				if ok && cost > r.MaxCostUSD {
+					return "", nil, false, fmt.Errorf("%w: estimated %g USD exceeds limit %g USD", ErrMaxCost, cost, r.MaxCostUSD)
+				}
 			}
 			logU = logUsageFromCompletion(res.Usage)
 		}

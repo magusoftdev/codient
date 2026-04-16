@@ -19,7 +19,6 @@ import (
 	"github.com/openai/openai-go/v3/shared"
 
 	"codient/internal/agent"
-	"codient/internal/imageutil"
 	"codient/internal/agentlog"
 	"codient/internal/assistout"
 	"codient/internal/astgrep"
@@ -27,6 +26,7 @@ import (
 	"codient/internal/config"
 	"codient/internal/designstore"
 	"codient/internal/gitutil"
+	"codient/internal/imageutil"
 	"codient/internal/mcpclient"
 	"codient/internal/openaiclient"
 	"codient/internal/planstore"
@@ -95,6 +95,13 @@ type session struct {
 	// tokenTracker accumulates API-reported token usage for the REPL session.
 	tokenTracker *tokentracker.Tracker
 
+	// Headless (-print): single-turn automation; outputFormat is text|json|stream-json.
+	printMode    bool
+	outputFormat string
+	autoApprove  AutoApprovePolicy
+	maxTurns     int
+	maxCostUSD   float64
+
 	// Multimodal: images from -image (first turn) or /image (next message).
 	initialImages []imageutil.ImageAttachment
 	pendingImages []imageutil.ImageAttachment
@@ -115,6 +122,17 @@ func (s *session) newRunner() *agent.Runner {
 		ProgressPlain: s.cfg.Plain,
 		ProgressMode:  string(s.mode),
 		Tracker:       s.tokenTracker,
+	}
+	if s.printMode {
+		if s.maxTurns > 0 {
+			r.MaxTurns = s.maxTurns
+		}
+		if s.maxCostUSD > 0 {
+			r.MaxCostUSD = s.maxCostUSD
+			r.EstimateSessionCost = func(u tokentracker.Usage) (float64, bool) {
+				return s.estimateCostForUsage(u)
+			}
+		}
 	}
 	if s.mode == prompt.ModeBuild {
 		if cmd := effectiveAutoCheckCmd(s.cfg); cmd != "" {
@@ -159,9 +177,17 @@ func (s *session) executeTurn(ctx context.Context, runner *agent.Runner, user op
 	if s.tokenTracker != nil {
 		s.tokenTracker.MarkTurnStart()
 	}
-	fmt.Fprint(os.Stderr, "\n")
-	writePlanDraftPreamble(os.Stdout, s.mode, s.lastReply)
-	streamTo := streamWriterForTurn(s.streamReply, assistout.StdoutIsInteractive(), s.mode, s.richOutput, s.lastReply)
+	if !s.printMode {
+		fmt.Fprint(os.Stderr, "\n")
+	}
+	if !s.printMode || s.outputFormat == "text" {
+		writePlanDraftPreamble(os.Stdout, s.mode, s.lastReply)
+	}
+	stdoutTTY := assistout.StdoutIsInteractive()
+	if s.printMode && s.outputFormat != "text" {
+		stdoutTTY = false
+	}
+	streamTo := streamWriterForTurn(s.streamReply, stdoutTTY, s.mode, s.richOutput, s.lastReply)
 
 	stopSpin := startWorkingSpinner(os.Stderr)
 	var stopOnce sync.Once
@@ -188,7 +214,11 @@ func (s *session) executeTurn(ctx context.Context, runner *agent.Runner, user op
 		return "", runErr
 	}
 	s.history = newHist
-	if err := finishAssistantTurn(os.Stdout, reply, s.richOutput, s.mode == prompt.ModePlan, streamed); err != nil {
+	out := io.Writer(os.Stdout)
+	if s.printMode && (s.outputFormat == "json" || s.outputFormat == "stream-json") {
+		out = io.Discard
+	}
+	if err := finishAssistantTurn(out, reply, s.richOutput, s.mode == prompt.ModePlan, streamed); err != nil {
 		return "", fmt.Errorf("write: %w", err)
 	}
 	s.printTurnTokenSummary()
@@ -467,15 +497,17 @@ func (s *session) runSingleTurn(ctx context.Context, user string, extra []imageu
 		defer s.mcpMgr.Close()
 	}
 	s.warnIfNotGitRepo()
-	assistout.WriteWelcome(os.Stderr, assistout.WelcomeParams{
-		Plain:     s.cfg.Plain,
-		Quiet:     s.cfg.Quiet,
-		Repl:      false,
-		Mode:      string(s.mode),
-		Workspace: s.cfg.EffectiveWorkspace(),
-		Model:     s.cfg.Model,
-		Version:   Version,
-	})
+	if !s.printMode {
+		assistout.WriteWelcome(os.Stderr, assistout.WelcomeParams{
+			Plain:     s.cfg.Plain,
+			Quiet:     s.cfg.Quiet,
+			Repl:      false,
+			Mode:      string(s.mode),
+			Workspace: s.cfg.EffectiveWorkspace(),
+			Model:     s.cfg.Model,
+			Version:   Version,
+		})
+	}
 	if s.cfg.Verbose {
 		fmt.Fprintf(os.Stderr, "codient: workspace=%q mode=%s tools=%s\n", s.cfg.EffectiveWorkspace(), s.mode, strings.Join(s.registry.Names(), ", "))
 	}
@@ -492,6 +524,13 @@ func (s *session) runSingleTurn(ctx context.Context, user string, extra []imageu
 	}
 	runner := s.newRunner()
 	reply, err := s.executeTurn(ctx, runner, msg)
+	if s.printMode {
+		if err == nil {
+			maybeSaveDesign(os.Stderr, s.cfg.EffectiveWorkspace(), s.designSaveDir, s.sessionID, s.mode, reply, designstore.TaskSlug(s.goal, s.taskFile, rawUser), s.cfg.DesignSave)
+			s.showGitDiffIfBuild()
+		}
+		return s.finishHeadlessTurn(reply, err)
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "agent: %v\n", err)
 		return 1

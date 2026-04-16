@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"strings"
 	"sync"
@@ -12,6 +13,7 @@ import (
 	"github.com/openai/openai-go/v3/shared"
 
 	"codient/internal/config"
+	"codient/internal/tokentracker"
 	"codient/internal/tools"
 )
 
@@ -915,5 +917,114 @@ func TestRunner_PostReplyCheckNilNoop(t *testing.T) {
 	}
 	if llm.calls != 1 {
 		t.Fatalf("expected 1 LLM call, got %d", llm.calls)
+	}
+}
+
+func TestRunner_MaxTurnsAllowsSingleCompletion(t *testing.T) {
+	js := `{
+  "id": "x",
+  "object": "chat.completion",
+  "created": 1,
+  "model": "m",
+  "choices": [{
+    "index": 0,
+    "message": { "role": "assistant", "content": "ok" },
+    "finish_reason": "stop"
+  }],
+  "usage": { "prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2 }
+}`
+	llm := &mockLLM{model: "m", script: []string{js}}
+	reg := tools.NewRegistry()
+	cfg := &config.Config{}
+	tr := &tokentracker.Tracker{}
+	r := &Runner{LLM: llm, Cfg: cfg, Tools: reg, MaxTurns: 1, Tracker: tr}
+	out, _, err := r.Run(context.Background(), "", openai.UserMessage("hi"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != "ok" {
+		t.Fatalf("got %q", out)
+	}
+}
+
+func TestRunner_MaxTurnsBlocksSecondLLMRound(t *testing.T) {
+	toolRound := `{
+  "id": "x",
+  "object": "chat.completion",
+  "created": 1,
+  "model": "m",
+  "choices": [{
+    "index": 0,
+    "message": {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [{
+        "id": "call_1",
+        "type": "function",
+        "function": { "name": "echo", "arguments": "{\"message\":\"x\"}" }
+      }]
+    },
+    "finish_reason": "tool_calls"
+  }],
+  "usage": { "prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2 }
+}`
+	final := `{
+  "id": "y",
+  "object": "chat.completion",
+  "created": 2,
+  "model": "m",
+  "choices": [{
+    "index": 0,
+    "message": { "role": "assistant", "content": "done" },
+    "finish_reason": "stop"
+  }],
+  "usage": { "prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2 }
+}`
+	llm := &mockLLM{model: "m", script: []string{toolRound, final}}
+	reg := tools.NewRegistry()
+	reg.Register(mustEchoTool(t))
+	cfg := &config.Config{}
+	tr := &tokentracker.Tracker{}
+	r := &Runner{LLM: llm, Cfg: cfg, Tools: reg, MaxTurns: 1, Tracker: tr}
+	_, _, err := r.Run(context.Background(), "", openai.UserMessage("call echo"), io.Discard)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !errors.Is(err, ErrMaxTurns) {
+		t.Fatalf("expected ErrMaxTurns, got %v", err)
+	}
+}
+
+func TestRunner_MaxCostExceeded(t *testing.T) {
+	js := `{
+  "id": "x",
+  "object": "chat.completion",
+  "created": 1,
+  "model": "m",
+  "choices": [{
+    "index": 0,
+    "message": { "role": "assistant", "content": "ok" },
+    "finish_reason": "stop"
+  }],
+  "usage": { "prompt_tokens": 1000000, "completion_tokens": 0, "total_tokens": 1000000 }
+}`
+	llm := &mockLLM{model: "m", script: []string{js}}
+	reg := tools.NewRegistry()
+	cfg := &config.Config{}
+	tr := &tokentracker.Tracker{}
+	r := &Runner{
+		LLM: llm, Cfg: cfg, Tools: reg, Tracker: tr,
+		MaxCostUSD: 0.001,
+		EstimateSessionCost: func(u tokentracker.Usage) (float64, bool) {
+			// $2 per MTok input => 1M tokens = $2
+			return 2.0 * float64(u.PromptTokens) / 1e6, true
+		},
+	}
+	_, _, err := r.Run(context.Background(), "", openai.UserMessage("hi"), nil)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !errors.Is(err, ErrMaxCost) {
+		t.Fatalf("expected ErrMaxCost, got %v", err)
 	}
 }

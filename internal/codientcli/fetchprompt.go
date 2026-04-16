@@ -20,6 +20,10 @@ func (s *session) fetchPromptUnknownHost(ctx context.Context, host, pageURL stri
 		return tools.FetchHostAllowSession
 	}
 
+	if s.autoApprove.allowsFetch() {
+		return tools.FetchHostAllowSession
+	}
+
 	if s.scanner == nil || !stdinIsInteractive() {
 		fmt.Fprintf(os.Stderr, "codient: fetch host %q not allowlisted (non-interactive; denied)\n", host)
 		return tools.FetchHostDeny

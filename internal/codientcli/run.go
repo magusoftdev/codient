@@ -54,7 +54,16 @@ func Run() int {
 		a2aAddr       = flag.String("a2a-addr", ":8080", "listen address for the A2A server")
 		showVersion   = flag.Bool("version", false, "print version and exit")
 		update        = flag.Bool("update", false, "update codient to the latest release and exit")
+		outputFormat  = flag.String("output-format", "text", "with -print: text|json|stream-json")
+		approveStr    = flag.String("auto-approve", "off", "with -print: off|exec|fetch|all (non-interactive approvals)")
+		maxTurns      = flag.Int("max-turns", 0, "max LLM rounds for one user turn (0=unlimited)")
+		maxCostUSD    = flag.Float64("max-cost", 0, "max estimated session USD (0=unlimited; needs pricing)")
 	)
+	var (
+		printMode bool
+	)
+	flag.BoolVar(&printMode, "print", false, "headless single-turn mode for CI (no REPL)")
+	flag.BoolVar(&printMode, "p", false, "short for -print")
 	var imageFlagPaths []string
 	flag.Func("image", "attach image file(s): comma-separated paths; repeat -image for more (first REPL turn or single-shot; use with vision-capable models)", func(s string) error {
 		for _, p := range strings.Split(s, ",") {
@@ -114,6 +123,17 @@ func Run() int {
 	agentMode, err := prompt.ParseMode(cfg.Mode)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "mode: %v\n", err)
+		return 2
+	}
+
+	outFmt, err := ParseOutputFormat(*outputFormat)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "output-format: %v\n", err)
+		return 2
+	}
+	autoPol, err := ParseAutoApprove(*approveStr)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "auto-approve: %v\n", err)
 		return 2
 	}
 
@@ -200,6 +220,15 @@ func Run() int {
 			return 2
 		}
 		defer logFile.Close()
+	}
+	switch {
+	case printMode && outFmt == "stream-json":
+		if logFile != nil {
+			agentLog = agentlog.New(io.MultiWriter(logFile, os.Stdout))
+		} else {
+			agentLog = agentlog.New(os.Stdout)
+		}
+	case logFile != nil:
 		agentLog = agentlog.New(logFile)
 	}
 
@@ -249,6 +278,11 @@ func Run() int {
 		memOpts:          memOpts,
 		execAllow:        execAllow,
 		tokenTracker:     &tokentracker.Tracker{},
+		printMode:        printMode,
+		outputFormat:     outFmt,
+		autoApprove:      autoPol,
+		maxTurns:         *maxTurns,
+		maxCostUSD:       *maxCostUSD,
 	}
 	if len(cfg.MCPServers) > 0 {
 		mgr := mcpclient.NewManager(Version)
@@ -274,8 +308,9 @@ func Run() int {
 
 	// Determine whether to enter the REPL session.
 	// REPL is the default when stdin is a TTY (interactive), or when -repl is explicit.
+	// -print forces single-turn (headless) mode.
 	stdinIsTTY := stdinIsInteractive()
-	useREPL := *repl || (stdinIsTTY && strings.TrimSpace(*promptFlag) == "")
+	useREPL := !printMode && (*repl || (stdinIsTTY && strings.TrimSpace(*promptFlag) == ""))
 
 	if useREPL {
 		// Override the timeout context with a signal-based one for the REPL.
