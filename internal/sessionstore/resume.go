@@ -80,4 +80,3 @@ func isInternalResumePreviewLine(line string) bool {
 	}
 	return false
 }
-

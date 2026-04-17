@@ -136,6 +136,18 @@ func Load(workspace, sessionID string) (*Plan, error) {
 	return &p, nil
 }
 
+// EncodeJSON returns JSON for embedding in checkpoints and other artifacts.
+func EncodeJSON(plan *Plan) (json.RawMessage, error) {
+	if plan == nil {
+		return nil, nil
+	}
+	b, err := json.Marshal(plan)
+	if err != nil {
+		return nil, err
+	}
+	return json.RawMessage(b), nil
+}
+
 // IncrementRevision bumps the revision and resets approval.
 func IncrementRevision(plan *Plan) {
 	plan.Revision++

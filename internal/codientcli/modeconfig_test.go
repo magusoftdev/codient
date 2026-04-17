@@ -4,9 +4,9 @@ import "testing"
 
 func TestParseModeConfigKey_Valid(t *testing.T) {
 	cases := []struct {
-		key          string
-		wantMode     string
-		wantField    string
+		key       string
+		wantMode  string
+		wantField string
 	}{
 		{"plan_model", "plan", "model"},
 		{"plan_base_url", "plan", "base_url"},

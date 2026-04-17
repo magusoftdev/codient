@@ -145,6 +145,7 @@ Run `/config` with no arguments to see all current values. `/config <key>` shows
 | **Git (build mode)** | | |
 | `git_auto_commit` | After each build turn that changes files, commit with message `codient: turn N` (set `false` for legacy file-restore `/undo` without commits) | `true` |
 | `git_protected_branches` | Comma-separated branch names; when the first change lands on one of these, codient creates `codient/<task-slug>` and commits there | `main,master,develop` |
+| `checkpoint_auto` | Automatic checkpoints: **`plan`** (after each completed plan phase group), **`all`** (after each build turn that changes files and commits), **`off`** (manual `/checkpoint` only) | `plan` |
 | **UI/Output** | | |
 | `plain` | Raw assistant text (no markdown/ANSI) | `false` |
 | `quiet` | Suppress the welcome banner | `false` |
@@ -439,6 +440,11 @@ Inside a session you can use slash commands to control the agent:
 | `/cost` (or `/tokens`) | Show session token counts (prompt/completion/total) and estimated cost |
 | `/log [path]` | Show logging status or enable JSONL logging to a file |
 | `/undo` | Undo the last build turn. With **`git_auto_commit`** (default): removes the last codient commit (`HEAD~1`). Otherwise: restores tracked files and deletes new files from that turn. `/undo all` resets the repo to the commit at session start (auto-commit) or reverts all working-tree changes (legacy). Requires a git repo. |
+| `/checkpoint` (or `/cp`) | Save a **named snapshot** of the conversation, mode, model, plan state, and current git `HEAD` (default name `turn-N`). With **`git_auto_commit`** in build mode, uncommitted changes are committed first so the snapshot points at a real commit. |
+| `/checkpoints` (or `/cps`) | List checkpoints for this session as a tree (`*` marks the current checkpoint id). |
+| `/rollback` (or `/rb`) | Restore conversation and (with **`git_auto_commit`**) reset the working tree to a checkpoint: pass **name**, **`cp_` id prefix**, or **turn number**. Stashes uncommitted work first when needed. |
+| `/fork` | Roll back to a checkpoint, then create and checkout **`codient/<slug>`** for a new git line of work; sets a new **conversation branch** label for later checkpoints. Optional second argument is the branch slug. |
+| `/branches` (or `/cbranch`) | List logical conversation branches (checkpoint fork labels) and their tips. |
 | `/diff [path]` | Print a colored `git diff` vs `HEAD` (optional workspace-relative file). |
 | `/branch [name]` | Show current branch, or switch to an existing branch, or create and checkout `name`. |
 | `/pr [draft]` | Push `HEAD` to `origin` and open a GitHub pull request with **`gh`** (base branch = protected branch left behind, or `origin` default). Pass `draft` for a draft PR. |
@@ -460,6 +466,8 @@ The **`create_pull_request`** tool (build mode only) and the **`/pr`** slash com
 ### Session persistence
 
 Session state (conversation history, mode, model) is saved under `<workspace>/.codient/sessions/` after each turn. Starting codient again in the same workspace resumes the latest session. Use `-new-session` to start fresh.
+
+**Checkpoints** (named snapshots for rollback and branching) are stored under `<workspace>/.codient/checkpoints/<sessionID>/` (one JSON file per checkpoint plus a `tree.json` index). The session file records **`current_checkpoint_id`** and **`current_branch`** so resume keeps your place in the checkpoint tree.
 
 The semantic search index (when **`embedding_model`** is set) lives under `<workspace>/.codient/index/` and is separate from chat sessions.
 

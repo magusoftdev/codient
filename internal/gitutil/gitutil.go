@@ -97,6 +97,36 @@ func RestoreFiles(dir string, files []string) error {
 	return nil
 }
 
+// WorkingTreeDirty returns true when the working tree differs from HEAD or has untracked files.
+func WorkingTreeDirty(dir string) bool {
+	short, err := DiffShortStat(dir)
+	if err == nil && strings.TrimSpace(short) != "" {
+		return true
+	}
+	u, err := UntrackedFiles(dir)
+	return err == nil && len(u) > 0
+}
+
+// StashPush runs `git stash push -u -m <message>` to stash tracked and untracked changes.
+// If there is nothing to stash, it returns nil without error.
+func StashPush(dir, message string) error {
+	if !WorkingTreeDirty(dir) {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+	if strings.TrimSpace(message) == "" {
+		message = "codient stash"
+	}
+	cmd := exec.CommandContext(ctx, "git", "stash", "push", "-u", "-m", message)
+	cmd.Dir = dir
+	cmd.Env = minimalGitEnv()
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("git stash: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
 // CleanUntracked runs `git clean -fd` to remove untracked files and directories.
 func CleanUntracked(dir string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

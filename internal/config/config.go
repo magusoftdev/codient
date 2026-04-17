@@ -113,6 +113,8 @@ type Config struct {
 	GitProtectedBranches []string
 	// GitAutoCommit enables auto-commit after each build turn that changes files (default true).
 	GitAutoCommit bool
+	// CheckpointAuto controls automatic checkpoints: "plan" (default), "all", or "off".
+	CheckpointAuto string
 
 	// CostPerMTok, when set, overrides built-in model pricing for session cost estimates (USD per 1M tokens).
 	CostPerMTok *CostPerMTok
@@ -273,6 +275,14 @@ func Load() (*Config, error) {
 		protectedBranches = []string{"main", "master", "develop"}
 	}
 
+	checkpointAuto := strings.TrimSpace(strings.ToLower(pc.CheckpointAuto))
+	if checkpointAuto == "" {
+		checkpointAuto = "plan"
+	}
+	if checkpointAuto != "plan" && checkpointAuto != "all" && checkpointAuto != "off" {
+		checkpointAuto = "plan"
+	}
+
 	c := &Config{
 		BaseURL:              baseURL,
 		APIKey:               apiKey,
@@ -313,6 +323,7 @@ func Load() (*Config, error) {
 		MCPServers:           pc.MCPServers,
 		GitProtectedBranches: protectedBranches,
 		GitAutoCommit:        gitAutoCommit,
+		CheckpointAuto:       checkpointAuto,
 		CostPerMTok:          pc.CostPerMTok,
 	}
 	c.BaseURL = strings.TrimRight(c.BaseURL, "/")

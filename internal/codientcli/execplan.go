@@ -62,9 +62,18 @@ func (s *session) executeFromPlan(ctx context.Context, plan *planstore.Plan) err
 		s.showGitDiffIfBuild()
 
 		if gi < len(groups)-1 && s.scanner != nil {
+			checkpointSaved := false
+			if s.cfg.CheckpointAuto == "plan" {
+				label := fmt.Sprintf("plan-phase-%d", gi+1)
+				if err := s.createCheckpoint(label, userMsg); err != nil {
+					fmt.Fprintf(os.Stderr, "codient: checkpoint: %v\n", err)
+				} else {
+					checkpointSaved = true
+				}
+			}
 			summary := planstore.CheckpointSummary(plan, gi)
 			fmt.Fprintf(os.Stderr, "\n%s", summary)
-			action := promptCheckpoint(s.scanner)
+			action := promptCheckpoint(s.scanner, checkpointSaved)
 			switch action {
 			case "stop":
 				fmt.Fprintf(os.Stderr, "codient: stopped after phase group %d\n", gi+1)
@@ -163,10 +172,13 @@ func (s *session) finishExecution(ctx context.Context, plan *planstore.Plan) err
 }
 
 // promptCheckpoint asks the user what to do after a phase group completes.
-func promptCheckpoint(sc *bufio.Scanner) string {
+func promptCheckpoint(sc *bufio.Scanner, checkpointSaved bool) string {
 	fmt.Fprintf(os.Stderr, "\n  [c] Continue to next phase\n")
 	fmt.Fprintf(os.Stderr, "  [p] Re-plan remaining steps\n")
 	fmt.Fprintf(os.Stderr, "  [s] Stop here\n")
+	if checkpointSaved {
+		fmt.Fprintf(os.Stderr, "  (Checkpoint saved — use /rollback to restore this point.)\n")
+	}
 	fmt.Fprintf(os.Stderr, "\ncodient: choose action: ")
 
 	if !sc.Scan() {

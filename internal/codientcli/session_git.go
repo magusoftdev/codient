@@ -153,6 +153,7 @@ func (s *session) pushUndoIfChanged(preModified, preUntracked []string, histLen 
 		}
 	}
 	s.undoStack = append(s.undoStack, *entry)
+	s.maybeAutoCheckpointAfterBuildTurn(userLine)
 }
 
 func shortSHA(full string) string {

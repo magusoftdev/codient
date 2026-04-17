@@ -98,6 +98,9 @@ type PersistentConfig struct {
 	// GitAutoCommit defaults to true when omitted: auto-commit after each build turn that changes files.
 	GitAutoCommit *bool `json:"git_auto_commit,omitempty"`
 
+	// CheckpointAuto: "plan" (default), "all" (after each build turn with file changes), or "off".
+	CheckpointAuto string `json:"checkpoint_auto,omitempty"`
+
 	// CostPerMTok overrides built-in pricing for cost estimates (USD per 1M input/output tokens).
 	CostPerMTok *CostPerMTok `json:"cost_per_mtok,omitempty"`
 
@@ -267,6 +270,7 @@ func ConfigToPersistent(cfg *Config) *PersistentConfig {
 	}
 	pc.CostPerMTok = cfg.CostPerMTok
 	pc.HooksEnabled = cfg.HooksEnabled
+	pc.CheckpointAuto = cfg.CheckpointAuto
 	return pc
 }
 

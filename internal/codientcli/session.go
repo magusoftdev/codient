@@ -100,6 +100,10 @@ type session struct {
 	currentPlan *planstore.Plan
 	planPhase   planstore.Phase
 
+	// Checkpoint tree: last created/restored snapshot id and logical branch label ("main", fork slugs).
+	currentCheckpointID string
+	convBranch          string
+
 	// tokenTracker accumulates API-reported token usage for the REPL session.
 	tokenTracker *tokentracker.Tracker
 
@@ -647,6 +651,14 @@ func (s *session) runSession(ctx context.Context, initialPrompt string, newSessi
 				if existing.PlanPhase != "" {
 					s.planPhase = planstore.Phase(existing.PlanPhase)
 				}
+				if existing.CurrentCheckpointID != "" {
+					s.currentCheckpointID = existing.CurrentCheckpointID
+				}
+				if b := strings.TrimSpace(existing.CurrentBranch); b != "" {
+					s.convBranch = b
+				} else {
+					s.convBranch = "main"
+				}
 				s.loadPlanFromDisk()
 				resumeSummary = sessionstore.ResumeSummaryLine(s.sessionID, existing.Messages)
 				if s.currentPlan != nil && s.planPhase != "" && s.planPhase != planstore.PhaseDone {
@@ -657,6 +669,9 @@ func (s *session) runSession(ctx context.Context, initialPrompt string, newSessi
 	}
 	if s.sessionID == "" {
 		s.sessionID = sessionstore.NewID(ws)
+	}
+	if s.convBranch == "" {
+		s.convBranch = "main"
 	}
 
 	if hm, herr := hooks.LoadForConfig(s.cfg.HooksEnabled, ws, s.cfg.Model, s.sessionID); herr != nil {
@@ -968,6 +983,12 @@ func (s *session) autoSave() {
 		Model:     s.cfg.Model,
 		Messages:  sessionstore.FromOpenAI(s.history),
 	}
+	if s.currentCheckpointID != "" {
+		state.CurrentCheckpointID = s.currentCheckpointID
+	}
+	if s.convBranch != "" {
+		state.CurrentBranch = s.convBranch
+	}
 	if s.planPhase != "" {
 		state.PlanPhase = string(s.planPhase)
 		state.PlanPath = planstore.Path(ws, s.sessionID)
@@ -1100,6 +1121,8 @@ func (s *session) buildSlashCommands(ctx context.Context, sc *bufio.Scanner) *sl
 			s.lastReply = ""
 			s.turn = 0
 			s.undoStack = nil
+			s.currentCheckpointID = ""
+			s.convBranch = "main"
 			s.currentPlan = nil
 			s.planPhase = ""
 			s.pendingImages = nil
@@ -1123,6 +1146,8 @@ func (s *session) buildSlashCommands(ctx context.Context, sc *bufio.Scanner) *sl
 			s.turn = 0
 			s.taskSlug = ""
 			s.undoStack = nil
+			s.currentCheckpointID = ""
+			s.convBranch = "main"
 			s.currentPlan = nil
 			s.planPhase = ""
 			s.pendingImages = nil
@@ -1347,6 +1372,64 @@ func (s *session) buildSlashCommands(ctx context.Context, sc *bufio.Scanner) *sl
 		Description: "push current branch and open a GitHub pull request (requires gh CLI)",
 		Run: func(args string) error {
 			return s.handlePR(args)
+		},
+	})
+	cmds.Register(slashcmd.Command{
+		Name:        "checkpoint",
+		Aliases:     []string{"cp"},
+		Usage:       "/checkpoint [name]",
+		Description: "save a named snapshot of conversation + workspace (default name turn-N)",
+		Run: func(args string) error {
+			return s.createCheckpoint(strings.TrimSpace(args), args)
+		},
+	})
+	cmds.Register(slashcmd.Command{
+		Name:        "checkpoints",
+		Aliases:     []string{"cps"},
+		Description: "list checkpoints for this session (tree view)",
+		Run: func(string) error {
+			return s.listCheckpoints()
+		},
+	})
+	cmds.Register(slashcmd.Command{
+		Name:        "rollback",
+		Aliases:     []string{"rb"},
+		Usage:       "/rollback <name|id|turn>",
+		Description: "restore conversation and workspace to a checkpoint",
+		Run: func(args string) error {
+			q := strings.TrimSpace(args)
+			if q == "" {
+				return fmt.Errorf("usage: /rollback <name|id|turn>")
+			}
+			cp, err := s.resolveCheckpointQuery(q)
+			if err != nil {
+				return err
+			}
+			return s.rollbackToCheckpoint(cp)
+		},
+	})
+	cmds.Register(slashcmd.Command{
+		Name:        "fork",
+		Usage:       "/fork <name|id|turn> [branch-name]",
+		Description: "rollback to a checkpoint and start a new git branch + conversation branch",
+		Run: func(args string) error {
+			parts := strings.Fields(strings.TrimSpace(args))
+			if len(parts) < 1 {
+				return fmt.Errorf("usage: /fork <name|id|turn> [branch-name]")
+			}
+			branch := ""
+			if len(parts) > 1 {
+				branch = strings.Join(parts[1:], " ")
+			}
+			return s.forkFromCheckpoint(parts[0], branch)
+		},
+	})
+	cmds.Register(slashcmd.Command{
+		Name:        "branches",
+		Aliases:     []string{"cbranch"},
+		Description: "list logical conversation branches (checkpoint forks)",
+		Run: func(string) error {
+			return s.listConvBranches()
 		},
 	})
 	cmds.Register(slashcmd.Command{
@@ -1596,6 +1679,7 @@ func (s *session) printAllConfig() {
 	fmt.Fprintf(w, "\n  -- Git (build mode) --\n")
 	fmt.Fprintf(w, "  git_auto_commit:       %v\n", s.cfg.GitAutoCommit)
 	fmt.Fprintf(w, "  git_protected_branches: %s\n", strings.Join(s.cfg.GitProtectedBranches, ","))
+	fmt.Fprintf(w, "  checkpoint_auto:       %s (plan|all|off)\n", s.cfg.CheckpointAuto)
 	fmt.Fprintf(w, "\n  -- UI/Output --\n")
 	fmt.Fprintf(w, "  plain:                 %v\n", s.cfg.Plain)
 	fmt.Fprintf(w, "  quiet:                 %v\n", s.cfg.Quiet)
@@ -1746,6 +1830,8 @@ func (s *session) getConfigValue(key string) (string, bool) {
 		return strconv.FormatBool(s.cfg.GitAutoCommit), true
 	case "git_protected_branches":
 		return strings.Join(s.cfg.GitProtectedBranches, ","), true
+	case "checkpoint_auto":
+		return s.cfg.CheckpointAuto, true
 	}
 
 	if mode, field, ok := parseModeConfigKey(key); ok {
@@ -1969,6 +2055,15 @@ func (s *session) setConfig(key, value string) error {
 		if len(s.cfg.GitProtectedBranches) == 0 {
 			s.cfg.GitProtectedBranches = []string{"main", "master", "develop"}
 		}
+	case "checkpoint_auto":
+		v := strings.TrimSpace(strings.ToLower(value))
+		if v == "" {
+			v = "plan"
+		}
+		if v != "plan" && v != "all" && v != "off" {
+			return fmt.Errorf("checkpoint_auto must be plan, all, or off")
+		}
+		s.cfg.CheckpointAuto = v
 	default:
 		if mode, field, ok := parseModeConfigKey(key); ok {
 			if s.cfg.ModeModels == nil {

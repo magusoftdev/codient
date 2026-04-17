@@ -27,6 +27,10 @@ type SessionState struct {
 	// Plan lifecycle fields (populated when a structured plan exists).
 	PlanPhase string `json:"plan_phase,omitempty"`
 	PlanPath  string `json:"plan_path,omitempty"`
+
+	// Checkpoint / branching (REPL): last known position in the checkpoint tree.
+	CurrentCheckpointID string `json:"current_checkpoint_id,omitempty"`
+	CurrentBranch       string `json:"current_branch,omitempty"`
 }
 
 // SessionSummary is returned by List for UI purposes.
