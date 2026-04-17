@@ -13,9 +13,9 @@ import (
 	"time"
 
 	"codient/internal/agent"
-	"codient/internal/stringutil"
 	"codient/internal/config"
 	"codient/internal/openaiclient"
+	"codient/internal/stringutil"
 	"codient/internal/tools"
 
 	"github.com/openai/openai-go/v3"
@@ -350,4 +350,3 @@ func workspaceFixture(t *testing.T, files map[string]string) string {
 	}
 	return root
 }
-

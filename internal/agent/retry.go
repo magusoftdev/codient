@@ -53,7 +53,26 @@ func (r *Runner) callLLMWithRetry(ctx context.Context, params openai.ChatComplet
 	return nil, false, fmt.Errorf("after %d retries: %w", r.Cfg.MaxLLMRetries, lastErr)
 }
 
+// callLLMOnce performs a single LLM completion call with context timeout from config.
 func (r *Runner) callLLMOnce(ctx context.Context, params openai.ChatCompletionNewParams, streamTo io.Writer) (*openai.ChatCompletion, bool, error) {
+	// If MaxCompletionSeconds is not set or zero, use the parent context directly
+	if r.Cfg.MaxCompletionSeconds <= 0 {
+		return r.callLLMWithoutTimeout(ctx, params, streamTo)
+	}
+
+	timeout := time.Duration(r.Cfg.MaxCompletionSeconds) * time.Second
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	res, streamed, err := r.callLLMWithoutTimeout(ctx, params, streamTo)
+	if ctx.Err() == context.DeadlineExceeded {
+		return nil, streamed, fmt.Errorf("llm request timeout: exceeded %v", timeout)
+	}
+	return res, streamed, err
+}
+
+// callLLMWithoutTimeout performs the actual LLM call without wrapping timeout.
+func (r *Runner) callLLMWithoutTimeout(ctx context.Context, params openai.ChatCompletionNewParams, streamTo io.Writer) (*openai.ChatCompletion, bool, error) {
 	useStream := streamTo != nil
 	// OpenAI-compatible local servers often return incomplete tool_calls over SSE; the accumulator
 	// then sees an empty ToolCalls slice and the agent skips native tool execution. Non-streaming

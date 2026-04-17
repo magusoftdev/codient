@@ -136,8 +136,8 @@ func TestIntegration_AgentGlobFiles(t *testing.T) {
 	skipUnlessIntegration(t)
 	skipUnlessStrictTools(t)
 	dir := workspaceFixture(t, map[string]string{
-		"src/alpha.go":  "package alpha\n",
-		"src/beta.go":   "package beta\n",
+		"src/alpha.go":   "package alpha\n",
+		"src/beta.go":    "package beta\n",
 		"docs/readme.md": "# Docs\n",
 	})
 	ar, ctx, cancel := newLiveRunner(t, dir)

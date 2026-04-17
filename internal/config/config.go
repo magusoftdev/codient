@@ -10,22 +10,24 @@ import (
 )
 
 const (
-	defaultBaseURL          = "http://127.0.0.1:1234/v1"
-	defaultAPIKey           = "codient"
-	defaultMaxConcurrent    = 3
-	defaultExecTimeoutSec   = 120
-	defaultExecMaxOutBytes  = 256 * 1024
-	maxExecTimeoutSec       = 3600
-	maxExecMaxOutputBytes   = 10 * 1024 * 1024
-	defaultContextReserve   = 4096
-	defaultMaxLLMRetries    = 2
-	defaultFetchMaxBytes    = 1024 * 1024
-	maxFetchMaxBytes        = 10 * 1024 * 1024
-	defaultFetchTimeoutSec  = 30
-	maxFetchTimeoutSec      = 300
-	defaultAutoCompactPct   = 75
-	defaultSearchMaxResults = 5
-	maxSearchMaxResults     = 10
+	defaultBaseURL              = "http://127.0.0.1:1234/v1"
+	defaultAPIKey               = "codient"
+	defaultMaxConcurrent        = 3
+	defaultExecTimeoutSec       = 120
+	defaultExecMaxOutBytes      = 256 * 1024
+	maxExecTimeoutSec           = 3600
+	maxExecMaxOutputBytes       = 10 * 1024 * 1024
+	defaultContextReserve       = 4096
+	defaultMaxLLMRetries        = 2
+	defaultFetchMaxBytes        = 1024 * 1024
+	maxFetchMaxBytes            = 10 * 1024 * 1024
+	defaultFetchTimeoutSec      = 30
+	maxFetchTimeoutSec          = 300
+	defaultAutoCompactPct       = 75
+	defaultSearchMaxResults     = 5
+	maxSearchMaxResults         = 10
+	defaultMaxCompletionSeconds = 300
+	maxMaxCompletionSeconds     = 3600
 	// MaxFetchWebRatePerSec and MaxFetchWebRateBurst cap persisted network rate limits (fetch_url + web_search).
 	MaxFetchWebRatePerSec = 100
 	MaxFetchWebRateBurst  = 50
@@ -65,6 +67,8 @@ type Config struct {
 	FetchMaxBytes int
 	// FetchTimeoutSec caps each fetch_url request (default 30, max 300).
 	FetchTimeoutSec int
+	// MaxCompletionSeconds caps each LLM completion request (default 300, max 3600).
+	MaxCompletionSeconds int
 	// SearchMaxResults caps results per web_search query (default 5, max 10).
 	SearchMaxResults int
 	// FetchWebRatePerSec limits combined fetch_url and web_search requests (token bucket). 0 = disabled.
@@ -225,6 +229,10 @@ func Load() (*Config, error) {
 		fetchTimeout = defaultFetchTimeoutSec
 	}
 
+	maxCompletion := pc.MaxCompletionSeconds
+	if maxCompletion == 0 {
+		maxCompletion = defaultMaxCompletionSeconds
+	}
 	searchMaxResults := pc.SearchMaxResults
 	if searchMaxResults == 0 {
 		searchMaxResults = defaultSearchMaxResults
@@ -301,6 +309,7 @@ func Load() (*Config, error) {
 		FetchPreapproved:     fetchPreapproved,
 		FetchMaxBytes:        fetchMax,
 		FetchTimeoutSec:      fetchTimeout,
+		MaxCompletionSeconds: maxCompletion,
 		SearchMaxResults:     searchMaxResults,
 		FetchWebRatePerSec:   fetchWebRate,
 		FetchWebRateBurst:    fetchWebBurst,
@@ -362,6 +371,12 @@ func Load() (*Config, error) {
 	}
 	if c.FetchTimeoutSec > maxFetchTimeoutSec {
 		c.FetchTimeoutSec = maxFetchTimeoutSec
+	}
+	if c.MaxCompletionSeconds < 1 {
+		c.MaxCompletionSeconds = defaultMaxCompletionSeconds
+	}
+	if c.MaxCompletionSeconds > maxMaxCompletionSeconds {
+		c.MaxCompletionSeconds = maxMaxCompletionSeconds
 	}
 	if c.SearchMaxResults < 1 {
 		c.SearchMaxResults = defaultSearchMaxResults

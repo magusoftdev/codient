@@ -48,6 +48,8 @@ type PersistentConfig struct {
 	FetchPreapproved *bool  `json:"fetch_preapproved,omitempty"`
 	FetchMaxBytes    int    `json:"fetch_max_bytes,omitempty"`
 	FetchTimeoutSec  int    `json:"fetch_timeout_sec,omitempty"`
+	// MaxCompletionSeconds caps each LLM completion request (default 300, max 3600).
+	MaxCompletionSeconds int `json:"max_completion_seconds,omitempty"`
 	// FetchWebRatePerSec limits combined fetch_url + web_search (0 = off).
 	FetchWebRatePerSec int `json:"fetch_web_rate_per_sec,omitempty"`
 	FetchWebRateBurst  int `json:"fetch_web_rate_burst,omitempty"`

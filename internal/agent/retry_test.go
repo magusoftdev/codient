@@ -3,10 +3,13 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/openai/openai-go/v3"
 
@@ -176,5 +179,23 @@ func TestCallLLMOnce_StreamsWithToolsWhenOptIn(t *testing.T) {
 	}
 	if !streamed || llm.streamCalls != 1 || llm.chatCalls != 0 {
 		t.Fatalf("want streaming with tools when opted in: streamed=%v stream=%d chat=%d", streamed, llm.streamCalls, llm.chatCalls)
+	}
+}
+
+func TestCallLLMOnce_Timeout(t *testing.T) {
+	llm := &streamVsChatRecorder{model: "m"}
+	r := &Runner{LLM: llm, Cfg: &config.Config{StreamWithTools: true, MaxCompletionSeconds: 1}, Tools: tools.NewRegistry()}
+	
+	// Create a context that's already expired
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Millisecond)
+	defer cancel()
+	
+	// Wait for context to expire
+	<-ctx.Done()
+	
+	params := openai.ChatCompletionNewParams{}
+	_, _, err := r.callLLMOnce(ctx, params, io.Discard)
+	if !strings.Contains(err.Error(), "timeout") && !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected timeout error, got: %v", err)
 	}
 }
