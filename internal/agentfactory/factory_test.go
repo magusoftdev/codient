@@ -15,7 +15,7 @@ func TestRegistryForMode_NoDelegateTask(t *testing.T) {
 		MaxConcurrent: 1,
 	}
 	for _, mode := range []prompt.Mode{prompt.ModeBuild, prompt.ModeAsk, prompt.ModePlan} {
-		reg := RegistryForMode(cfg, mode)
+		reg := RegistryForMode(cfg, mode, nil)
 		for _, name := range reg.Names() {
 			if name == "delegate_task" {
 				t.Fatalf("sub-agent registry for mode %q should NOT contain delegate_task", mode)
@@ -30,7 +30,7 @@ func TestRegistryForMode_AskHasReadOnlyTools(t *testing.T) {
 		ExecAllowlist: []string{"go"},
 		MaxConcurrent: 1,
 	}
-	reg := RegistryForMode(cfg, prompt.ModeAsk)
+	reg := RegistryForMode(cfg, prompt.ModeAsk, nil)
 	names := reg.Names()
 	nameSet := make(map[string]bool)
 	for _, n := range names {
@@ -56,7 +56,7 @@ func TestRegistryForMode_BuildHasMutatingTools(t *testing.T) {
 		ExecAllowlist: []string{"go"},
 		MaxConcurrent: 1,
 	}
-	reg := RegistryForMode(cfg, prompt.ModeBuild)
+	reg := RegistryForMode(cfg, prompt.ModeBuild, nil)
 	names := reg.Names()
 	nameSet := make(map[string]bool)
 	for _, n := range names {
@@ -75,7 +75,7 @@ func TestRegistryForMode_PlanNoEcho(t *testing.T) {
 		Workspace:     t.TempDir(),
 		MaxConcurrent: 1,
 	}
-	reg := RegistryForMode(cfg, prompt.ModePlan)
+	reg := RegistryForMode(cfg, prompt.ModePlan, nil)
 	for _, name := range reg.Names() {
 		if name == "echo" {
 			t.Fatal("plan mode should NOT have echo")
@@ -96,8 +96,8 @@ func TestSystemPromptForMode_ContainsModeSection(t *testing.T) {
 		{prompt.ModeAsk, "Ask"},
 		{prompt.ModePlan, "Plan"},
 	} {
-		reg := RegistryForMode(cfg, tc.mode)
-		sys := SystemPromptForMode(cfg, reg, tc.mode, io.Discard)
+		reg := RegistryForMode(cfg, tc.mode, nil)
+		sys := SystemPromptForMode(cfg, reg, tc.mode, "", io.Discard)
 		if !strings.Contains(sys, tc.want) {
 			t.Errorf("mode %s: system prompt should contain %q", tc.mode, tc.want)
 		}
@@ -109,8 +109,8 @@ func TestSystemPromptForMode_NoDelegationSection(t *testing.T) {
 		Workspace:     t.TempDir(),
 		MaxConcurrent: 1,
 	}
-	reg := RegistryForMode(cfg, prompt.ModeBuild)
-	sys := SystemPromptForMode(cfg, reg, prompt.ModeBuild, io.Discard)
+	reg := RegistryForMode(cfg, prompt.ModeBuild, nil)
+	sys := SystemPromptForMode(cfg, reg, prompt.ModeBuild, "", io.Discard)
 	if strings.Contains(sys, "Task delegation") {
 		t.Fatal("sub-agent system prompt should NOT contain Task delegation (no delegate_task tool)")
 	}

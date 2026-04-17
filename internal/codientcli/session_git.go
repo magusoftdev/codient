@@ -308,24 +308,27 @@ func (s *session) showGitDiffIfBuild() {
 		if stat != "" {
 			fmt.Fprintf(os.Stderr, "\ncodient: last commit — files changed:\n%s\n", stat)
 		}
-		patch, err := gitutil.ShowPatch(ws, "HEAD", 50)
-		if err == nil && strings.TrimSpace(patch) != "" {
-			fmt.Fprintf(os.Stderr, "\n%s\n", patch)
-		}
 		return
 	}
 
-	short, _ := gitutil.DiffShortStat(ws)
-	if strings.TrimSpace(short) != "" {
-		fmt.Fprintf(os.Stderr, "\ncodient: working tree — %s\n", short)
+	stat, _ := gitutil.DiffStatHead(ws)
+	untracked, _ := gitutil.UntrackedFiles(ws)
+	if strings.TrimSpace(stat) == "" && len(untracked) == 0 {
+		return
 	}
-	diff, err := gitutil.DiffUnifiedWorkspace(ws, 50)
-	if err == nil && strings.TrimSpace(diff) != "" {
-		fmt.Fprintf(os.Stderr, "\n%s\n", diff)
-	} else {
-		summary, err := gitutil.DiffSummary(ws)
-		if err == nil && summary != "" {
-			fmt.Fprintf(os.Stderr, "\ncodient: files changed:\n%s\n", summary)
+	fmt.Fprintf(os.Stderr, "\ncodient: working tree — files changed:\n")
+	if strings.TrimSpace(stat) != "" {
+		fmt.Fprintf(os.Stderr, "%s\n", stat)
+	}
+	if len(untracked) > 0 {
+		const maxNewFiles = 20
+		fmt.Fprintf(os.Stderr, "\nnew files:\n")
+		for i, f := range untracked {
+			if i >= maxNewFiles {
+				fmt.Fprintf(os.Stderr, "  ... and %d more\n", len(untracked)-maxNewFiles)
+				break
+			}
+			fmt.Fprintf(os.Stderr, "  %s\n", f)
 		}
 	}
 }

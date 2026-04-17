@@ -88,6 +88,9 @@ type PersistentConfig struct {
 	// Embedding model for semantic code search (e.g. "text-embedding-3-small"). Empty disables.
 	EmbeddingModel string `json:"embedding_model,omitempty"`
 
+	// RepoMapTokens caps the structural repo map in the system prompt (0 = auto by workspace size, -1 = off).
+	RepoMapTokens int `json:"repo_map_tokens,omitempty"`
+
 	// UpdateNotify opt-out: set to false to suppress the interactive update prompt on startup.
 	UpdateNotify *bool `json:"update_notify,omitempty"`
 
@@ -250,6 +253,7 @@ func ConfigToPersistent(cfg *Config) *PersistentConfig {
 		ProjectContext:       cfg.ProjectContext,
 		AstGrep:              cfg.AstGrep,
 		EmbeddingModel:       cfg.EmbeddingModel,
+		RepoMapTokens:        cfg.RepoMapTokens,
 		Models:               cfg.ModeModels,
 		MCPServers:           cfg.MCPServers,
 		GitProtectedBranches: strings.Join(cfg.GitProtectedBranches, ","),

@@ -112,8 +112,8 @@ func (e *executor) Execute(ctx context.Context, execCtx *a2asrv.ExecutorContext)
 			return
 		}
 
-		reg := agentfactory.RegistryForMode(e.cfg, mode)
-		sysprompt := agentfactory.SystemPromptForMode(e.cfg, reg, mode, os.Stderr)
+		reg := agentfactory.RegistryForMode(e.cfg, mode, nil)
+		sysprompt := agentfactory.SystemPromptForMode(e.cfg, reg, mode, "", os.Stderr)
 
 		if e.llmForMode == nil {
 			msg := a2a.NewMessage(a2a.MessageRoleAgent, a2a.NewTextPart("server misconfigured: LLMForMode is nil"))

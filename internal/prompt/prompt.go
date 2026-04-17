@@ -23,6 +23,7 @@ type Params struct {
 	AutoCheckLintResolved  string // resolved lint command, empty when disabled
 	AutoCheckTestResolved  string // resolved test command, empty when disabled
 	ProjectContext         string // auto-detected project summary (language, framework, etc.)
+	RepoMap                string // structural overview (paths + symbols), optional
 	Memory            string // cross-session memory (global + workspace), already loaded and truncated
 	ReviewMode        bool   // when true, appends review/verification guidance
 }
@@ -76,6 +77,10 @@ func Build(p Params) string {
 	if strings.TrimSpace(p.ProjectContext) != "" {
 		b.WriteString("\n\n## Project\n\n")
 		b.WriteString(strings.TrimSpace(p.ProjectContext))
+	}
+	if strings.TrimSpace(p.RepoMap) != "" {
+		b.WriteString("\n\n## Repository map\n\n")
+		b.WriteString(strings.TrimSpace(p.RepoMap))
 	}
 	if strings.TrimSpace(p.RepoInstructions) != "" {
 		b.WriteString("\n\n## Repository instructions (from workspace files)\n\n")
@@ -375,6 +380,9 @@ func sectionPerToolNotes(p Params) string {
 	}
 	if _, ok := set["semantic_search"]; ok {
 		b.WriteString("- **semantic_search**: Find files by meaning rather than exact text. Use when you need to discover code related to a concept (e.g. 'authentication middleware', 'database migrations', 'error handling'). Prefer this over grep for exploratory discovery in unfamiliar codebases; use grep when you know the exact string or symbol.\n")
+	}
+	if _, ok := set["repo_map"]; ok {
+		b.WriteString("- **repo_map**: Returns a structural map of the workspace (files and top-level symbols). Use optional `path_prefix` to scope to a subdirectory and `max_tokens` to control size when the system prompt map was truncated.\n")
 	}
 	if _, ok := set["memory_update"]; ok {
 		b.WriteString("- **memory_update**: Persist knowledge across sessions. Use `scope` **global** for user-wide preferences or **workspace** for project-specific conventions. Use `action` **append** to add entries or **replace_section** to update a `## Heading` section. Keep entries concise (bullet points). Record: project conventions (build commands, naming patterns, architecture decisions), user preferences (style, verbosity), and important past decisions. Do **not** store secrets, credentials, or transient session details.\n")

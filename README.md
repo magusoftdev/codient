@@ -173,6 +173,7 @@ Run `/config` with no arguments to see all current values. `/config <key>` shows
 | **Tools** | | |
 | `ast_grep` | ast-grep binary path: `auto` (default), explicit path, or `off` to disable | *(auto)* |
 | `embedding_model` | Model id for `/v1/embeddings` (same base URL as chat). Enables the `semantic_search` tool; leave empty to disable. The welcome banner shows **Embeddings** (model id, or `off`) | *(empty)* |
+| `repo_map_tokens` | Approximate token budget for the **structural repository map** injected into the system prompt and for the `repo_map` tool. **`0`** (default) picks a budget from workspace size; **`-1`** disables the map and the tool | `0` |
 | `hooks_enabled` | Enable [lifecycle hooks](#lifecycle-hooks) (`hooks.json` under `~/.codient` and `<workspace>/.codient`) | `false` |
 | `cost_per_mtok` | Optional `{"input":N,"output":N}` USD per 1M tokens — overrides built-in pricing for `/cost` and session cost estimates | *(built-in table)* |
 | **Update** | | |
@@ -221,6 +222,17 @@ When **`embedding_model`** is set in config, codient indexes text files in the w
 - **When indexing runs:** After you start an interactive session, indexing begins automatically in the background—no separate command. stderr shows progress and completion (or an error if embeddings fail).
 - **Persistence:** The index is stored under **`<workspace>/.codient/index/embeddings.gob`**. On later sessions, unchanged files reuse cached vectors; only new or modified files are re-embedded. If you change **`embedding_model`**, the stored index is invalidated and rebuilt.
 - **Configure:** `/config embedding_model <model-id>`, set `embedding_model` in `~/.codient/config.json`, or use **`/setup`** (optional prompt after chat model selection).
+
+### Repository map (structural overview)
+
+Codient extracts **top-level symbols** from supported source files (Go, Python, TypeScript/JavaScript, Rust, Java, C/C++ headers) and builds a **concise map** of the workspace: file paths and symbol names (functions, types, classes, etc.). This gives the model a bird’s-eye view without reading every file—similar in spirit to other agents’ “repo map” context.
+
+- **System prompt:** When **`repo_map_tokens`** is not **`-1`**, a **Repository map** section is added after **Project** (auto-detected stack hints). The budget is **`0`** = automatic by file count (roughly 2k–8k estimated tokens), or a positive integer to cap size.
+- **Tool:** The **`repo_map`** tool is registered in all modes when the map is enabled. Optional **`path_prefix`** scopes to a subdirectory; optional **`max_tokens`** overrides the default size for that call (useful if the prompt map was truncated).
+- **No embeddings required:** Unlike **`semantic_search`**, the structural map does not call the embeddings API.
+- **When it runs:** Interactive REPL builds the map in the background after startup (stderr: `building repository map…` / `repo map ready`). Single-turn (`-prompt` / piped) runs build it **synchronously** so the first turn can use it.
+- **Persistence:** Tag extraction is cached under **`<workspace>/.codient/index/repomap.gob`** (per-file mtimes; unchanged files are skipped).
+- **Configure:** `/config repo_map_tokens <n>`, or set **`repo_map_tokens`** in `~/.codient/config.json`. Use **`-1`** to disable entirely.
 
 ### MCP (Model Context Protocol) servers
 
@@ -489,6 +501,8 @@ Inside a session you can use slash commands to control the agent:
 
 In a git workspace, **build** mode can **auto-commit** each turn that changes files (`git_auto_commit`, default `true`). Each commit uses subject **`codient: turn N`** and a body copied from your user message (truncated to 200 characters). Configure **`git_protected_branches`** (default `main`, `master`, `develop`): if the first commit would land on one of those branches, codient creates and checks out **`codient/<task-slug>`** (with numeric suffixes if the name already exists) so you do not commit directly to e.g. `main`.
 
+After a build turn that leaves **uncommitted** working-tree changes, stderr prints a **`git diff --stat`** summary vs `HEAD` and lists **untracked** files (up to 20), instead of a full unified diff.
+
 Set **`git_auto_commit`** to **`false`** to restore the older behavior: no commits; `/undo` restores files from the working tree snapshot instead of removing the last commit.
 
 The **`create_pull_request`** tool (build mode only) and the **`/pr`** slash command push the current branch to **`origin`** and run **`gh pr create`**. The PR base branch is the protected branch you left when codient created `codient/...`, when applicable; otherwise it follows **`origin/HEAD`** (usually `main`).
@@ -499,7 +513,7 @@ Session state (conversation history, mode, model) is saved under `<workspace>/.c
 
 **Checkpoints** (named snapshots for rollback and branching) are stored under `<workspace>/.codient/checkpoints/<sessionID>/` (one JSON file per checkpoint plus a `tree.json` index). The session file records **`current_checkpoint_id`** and **`current_branch`** so resume keeps your place in the checkpoint tree.
 
-The semantic search index (when **`embedding_model`** is set) lives under `<workspace>/.codient/index/` and is separate from chat sessions.
+The semantic search index (when **`embedding_model`** is set) and the repo map cache (**`repomap.gob`**) live under `<workspace>/.codient/index/` and are separate from chat sessions.
 
 ### Cross-session memory
 

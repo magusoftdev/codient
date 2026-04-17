@@ -24,6 +24,7 @@ import (
 	"codient/internal/openaiclient"
 	"codient/internal/projectinfo"
 	"codient/internal/prompt"
+	"codient/internal/repomap"
 	"codient/internal/selfupdate"
 	"codient/internal/tokentracker"
 	"codient/internal/tools"
@@ -295,9 +296,20 @@ func Run() int {
 		}
 	}
 
+	stdinIsTTY := stdinIsInteractive()
+	useREPL := !printMode && (*repl || (stdinIsTTY && strings.TrimSpace(*promptFlag) == ""))
+	// Non-REPL runs (single-turn / print) do not call startRepoMap; build synchronously so the system prompt can include the map.
+	if !useREPL && cfg.RepoMapTokens >= 0 {
+		ws := cfg.EffectiveWorkspace()
+		if ws != "" {
+			s.repoMap = repomap.New(ws)
+			s.repoMap.Build(ctx)
+		}
+	}
+
 	s.client = openaiclient.New(cfg)
 	s.registry = buildRegistry(cfg, agentMode, s, memOpts)
-	s.systemPrompt = buildAgentSystemPrompt(cfg, s.registry, agentMode, *system, repoInstr, projectCtx, mem)
+	s.systemPrompt = buildAgentSystemPrompt(cfg, s.registry, agentMode, *system, repoInstr, projectCtx, mem, s.repoMap)
 
 	attached, err := loadImagePaths(imageFlagPaths)
 	if err != nil {
@@ -309,9 +321,6 @@ func Run() int {
 	// Determine whether to enter the REPL session.
 	// REPL is the default when stdin is a TTY (interactive), or when -repl is explicit.
 	// -print forces single-turn (headless) mode.
-	stdinIsTTY := stdinIsInteractive()
-	useREPL := !printMode && (*repl || (stdinIsTTY && strings.TrimSpace(*promptFlag) == ""))
-
 	if useREPL {
 		// Override the timeout context with a signal-based one for the REPL.
 		// The session can last indefinitely; only Ctrl+C should cancel it.

@@ -157,6 +157,30 @@ func TestCleanUntracked(t *testing.T) {
 	}
 }
 
+func TestDiffStatHead(t *testing.T) {
+	dir := initRepoWithFile(t)
+
+	stat, err := DiffStatHead(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stat != "" {
+		t.Fatalf("expected empty stat in clean repo, got: %q", stat)
+	}
+
+	os.WriteFile(filepath.Join(dir, "hello.txt"), []byte("changed\n"), 0o644)
+	stat, err = DiffStatHead(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stat, "hello.txt") {
+		t.Fatalf("expected stat to mention hello.txt, got: %q", stat)
+	}
+	if !strings.Contains(stat, "1 file changed") {
+		t.Fatalf("expected stat summary line, got: %q", stat)
+	}
+}
+
 func TestSplitNonEmpty(t *testing.T) {
 	got := splitNonEmpty("  a.txt\nb.txt\n\n  c.txt  \n")
 	sort.Strings(got)

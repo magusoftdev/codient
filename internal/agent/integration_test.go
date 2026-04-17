@@ -57,7 +57,7 @@ func TestIntegration_AgentDirectReply(t *testing.T) {
 		t.Fatal(err)
 	}
 	client := openaiclient.New(cfg)
-	reg := tools.Default("", nil, nil, nil, "", nil, nil)
+	reg := tools.Default("", nil, nil, nil, "", nil, nil, nil)
 	ar := &agent.Runner{LLM: client, Cfg: cfg, Tools: reg}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
@@ -329,7 +329,7 @@ func newLiveRunnerOpts(t *testing.T, workspace string, exec *tools.ExecOptions) 
 		cfg.Workspace = wsRoot
 	}
 	client := openaiclient.New(cfg)
-	reg := tools.Default(wsRoot, exec, nil, nil, "", nil, nil)
+	reg := tools.Default(wsRoot, exec, nil, nil, "", nil, nil, nil)
 	ar := &agent.Runner{LLM: client, Cfg: cfg, Tools: reg}
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
 	return ar, ctx, cancel

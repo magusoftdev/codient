@@ -33,6 +33,7 @@ import (
 	"codient/internal/planstore"
 	"codient/internal/projectinfo"
 	"codient/internal/prompt"
+	"codient/internal/repomap"
 	"codient/internal/selfupdate"
 	"codient/internal/sessionstore"
 	"codient/internal/slashcmd"
@@ -98,6 +99,7 @@ type session struct {
 	pendingAsyncNotes []string
 
 	codeIndex *codeindex.Index // semantic search index; nil when embedding_model is not configured
+	repoMap   *repomap.Map     // structural repo map; nil when repo_map_tokens is -1
 
 	mcpMgr *mcpclient.Manager // MCP server connections; nil when no mcp_servers configured
 
@@ -195,6 +197,7 @@ func (s *session) delegateTaskFn() tools.DelegateRunner {
 			Mode:     mode,
 			Task:     task,
 			Context:  extraContext,
+			RepoMap:  s.repoMap,
 			Log:      s.agentLog,
 			Progress: progress,
 			Tracker:  s.tokenTracker,
@@ -691,7 +694,7 @@ func (s *session) runSession(ctx context.Context, initialPrompt string, newSessi
 				if modeErr == nil && mode != s.mode {
 					s.setMode(mode)
 					s.registry = buildRegistry(s.cfg, mode, s, s.memOpts)
-					s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory)
+					s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory, s.repoMap)
 				}
 				if existing.PlanPhase != "" {
 					s.planPhase = planstore.Phase(existing.PlanPhase)
@@ -746,13 +749,13 @@ func (s *session) runSession(ctx context.Context, initialPrompt string, newSessi
 	s.scanner = sc
 	resolveAstGrep(s.cfg, sc)
 	s.registry = buildRegistry(s.cfg, s.mode, s, s.memOpts)
-	s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory)
+	s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory, s.repoMap)
 
 	if strings.TrimSpace(s.cfg.Model) == "" {
 		s.runSetupWizard(ctx, sc)
 		s.client = openaiclient.New(s.cfg)
 		s.registry = buildRegistry(s.cfg, s.mode, s, s.memOpts)
-		s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory)
+		s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory, s.repoMap)
 	}
 
 	s.probeAndSetContext(ctx)
@@ -797,6 +800,7 @@ func (s *session) runSession(ctx context.Context, initialPrompt string, newSessi
 	fmt.Fprintf(os.Stderr, "codient: type /help for commands, /exit to quit\n")
 
 	s.startCodeIndex(ctx)
+	s.startRepoMap(ctx)
 
 	if s.currentPlan != nil && s.planPhase != "" && s.planPhase != planstore.PhaseDone {
 		s.handlePlanResume(ctx, sc)
@@ -1198,7 +1202,7 @@ func (s *session) buildSlashCommands(ctx context.Context, sc *bufio.Scanner) *sl
 			s.runSetupWizard(ctx, sc)
 			s.client = openaiclient.New(s.cfg)
 			s.registry = buildRegistry(s.cfg, s.mode, s, s.memOpts)
-			s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory)
+			s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory, s.repoMap)
 			s.cfg.ContextWindowTokens = 0
 			s.probeAndSetContext(ctx)
 			return nil
@@ -1254,7 +1258,7 @@ func (s *session) buildSlashCommands(ctx context.Context, sc *bufio.Scanner) *sl
 			if len(s.cfg.ExecAllowlist) > 0 {
 				s.execAllow = tools.NewSessionExecAllow(s.cfg.ExecAllowlist)
 				s.registry = buildRegistry(s.cfg, s.mode, s, s.memOpts)
-				s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory)
+				s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory, s.repoMap)
 			}
 			s.captureGitSessionState(s.cfg.EffectiveWorkspace())
 			fmt.Fprintf(os.Stderr, "codient: new session %s\n", s.sessionID)
@@ -1408,7 +1412,7 @@ func (s *session) buildSlashCommands(ctx context.Context, sc *bufio.Scanner) *sl
 			s.cfg.Workspace = path
 			s.projectContext = projectinfo.Detect(s.cfg.EffectiveWorkspace())
 			s.registry = buildRegistry(s.cfg, s.mode, s, s.memOpts)
-			s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory)
+			s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory, s.repoMap)
 			s.captureGitSessionState(s.cfg.EffectiveWorkspace())
 			s.warnIfNotGitRepo()
 			fmt.Fprintf(os.Stderr, "codient: workspace set to %s\n", path)
@@ -1667,7 +1671,7 @@ func (s *session) reloadMemory() {
 		return
 	}
 	s.memory = mem
-	s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory)
+	s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory, s.repoMap)
 }
 
 func (s *session) runEditor(editor, path string) error {
@@ -1713,7 +1717,7 @@ func (s *session) handleConfig(ctx context.Context, args string) error {
 	switch key {
 	case "model", "base_url", "api_key", "max_concurrent":
 		s.client = openaiclient.New(s.cfg)
-		s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory)
+		s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory, s.repoMap)
 		if key == "model" || key == "base_url" {
 			s.cfg.ContextWindowTokens = 0
 			s.probeAndSetContext(ctx)
@@ -1722,11 +1726,13 @@ func (s *session) handleConfig(ctx context.Context, args string) error {
 		"fetch_web_rate_per_sec", "fetch_web_rate_burst",
 		"search_max_results":
 		s.registry = buildRegistry(s.cfg, s.mode, s, s.memOpts)
-		s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory)
+		s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory, s.repoMap)
 	case "autocheck_cmd", "lint_cmd", "test_cmd":
-		s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory)
+		s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory, s.repoMap)
 	case "embedding_model":
 		s.startCodeIndex(ctx)
+	case "repo_map_tokens":
+		s.startRepoMap(ctx)
 	case "hooks_enabled":
 		ws := s.cfg.EffectiveWorkspace()
 		if strings.TrimSpace(s.sessionID) == "" {
@@ -1741,7 +1747,7 @@ func (s *session) handleConfig(ctx context.Context, args string) error {
 
 	if mode, _, ok := parseModeConfigKey(key); ok && mode == string(s.mode) {
 		s.client = openaiclient.NewForMode(s.cfg, mode)
-		s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory)
+		s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory, s.repoMap)
 	}
 	return nil
 }
@@ -2134,9 +2140,15 @@ func (s *session) setConfig(key, value string) error {
 	case "ast_grep":
 		s.cfg.AstGrep = value
 		s.registry = buildRegistry(s.cfg, s.mode, s, s.memOpts)
-		s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory)
+		s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory, s.repoMap)
 	case "embedding_model":
 		s.cfg.EmbeddingModel = value
+	case "repo_map_tokens":
+		n, err := parseInt(value)
+		if err != nil || n < -1 {
+			return fmt.Errorf("repo_map_tokens must be an integer >= -1 (0=auto, -1=off)")
+		}
+		s.cfg.RepoMapTokens = n
 	case "hooks_enabled":
 		b, err := parseBool(value)
 		if err != nil {
@@ -2321,7 +2333,7 @@ func (s *session) startCodeIndex(ctx context.Context) {
 	}
 	s.codeIndex = codeindex.New(ws, s.client, model)
 	s.registry = buildRegistry(s.cfg, s.mode, s, s.memOpts)
-	s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory)
+	s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory, s.repoMap)
 	fmt.Fprintf(os.Stderr, "codient: indexing workspace for semantic search...\n")
 	go func() {
 		s.codeIndex.BuildOrUpdate(ctx)
@@ -2331,6 +2343,39 @@ func (s *session) startCodeIndex(ctx context.Context) {
 		} else if n > 0 {
 			s.replAsyncStderrNote(fmt.Sprintf("codient: semantic index ready (%d files)\n", n))
 		}
+	}()
+}
+
+// startRepoMap builds a structural symbol map in the background (or clears it when disabled).
+// When complete, the registry and system prompt are rebuilt to include repo_map and the map text.
+func (s *session) startRepoMap(ctx context.Context) {
+	ws := s.cfg.EffectiveWorkspace()
+	if ws == "" {
+		return
+	}
+	if s.cfg.RepoMapTokens < 0 {
+		s.repoMap = nil
+		s.registry = buildRegistry(s.cfg, s.mode, s, s.memOpts)
+		s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory, nil)
+		return
+	}
+
+	s.repoMap = repomap.New(ws)
+	s.registry = buildRegistry(s.cfg, s.mode, s, s.memOpts)
+	s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory, s.repoMap)
+
+	fmt.Fprintf(os.Stderr, "codient: building repository map...\n")
+	go func() {
+		s.repoMap.Build(ctx)
+		nf := s.repoMap.FileCount()
+		nt := s.repoMap.TagCount()
+		if err := s.repoMap.BuildErr(); err != nil {
+			s.replAsyncStderrNote(fmt.Sprintf("codient: repo map: %v\n", err))
+		} else if nf > 0 {
+			s.replAsyncStderrNote(fmt.Sprintf("codient: repo map ready (%d files, %d symbols)\n", nf, nt))
+		}
+		s.registry = buildRegistry(s.cfg, s.mode, s, s.memOpts)
+		s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory, s.repoMap)
 	}()
 }
 

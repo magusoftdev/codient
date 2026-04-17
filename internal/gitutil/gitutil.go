@@ -344,6 +344,21 @@ func RefExists(dir, rev string) bool {
 // EmptyTreeSHA is the hash of Git's empty tree object (used to diff the first commit).
 const EmptyTreeSHA = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 
+// DiffStatHead returns `git diff --stat HEAD` — a per-file summary of
+// working-tree changes (staged + unstaged) relative to the last commit.
+func DiffStatHead(dir string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "diff", "--stat", "HEAD")
+	cmd.Dir = dir
+	cmd.Env = minimalGitEnv()
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
 // DiffStatLastCommit returns --stat for the latest commit (handles root commits).
 func DiffStatLastCommit(dir string) (string, error) {
 	if RefExists(dir, "HEAD~1") {

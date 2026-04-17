@@ -6,17 +6,19 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"codient/internal/config"
 	"codient/internal/projectinfo"
 	"codient/internal/prompt"
+	"codient/internal/repomap"
 	"codient/internal/tools"
 )
 
 // RegistryForMode builds a tool registry for the given mode with no interactive
 // session state (no exec prompts, no MCP, no code index). Suitable for
-// sub-agents and the A2A server.
-func RegistryForMode(cfg *config.Config, mode prompt.Mode) *tools.Registry {
+// sub-agents and the A2A server. rm may be nil (no repo_map tool or shared map).
+func RegistryForMode(cfg *config.Config, mode prompt.Mode, rm *repomap.Map) *tools.Registry {
 	ws := cfg.EffectiveWorkspace()
 	netLimit := tools.NewNetworkLimiter(cfg.FetchWebRatePerSec, cfg.FetchWebRateBurst)
 	fetch := FetchOpts(cfg, netLimit)
@@ -24,9 +26,9 @@ func RegistryForMode(cfg *config.Config, mode prompt.Mode) *tools.Registry {
 	sgPath := cfg.AstGrep
 	switch mode {
 	case prompt.ModeAsk:
-		return tools.DefaultReadOnly(ws, fetch, search, sgPath, nil)
+		return tools.DefaultReadOnly(ws, fetch, search, sgPath, nil, rm)
 	case prompt.ModePlan:
-		return tools.DefaultReadOnlyPlan(ws, fetch, search, sgPath, nil)
+		return tools.DefaultReadOnlyPlan(ws, fetch, search, sgPath, nil, rm)
 	default:
 		var execOpts *tools.ExecOptions
 		if len(cfg.ExecAllowlist) > 0 {
@@ -44,13 +46,14 @@ func RegistryForMode(cfg *config.Config, mode prompt.Mode) *tools.Registry {
 				WorkspaceRoot: ws,
 			}
 		}
-		return tools.Default(ws, execOpts, fetch, search, sgPath, nil, memOpts)
+		return tools.Default(ws, execOpts, fetch, search, sgPath, nil, rm, memOpts)
 	}
 }
 
 // SystemPromptForMode assembles the system prompt for a non-interactive agent
-// (sub-agent or A2A). errWriter receives warnings; pass os.Stderr or io.Discard.
-func SystemPromptForMode(cfg *config.Config, reg *tools.Registry, mode prompt.Mode, errWriter io.Writer) string {
+// (sub-agent or A2A). repoMapText is optional pre-rendered repository map prose
+// (same as the interactive REPL injects when repomap is enabled). errWriter receives warnings; pass os.Stderr or io.Discard.
+func SystemPromptForMode(cfg *config.Config, reg *tools.Registry, mode prompt.Mode, repoMapText string, errWriter io.Writer) string {
 	if errWriter == nil {
 		errWriter = os.Stderr
 	}
@@ -73,6 +76,7 @@ func SystemPromptForMode(cfg *config.Config, reg *tools.Registry, mode prompt.Mo
 		Mode:             mode,
 		RepoInstructions: repoInstr,
 		ProjectContext:   projCtx,
+		RepoMap:          strings.TrimSpace(repoMapText),
 		Memory:           mem,
 	})
 }

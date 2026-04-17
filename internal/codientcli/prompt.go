@@ -4,6 +4,7 @@ import (
 	"codient/internal/codeindex"
 	"codient/internal/config"
 	"codient/internal/prompt"
+	"codient/internal/repomap"
 	"codient/internal/tools"
 )
 
@@ -44,15 +45,17 @@ func buildRegistry(cfg *config.Config, mode prompt.Mode, s *session, memOpts *to
 	search := searchOptsFrom(cfg, netLimit)
 	sgPath := cfg.AstGrep
 	var idx *codeindex.Index
+	var rm *repomap.Map
 	if s != nil {
 		idx = s.codeIndex
+		rm = s.repoMap
 	}
 	var reg *tools.Registry
 	switch mode {
 	case prompt.ModeAsk:
-		reg = tools.DefaultReadOnly(cfg.EffectiveWorkspace(), fetch, search, sgPath, idx)
+		reg = tools.DefaultReadOnly(cfg.EffectiveWorkspace(), fetch, search, sgPath, idx, rm)
 	case prompt.ModePlan:
-		reg = tools.DefaultReadOnlyPlan(cfg.EffectiveWorkspace(), fetch, search, sgPath, idx)
+		reg = tools.DefaultReadOnlyPlan(cfg.EffectiveWorkspace(), fetch, search, sgPath, idx, rm)
 	default:
 		var execOpts *tools.ExecOptions
 		if len(cfg.ExecAllowlist) > 0 {
@@ -72,7 +75,7 @@ func buildRegistry(cfg *config.Config, mode prompt.Mode, s *session, memOpts *to
 				execOpts.Allowlist = cfg.ExecAllowlist
 			}
 		}
-		reg = tools.Default(cfg.EffectiveWorkspace(), execOpts, fetch, search, sgPath, idx, memOpts)
+		reg = tools.Default(cfg.EffectiveWorkspace(), execOpts, fetch, search, sgPath, idx, rm, memOpts)
 	}
 	if s != nil && mode == prompt.ModeBuild {
 		tools.RegisterCreatePullRequest(reg, s.gitPullRequestContextFn())
@@ -89,7 +92,8 @@ func buildRegistry(cfg *config.Config, mode prompt.Mode, s *session, memOpts *to
 }
 
 // buildAgentSystemPrompt assembles the layered agent system message (tools, repo notes, -system).
-func buildAgentSystemPrompt(cfg *config.Config, reg *tools.Registry, mode prompt.Mode, userSystem, repoInstructions, projectContext, memory string) string {
+func buildAgentSystemPrompt(cfg *config.Config, reg *tools.Registry, mode prompt.Mode, userSystem, repoInstructions, projectContext, memory string, rm *repomap.Map) string {
+	repoMapText := repomap.PromptText(cfg.RepoMapTokens, rm)
 	return prompt.Build(prompt.Params{
 		Cfg:                    cfg,
 		Reg:                    reg,
@@ -97,6 +101,7 @@ func buildAgentSystemPrompt(cfg *config.Config, reg *tools.Registry, mode prompt
 		UserSystem:             userSystem,
 		RepoInstructions:       repoInstructions,
 		ProjectContext:         projectContext,
+		RepoMap:                repoMapText,
 		Memory:                 memory,
 		AutoCheckBuildResolved: effectiveAutoCheckCmd(cfg),
 		AutoCheckLintResolved:  effectiveLintCmd(cfg),

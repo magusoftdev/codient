@@ -18,6 +18,7 @@ import (
 	"codient/internal/config"
 	"codient/internal/openaiclient"
 	"codient/internal/prompt"
+	"codient/internal/repomap"
 	"codient/internal/tokentracker"
 )
 
@@ -34,6 +35,7 @@ type RunParams struct {
 	Mode     prompt.Mode
 	Task     string
 	Context  string // optional extra context prepended to the task
+	RepoMap  *repomap.Map // optional shared structural map (parent session); nil disables repo_map tool in child
 	Log      *agentlog.Logger
 	Progress io.Writer // nested progress lines written here (already prefixed by caller)
 	Tracker  *tokentracker.Tracker
@@ -44,8 +46,9 @@ type RunParams struct {
 func Run(ctx context.Context, p RunParams) (Result, error) {
 	client := openaiclient.NewForMode(p.Cfg, string(p.Mode))
 
-	reg := agentfactory.RegistryForMode(p.Cfg, p.Mode)
-	sys := agentfactory.SystemPromptForMode(p.Cfg, reg, p.Mode, io.Discard)
+	reg := agentfactory.RegistryForMode(p.Cfg, p.Mode, p.RepoMap)
+	repoMapText := repomap.PromptText(p.Cfg.RepoMapTokens, p.RepoMap)
+	sys := agentfactory.SystemPromptForMode(p.Cfg, reg, p.Mode, repoMapText, io.Discard)
 
 	log := p.Log.WithSubAgent(string(p.Mode), client.Model())
 

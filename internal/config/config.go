@@ -113,6 +113,9 @@ type Config struct {
 	AstGrep string
 	// EmbeddingModel is the model name for /v1/embeddings (e.g. "text-embedding-3-small"). Empty disables semantic search.
 	EmbeddingModel string
+	// RepoMapTokens caps the structural repo map injected into the system prompt (estimated tokens).
+	// 0 selects a budget from workspace size (see repomap.AutoTokens). -1 disables the repo map and the repo_map tool.
+	RepoMapTokens int
 	// UpdateNotify controls whether the interactive update prompt is shown on REPL startup (default true).
 	UpdateNotify bool
 	// ModeModels holds per-mode connection overrides (build, ask, plan). Empty fields inherit top-level.
@@ -335,6 +338,7 @@ func Load() (*Config, error) {
 		ProjectContext:       strings.TrimSpace(pc.ProjectContext),
 		AstGrep:              strings.TrimSpace(pc.AstGrep),
 		EmbeddingModel:       strings.TrimSpace(pc.EmbeddingModel),
+		RepoMapTokens:        pc.RepoMapTokens,
 		UpdateNotify:         updateNotify,
 		ModeModels:           pc.Models,
 		MCPServers:           pc.MCPServers,
@@ -397,6 +401,9 @@ func Load() (*Config, error) {
 	}
 	if c.AutoCompactPct > 100 {
 		c.AutoCompactPct = 100
+	}
+	if c.RepoMapTokens < -1 {
+		c.RepoMapTokens = 0
 	}
 	return c, nil
 }
