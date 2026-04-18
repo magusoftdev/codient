@@ -48,7 +48,7 @@ type Config struct {
 	ExecAllowlist []string
 	// ExecEnvPassthrough lists extra environment variable names forwarded to subprocesses (after secret scrubbing).
 	ExecEnvPassthrough []string
-	// SandboxMode selects subprocess isolation: off, native, container, auto (see README).
+	// SandboxMode selects subprocess isolation: off, native, container, auto (see docs/configuration.md).
 	SandboxMode string
 	// SandboxReadOnlyPaths are extra host paths granted read-only to the native/container sandbox.
 	SandboxReadOnlyPaths []string

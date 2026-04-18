@@ -1,0 +1,229 @@
+# Usage
+
+```bash
+# Ping the server
+codient -ping
+
+# List models and tools
+codient -list-models
+codient -list-tools
+
+# Start an interactive session (default when stdin is a TTY)
+codient
+
+# One-shot prompt (no interactive session)
+codient -prompt "Summarize README.md"
+
+# Start a session with an initial prompt
+codient -prompt "Help me understand the repo layout"
+
+# Start in plan mode
+codient -mode plan -prompt "Design a small Go CLI for managing todos"
+
+# Force a fresh session (skip resume)
+codient -new-session
+
+# Different workspace root
+codient -workspace /path/to/repo
+
+# Attach images (vision-capable chat models), single-shot or first REPL turn
+codient -image ./screenshot.png -prompt "What error is this?"
+codient -image a.png,b.png -prompt "Compare these mockups"
+```
+
+## Split-screen TUI
+
+When stdin is a TTY and `-plain` is **not** set, codient launches a Bubble Tea split-screen interface: a scrollable output viewport on top and a fixed input line at the bottom. This keeps the user's typing completely separate from agent output — background events like the semantic index completion will never corrupt the input line.
+
+| Area | Behaviour |
+|------|-----------|
+| **Viewport** (top) | Shows the full session: welcome banner, agent replies, tool progress, status messages. |
+| **Status bar** | Displays "Agent is working…" during turns; a plain separator otherwise. |
+| **Input line** (bottom) | Styled `[mode] > ` prompt. Type freely while the agent is streaming. Press **Enter** to submit, **Ctrl+C** to quit. |
+
+**Scrolling:** **Up/Down** arrows scroll one line, **Alt+Up/Down** scroll three lines, **Page Up/Down** scroll half a page, and **Home/End** jump to the top or bottom.
+
+The TUI uses the alternate screen buffer; when you exit, the terminal returns to its previous state. Pass **`-plain`** or pipe stdin to fall back to the classic inline REPL.
+
+## Headless / CI mode (`-print`)
+
+Use **`-print`** (alias **`-p`**) for a **single non-interactive turn**: no REPL, no welcome banner, suitable for scripts and CI. This forces the same path as piping a prompt on stdin, but makes automation explicit. Combine with **`-prompt`** or stdin.
+
+| Flag | Meaning |
+|------|---------|
+| **`-output-format text`** (default) | Assistant reply on stdout; errors on stderr |
+| **`-output-format json`** | One JSON object on stdout with `reply`, `tools_used`, `files_modified`, optional `tokens` / `cost_usd`, `exit_reason`, and `error` on failure |
+| **`-output-format stream-json`** | JSONL on stdout: same event shapes as **`-log`** (`llm`, `tool_start`, `tool_end`), plus a final `{"type":"result",...}` line |
+| **`-auto-approve off`** (default) | Same as today: non-interactive sessions deny exec/fetch prompts unless allowlisted |
+| **`-auto-approve exec`** | Allow **run_command** / **run_shell** when not on the allowlist (no prompt) |
+| **`-auto-approve fetch`** | Allow **fetch_url** to hosts not on the allowlist (no prompt) |
+| **`-auto-approve all`** | Both exec and fetch |
+| **`-max-turns N`** | Cap LLM rounds for this user turn (`0` = unlimited) |
+| **`-max-cost USD`** | Stop when **estimated** session cost exceeds the limit (requires usage metadata and known pricing via **`cost_per_mtok`** or the built-in model table) |
+
+**`-log`** still appends JSONL to a file. With **`-output-format stream-json`**, events are written to **stdout** and optionally duplicated to the log file if **`-log`** is set.
+
+Examples:
+
+```bash
+codient -print -prompt "List top-level files" -mode ask
+
+codient -print -mode build -auto-approve all -output-format json -prompt "Run fmt" -max-turns 25
+
+echo "Fix the typo in README" | codient -print -output-format json
+```
+
+For long-running HTTP integration, see **`-a2a`** below.
+
+## Images and vision
+
+Use a **vision-capable** model (e.g. GPT-4o, Claude 3.5+, many local multimodal servers). Codient sends images as base64 **data URIs** in the standard OpenAI chat format (`image_url` parts).
+
+- **CLI:** `-image path` or repeat `-image` for multiple paths. Comma-separated lists work (`-image a.png,b.png`). Applies to the **first user message** in a REPL session, or to a **single-shot** `-prompt` / stdin run. Combines with `-stream` (no tools).
+- **REPL:** `/image path/to.png` queues an image for your **next** message (repeat to attach several). You can also embed paths in text: `@image:screenshot.png` or `@image:"C:\path\with spaces.png"` (paths are relative to the workspace when not absolute).
+- **Limits:** PNG, JPEG, GIF, WebP; max **20 MiB** per file (warning above **5 MiB**). Large images still count toward context—use `/compact` if needed.
+
+Use `-help` for all flags. Notable options:
+
+- **`-mode`** — `build` (default), `ask`, or `plan`
+- **`-workspace`** — workspace root (overrides config and cwd)
+- **`-sandbox`** — subprocess isolation mode (`off`, `native`, `container`, `auto`; overrides config); see [Subprocess sandboxing](configuration.md#subprocess-sandboxing)
+- **`-new-session`** — start fresh instead of resuming the latest session
+- **`-update`** — check for a newer release and install it (see [Auto-update](context-and-integrations.md#auto-update))
+- **`-repl`** — explicit REPL (default when stdin is a TTY)
+- **`-system`** — optional extra system prompt merged into the default tool prompt
+- **`-stream` / `-stream-reply`** — streaming behavior
+- **`-plain`** — raw assistant text
+- **`-progress`** — agent progress on stderr
+- **`-log`** — append JSONL events (LLM rounds, tools; each `llm` event may include `prompt_tokens`, `completion_tokens`, `total_tokens` when the server reports usage)
+- **`-goal` / `-task-file`** — merged into the first user turn as a task directive
+- **`-image`** — attach one or more image files to the first user turn (REPL) or to a one-shot prompt (`-stream` supported); see [Images and vision](#images-and-vision)
+- **`-design-save-dir`** — where to save completed plans
+- **`-a2a` / `-a2a-addr`** — run an [A2A](https://github.com/a2aproject/A2A) protocol server instead of the interactive CLI (default listen `:8080`)
+- **`-print` / `-p`** — headless single-turn mode for CI/scripts; see [Headless / CI mode](#headless--ci-mode--print)
+- **`-output-format`** — with `-print`: `text`, `json`, or `stream-json`
+- **`-auto-approve`** — with `-print`: `off`, `exec`, `fetch`, or `all`
+- **`-max-turns`** / **`-max-cost`** — guardrails for `-print` (see [Headless / CI mode](#headless--ci-mode--print))
+
+## A2A server
+
+To expose codient as an Agent-to-Agent HTTP server:
+
+```bash
+codient -a2a -a2a-addr :8080
+```
+
+Use the same config (model, base URL, API key, workspace) as the CLI. See [`internal/a2aserver/`](../internal/a2aserver/) for protocol details.
+
+## Slash commands
+
+Inside a session you can use slash commands to control the agent:
+
+| Command | Description |
+|---------|-------------|
+| `/build` (or `/b`) | Switch to build mode (full write tools) |
+| `/plan` (or `/p`; also `/design`, `/d`) | Switch to plan mode (read-only, structured implementation design) |
+| `/ask` (or `/a`) | Switch to ask mode (read-only Q&A) |
+| `/config [key] [value]` | View or set any configuration key (no args = show all, key = show one, key value = set and save) |
+| `/setup` | Guided setup wizard for API connection, chat model selection, optional plan-mode model override, and optional embedding model for semantic search |
+| `/compact` | Summarize conversation history to save context space |
+| `/model <name>` | Switch to a different model (shortcut for `/config model`) |
+| `/workspace <path>` | Change the workspace directory |
+| `/tools` | List tools available in current mode |
+| `/hooks` | List configured lifecycle hooks (requires `hooks_enabled`) |
+| `/mcp [server]` | List connected MCP servers and tool counts; with a server name, list that server's tools |
+| `/status` | Show session state (mode, model, turns, estimated context, API token totals, resolved **auto-check** build/lint/test commands, exec policy) |
+| `/cost` (or `/tokens`) | Show session token counts (prompt/completion/total) and estimated cost |
+| `/log [path]` | Show logging status or enable JSONL logging to a file |
+| `/undo` | Undo the last build turn. With **`git_auto_commit`** (default): removes the last codient commit (`HEAD~1`). Otherwise: restores tracked files and deletes new files from that turn. `/undo all` resets the repo to the commit at session start (auto-commit) or reverts all working-tree changes (legacy). Requires a git repo. |
+| `/checkpoint` (or `/cp`) | Save a **named snapshot** of the conversation, mode, model, plan state, and current git `HEAD` (default name `turn-N`). With **`git_auto_commit`** in build mode, uncommitted changes are committed first so the snapshot points at a real commit. |
+| `/checkpoints` (or `/cps`) | List checkpoints for this session as a tree (`*` marks the current checkpoint id). |
+| `/rollback` (or `/rb`) | Restore conversation and (with **`git_auto_commit`**) reset the working tree to a checkpoint: pass **name**, **`cp_` id prefix**, or **turn number**. Stashes uncommitted work first when needed. |
+| `/fork` | Roll back to a checkpoint, then create and checkout **`codient/<slug>`** for a new git line of work; sets a new **conversation branch** label for later checkpoints. Optional second argument is the branch slug. |
+| `/branches` (or `/cbranch`) | List logical conversation branches (checkpoint fork labels) and their tips. |
+| `/diff [path]` | Print a colored `git diff` vs `HEAD` (optional workspace-relative file). |
+| `/branch [name]` | Show current branch, or switch to an existing branch, or create and checkout `name`. |
+| `/pr [draft]` | Push `HEAD` to `origin` and open a GitHub pull request with **`gh`** (base branch = protected branch left behind, or `origin` default). Pass `draft` for a draft PR. |
+| `/memory` (or `/mem`) | View, edit, or clear cross-session memory files. Subcommands: `show` (default), `edit [global\|workspace]`, `clear [global\|workspace]`, `reload`. |
+| `/image <path>` | Attach an image file to your **next** message (vision models). Repeat to queue multiple images. |
+| `/new` (or `/n`) | Start a brand new session (fresh ID, history, and design namespace) |
+| `/clear` | Reset conversation history (same session) |
+| `/help` (or `/h`, `/?`) | Show available commands |
+| `/exit` (or `/quit`, `/q`) | Quit the session |
+
+## Git workflow (build mode)
+
+In a git workspace, **build** mode can **auto-commit** each turn that changes files (`git_auto_commit`, default `true`). Each commit uses subject **`codient: turn N`** and a body copied from your user message (truncated to 200 characters). Configure **`git_protected_branches`** (default `main`, `master`, `develop`): if the first commit would land on one of those branches, codient creates and checks out **`codient/<task-slug>`** (with numeric suffixes if the name already exists) so you do not commit directly to e.g. `main`.
+
+After a build turn that leaves **uncommitted** working-tree changes, stderr prints a **`git diff --stat`** summary vs `HEAD` and lists **untracked** files (up to 20), instead of a full unified diff.
+
+Set **`git_auto_commit`** to **`false`** to restore the older behavior: no commits; `/undo` restores files from the working tree snapshot instead of removing the last commit.
+
+The **`create_pull_request`** tool (build mode only) and the **`/pr`** slash command push the current branch to **`origin`** and run **`gh pr create`**. The PR base branch is the protected branch you left when codient created `codient/...`, when applicable; otherwise it follows **`origin/HEAD`** (usually `main`).
+
+## Session persistence
+
+Session state (conversation history, mode, model) is saved under `<workspace>/.codient/sessions/` after each turn. Starting codient again in the same workspace resumes the latest session. Use `-new-session` to start fresh.
+
+**Checkpoints** (named snapshots for rollback and branching) are stored under `<workspace>/.codient/checkpoints/<sessionID>/` (one JSON file per checkpoint plus a `tree.json` index). The session file records **`current_checkpoint_id`** and **`current_branch`** so resume keeps your place in the checkpoint tree.
+
+The semantic search index (when **`embedding_model`** is set) and the repo map cache (**`repomap.gob`**) live under `<workspace>/.codient/index/` and are separate from chat sessions.
+
+## Cross-session memory
+
+Codient supports persistent memory that carries project conventions, user preferences, and past decisions across sessions. Memory is loaded into the system prompt at startup so the agent "remembers" what it learned previously.
+
+**Two layers:**
+
+| Scope | File | Purpose |
+|-------|------|---------|
+| **Global** | `~/.codient/memory.md` | User-wide preferences and conventions (applies to all projects) |
+| **Workspace** | `<workspace>/.codient/memory.md` | Project-specific conventions, architecture decisions, patterns |
+
+Both files are Markdown. Global memory is loaded first, workspace memory second, so project-specific notes can override global ones. Each file is capped at 16 KiB to avoid bloating the system prompt.
+
+**How it works:**
+
+- **Automatic:** In build mode, the agent has a `memory_update` tool. It can proactively record conventions it discovers (build commands, naming patterns, architecture decisions) and user preferences it learns (style, verbosity, workflow).
+- **Manual:** Use the `/memory` slash command to view (`/memory show`), edit in `$EDITOR` (`/memory edit workspace`), or clear (`/memory clear global`) memory files. `/memory reload` re-reads files after external edits.
+- **Tool actions:** `memory_update` supports `append` (add to end) and `replace_section` (update a `## Heading` section in-place, or create it if missing).
+
+**Repository instruction files** are also loaded into the system prompt alongside memory:
+
+| File | Description |
+|------|-------------|
+| `AGENTS.md` | Workspace-root conventions file (compatible with common agent tooling) |
+| `.codient/instructions.md` | Codient-specific project instructions |
+
+These are read-only from the agent's perspective (capped at 32 KiB total) and complement the read-write memory files.
+
+## Plan mode and saved plans
+
+In **plan** mode, when the assistant's reply includes a **Ready to implement** section, codient saves the markdown under the workspace (by default `.codient/plans/<sessionID>/`). Plans are scoped to the session that created them. Filenames are `{task-slug}_{date-time}_{nanoseconds}.md` so runs never collide. The task slug comes from `-goal`, else `-task-file` basename, else the first line of your first message.
+
+## Sub-agents (task delegation)
+
+The agent has a **`delegate_task`** tool that spawns an isolated sub-agent to handle a self-contained task. This is always available — the model decides when delegation is useful (e.g. parallelizing codebase exploration across multiple areas).
+
+**How it works:**
+
+- The parent agent calls `delegate_task` with a **mode** (`build`, `ask`, or `plan`), a **task** description, and optional **context** snippets.
+- A fresh `agent.Runner` is created for the sub-agent with its own conversation history, tool registry matching the requested mode, and (optionally) a different model via [per-mode configuration](configuration.md#config-file-reference-codientconfigjson).
+- The sub-agent runs to completion and its reply is returned to the parent as the tool result.
+- Sub-agents cannot spawn further sub-agents (recursion guard).
+
+**Mode restrictions (privilege escalation prevention):**
+
+| Parent mode | Allowed sub-agent modes |
+|-------------|------------------------|
+| **build** | `build`, `ask`, `plan` |
+| **ask** | `ask` only |
+| **plan** | `ask` only |
+
+Read-only parent modes (ask, plan) can only delegate to read-only sub-agents, preventing a plan/ask session from gaining write access through delegation.
+
+**Per-mode models** let you route sub-agents to different LLM backends. For example, a local model for build-mode edits and a remote API for ask-mode research — see the `models` key in config.
+
+## Streaming
+
+Assistant text can stream to the terminal as it is generated (`-stream-reply`, default on for TTYs). In plan mode with styled markdown, the turn that produces the full design after a blocking question is buffered once so the reply can be rendered with full markdown formatting.
