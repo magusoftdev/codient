@@ -14,6 +14,7 @@ import (
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/shared"
 
+	"codient/internal/acpctx"
 	"codient/internal/agentlog"
 	"codient/internal/config"
 	"codient/internal/hooks"
@@ -95,6 +96,10 @@ type Runner struct {
 	// OnWorkingChange is called with true when the runner begins waiting for an
 	// LLM response and false when the response arrives. Used to drive spinners.
 	OnWorkingChange func(working bool)
+	// OnToolBefore is invoked before each tool execution (ACP / external UIs).
+	OnToolBefore func(ctx context.Context, toolCallID, name string, args json.RawMessage)
+	// OnToolAfter is invoked after each tool execution with the display string and API error if any.
+	OnToolAfter func(ctx context.Context, toolCallID, name string, args json.RawMessage, display string, err error)
 	// StopHookActive is true when the next assistant text follows a Stop-hook continuation in this RunConversation.
 	StopHookActive bool
 	toolUseSeq     atomic.Uint64
@@ -247,7 +252,7 @@ func (r *Runner) RunConversation(ctx context.Context, system string, history []o
 							}
 							t1 := time.Now()
 							toolID := fmt.Sprintf("tu-%d", r.toolUseSeq.Add(1))
-							out, toolErr := r.runOneTool(ctx, tc.Name, args, toolID)
+							out, toolErr := r.runOneTool(ctx, tc.Name, args, toolID, toolID)
 							toolDur := time.Since(t1)
 							if r.Log != nil {
 								r.Log.ToolEnd(tc.Name, toolDur, toolErr, nil)
@@ -413,7 +418,11 @@ func (r *Runner) RunConversation(ctx context.Context, system string, history []o
 				}
 				t1 := time.Now()
 				toolID := fmt.Sprintf("tu-%d", r.toolUseSeq.Add(1))
-				out, toolErr := r.runOneTool(ctx, v.Function.Name, args, toolID)
+				openaiID := v.ID
+				if strings.TrimSpace(openaiID) == "" {
+					openaiID = toolID
+				}
+				out, toolErr := r.runOneTool(ctx, v.Function.Name, args, toolID, openaiID)
 				toolDur := time.Since(t1)
 				summary := map[string]any{}
 				if v.Function.Name == "run_command" || v.Function.Name == "run_shell" {
@@ -489,7 +498,18 @@ type autoCheckInput struct {
 	content string
 }
 
-func (r *Runner) runOneTool(ctx context.Context, name string, args json.RawMessage, toolUseID string) (display string, underlyingErr error) {
+func (r *Runner) runOneTool(ctx context.Context, name string, args json.RawMessage, toolUseID, displayToolCallID string) (display string, underlyingErr error) {
+	dispID := strings.TrimSpace(displayToolCallID)
+	if dispID == "" {
+		dispID = toolUseID
+	}
+	ctx = acpctx.WithToolCallID(ctx, dispID)
+	if r.OnToolBefore != nil {
+		r.OnToolBefore(ctx, dispID, name, args)
+	}
+	if r.OnToolAfter != nil {
+		defer func() { r.OnToolAfter(ctx, dispID, name, args, display, underlyingErr) }()
+	}
 	if r.Hooks != nil {
 		pre, herr := r.Hooks.RunPreToolUse(ctx, name, args, toolUseID)
 		if herr != nil {

@@ -100,6 +100,7 @@ Use `-help` for all flags. Notable options:
 - **`-image`** — attach one or more image files to the first user turn (REPL) or to a one-shot prompt (`-stream` supported); see [Images and vision](#images-and-vision)
 - **`-design-save-dir`** — where to save completed plans
 - **`-a2a` / `-a2a-addr`** — run an [A2A](https://github.com/a2aproject/A2A) protocol server instead of the interactive CLI (default listen `:8080`)
+- **`-acp`** — run as an [ACP](https://agentclientprotocol.com/) agent over stdio (JSON-RPC, NDJSON); stdout must contain only protocol lines; use with **`-plain`** and **`-progress`** (and **`-workspace`** when launched by an editor). Incompatible with **`-print`**, **`-repl`**, **`-stream`**, **`-a2a`**, etc.; see [ACP stdio](#acp-stdio-agent)
 - **`-print` / `-p`** — headless single-turn mode for CI/scripts; see [Headless / CI mode](#headless--ci-mode--print)
 - **`-output-format`** — with `-print`: `text`, `json`, or `stream-json`
 - **`-auto-approve`** — with `-print`: `off`, `exec`, `fetch`, or `all`
@@ -114,6 +115,21 @@ codient -a2a -a2a-addr :8080
 ```
 
 Use the same config (model, base URL, API key, workspace) as the CLI. See [`internal/a2aserver/`](../internal/a2aserver/) for protocol details.
+
+## ACP stdio agent
+
+Editors such as **Codient Unity** spawn `codient` as a subprocess and speak the [Agent Client Protocol](https://agentclientprotocol.com/) on stdin/stdout (one UTF-8 JSON object per line). Typical launch:
+
+```bash
+codient -plain -progress -acp -mode build -workspace /path/to/project
+```
+
+- **`-mode`** selects **build**, **ask**, or **plan** (same tool policies as the CLI).
+- **`session/new`** requires **`cwd`** to match the configured workspace (same rule as **`-workspace`**).
+- **stderr** may carry human-readable progress; **stdout** is reserved for ACP messages only.
+- **`-max-turns`** and **`-max-cost`** apply per user prompt turn, like headless mode.
+
+Implementation: [`internal/acpserver/`](../internal/acpserver/) (transport) and [`internal/codientcli/acp_serve.go`](../internal/codientcli/acp_serve.go) (handlers).
 
 ## Slash commands
 

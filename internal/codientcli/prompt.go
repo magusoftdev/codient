@@ -75,8 +75,11 @@ func buildRegistry(cfg *config.Config, mode prompt.Mode, s *session, memOpts *to
 			}
 			if s != nil && s.execAllow != nil {
 				execOpts.Session = s.execAllow
-				if s.scanner != nil {
+				switch {
+				case s.scanner != nil:
 					execOpts.PromptOnDenied = s.execPromptDenied
+				case s.execDeniedACP != nil:
+					execOpts.PromptOnDenied = s.execDeniedACP
 				}
 			} else {
 				execOpts.Allowlist = cfg.ExecAllowlist
@@ -84,7 +87,7 @@ func buildRegistry(cfg *config.Config, mode prompt.Mode, s *session, memOpts *to
 		}
 		reg = tools.Default(cfg.EffectiveWorkspace(), execOpts, fetch, search, sgPath, idx, rm, memOpts)
 	}
-	if s != nil && mode == prompt.ModeBuild {
+	if s != nil && mode == prompt.ModeBuild && !s.acpNoDelegate {
 		tools.RegisterCreatePullRequest(reg, s.gitPullRequestContextFn())
 	}
 	if s != nil && s.mcpMgr != nil {
@@ -92,7 +95,7 @@ func buildRegistry(cfg *config.Config, mode prompt.Mode, s *session, memOpts *to
 	}
 	// Register delegate_task for the interactive parent session only.
 	// Sub-agent registries (built via agentfactory) never get this tool.
-	if s != nil {
+	if s != nil && !s.acpNoDelegate {
 		tools.RegisterDelegateTask(reg, string(mode), s.delegateTaskFn())
 	}
 	return reg

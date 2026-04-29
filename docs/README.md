@@ -4,7 +4,7 @@ This folder holds the full user and developer guides. For the project overview, 
 
 | Guide | Contents |
 |-------|----------|
-| [**Getting started**](getting-started.md) | Requirements, installation (install scripts and building from source) |
+| [**Getting started**](getting-started.md) | Requirements and optional tools (install: [main README](../README.md#install)) |
 | [**Configuration**](configuration.md) | Config file, `/config` keys, subprocess sandboxing, auto-check sequence, tokens and cost, environment variables |
 | [**Context and integrations**](context-and-integrations.md) | Web search, semantic search, repository map, MCP servers, lifecycle hooks, auto-update |
 | [**Usage**](usage.md) | CLI examples, split-screen TUI, `-print`, images and vision, flags, A2A server, slash commands, git workflow, sessions, memory, plan mode, sub-agents, streaming |

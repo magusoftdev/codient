@@ -82,6 +82,10 @@ type session struct {
 	// stdinScanner is set for the interactive REPL; used for exec allow prompts.
 	scanner   *bufio.Scanner
 	execAllow *tools.SessionExecAllow // mutable run_command allowlist for this process; nil if exec disabled
+	// execDeniedACP is used when stdin is not a TTY (ACP stdio): editor-driven permission via JSON-RPC.
+	execDeniedACP func(context.Context, string, []string) tools.ExecPromptChoice
+	// acpNoDelegate skips delegate_task and create_pull_request when true (ACP stub session).
+	acpNoDelegate bool
 
 	fetchAllow    *tools.SessionFetchAllow // mutable fetch_url host approvals for this process; nil until first fetch
 	fetchPromptMu sync.Mutex               // serializes fetch allow prompts and post-lock re-checks
@@ -102,6 +106,9 @@ type session struct {
 	repoMap   *repomap.Map     // structural repo map; nil when repo_map_tokens is -1
 
 	mcpMgr *mcpclient.Manager // MCP server connections; nil when no mcp_servers configured
+
+	// acpRegistryMu guards stub.registry / stub.systemPrompt while async MCP connect finishes (-acp).
+	acpRegistryMu sync.RWMutex
 
 	// Plan lifecycle state (non-nil when a structured plan is active).
 	currentPlan *planstore.Plan
@@ -318,6 +325,12 @@ Reply with exactly YES or NO as the first word of your response (then you may ad
 Answer YES only if the assistant's reply primarily proposes or argues concrete changes to the user's own project or repository (edits, refactors, new files, config changes, what they should implement).
 
 Answer NO if the reply is mainly: summarizing external pages or search results; listing numbered links or citations; quoting documentation; answering factual questions; describing third-party software; or checklist/status formatting without prescribing repo edits.`
+
+// BuildPostReplyCheckForACP returns Ask-mode post-reply verification for the ACP stdio server (same logic as the REPL).
+func BuildPostReplyCheckForACP(cfg *config.Config, client *openaiclient.Client, tracker *tokentracker.Tracker, mode prompt.Mode, progress io.Writer) func(context.Context, agent.PostReplyCheckInfo) string {
+	s := &session{cfg: cfg, client: client, tokenTracker: tracker, mode: mode}
+	return makePostReplyCheck(s, progress)
+}
 
 // makePostReplyCheck returns a PostReplyCheck function for Ask mode.
 // It uses a cheap LLM gate after list-shaped heuristics: only when the model

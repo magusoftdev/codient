@@ -11,16 +11,50 @@ When the API returns usage metadata, codient aggregates **prompt and completion 
 
 **Repository:** [github.com/vaughanb/codient](https://github.com/vaughanb/codient)
 
+## Install
+
+You need a running server with OpenAI-style `/v1/chat/completions` (the default in config is `http://127.0.0.1:1234/v1`, typical for local stacks). Prebuilt release installs do not require Go on your PATH; [Go](https://go.dev/dl/) **1.26+** is only required for `go install` or `make install` from a clone (see `go.mod`).
+
+**macOS / Linux:**
+
+```bash
+curl -sSfL https://raw.githubusercontent.com/vaughanb/codient/main/scripts/install.sh | sh
+```
+
+**Windows (PowerShell):**
+
+```powershell
+irm https://raw.githubusercontent.com/vaughanb/codient/main/scripts/install.ps1 | iex
+```
+
+Both scripts detect your OS and architecture, download the latest release binary, and place it on your `PATH`. Set `CODIENT_INSTALL_DIR` to override the install location (defaults to `~/.local/bin` on Unix, `%LOCALAPPDATA%\codient` on Windows).
+
+**From source** (requires [Go](https://go.dev/dl/) 1.26+):
+
+```bash
+go install github.com/vaughanb/codient/cmd/codient@latest
+```
+
+Or clone and build with Make:
+
+```bash
+git clone https://github.com/vaughanb/codient.git
+cd codient
+make install   # copies built bin/codient to ~/.local/bin (Unix) or %LOCALAPPDATA%\codient (Windows), same as install.sh / install.ps1; set CODIENT_INSTALL_DIR to override
+```
+
+Optional tools (ast-grep, Git, GitHub CLI) and a fuller requirements list: [Getting started](docs/getting-started.md).
+
 ## Documentation
 
 If you are browsing the [`docs/`](docs/) tree (for example on GitHub), start with [`docs/README.md`](docs/README.md).
 
 | Guide | Contents |
 |-------|----------|
-| [**Getting started**](docs/getting-started.md) | Requirements, installation (install scripts and building from source) |
+| [**Getting started**](docs/getting-started.md) | Requirements and optional tools (install steps are above) |
 | [**Configuration**](docs/configuration.md) | Config file, `/config` keys, subprocess sandboxing, auto-check sequence, tokens and cost, environment variables |
 | [**Context and integrations**](docs/context-and-integrations.md) | Web search, semantic search, repository map, MCP servers, lifecycle hooks, auto-update |
-| [**Usage**](docs/usage.md) | CLI examples, split-screen TUI, `-print`, images and vision, flags, A2A server, slash commands, git workflow, sessions, memory, plan mode, sub-agents, streaming |
+| [**Usage**](docs/usage.md) | CLI examples, split-screen TUI, `-print`, images and vision, flags, **`-acp`** (Agent Client Protocol stdio for editors such as Codient Unity), A2A server, slash commands, git workflow, sessions, memory, plan mode, sub-agents, streaming |
 | [**Development**](docs/development.md) | Building and testing the project |
 
 ## License

@@ -4,6 +4,18 @@ BIN_DIR := bin
 EXE     := $(shell $(GO) env GOEXE)
 BIN     := $(BIN_DIR)/codient$(EXE)
 
+# Same defaults as scripts/install.sh, scripts/install.ps1, and Codient Unity (override with CODIENT_INSTALL_DIR).
+ifeq ($(OS),Windows_NT)
+  DEFAULT_INSTALL_DIR := $(LOCALAPPDATA)/codient
+else
+  DEFAULT_INSTALL_DIR := $(HOME)/.local/bin
+endif
+ifneq ($(strip $(CODIENT_INSTALL_DIR)),)
+  INSTALL_DIR := $(strip $(CODIENT_INSTALL_DIR))
+else
+  INSTALL_DIR := $(DEFAULT_INSTALL_DIR)
+endif
+
 .PHONY: all help build install clean test test-unit test-short test-race test-integration test-integration-strict vet fmt mod-tidy check lint govulncheck run release major minor patch
 
 all: build
@@ -12,7 +24,7 @@ help:
 	@echo "Targets:"
 	@echo "  make / make all     Build $(BIN)"
 	@echo "  make build          Same as all"
-	@echo "  make install        go install ./cmd/codient"
+	@echo "  make install        copy $(BIN) to $(INSTALL_DIR) (same as install scripts; CODIENT_INSTALL_DIR overrides)"
 	@echo "  make run ARGS='…'   go run ./cmd/codient -- …"
 	@echo "  make test           full suite: unit + live integration (needs model + API; see test-unit for CI)"
 	@echo "  make test-unit      unit tests only (go test ./...; no live LLM)"
@@ -34,8 +46,15 @@ help:
 build:
 	$(GO) build -o $(BIN) ./cmd/codient
 
-install:
-	$(GO) install ./cmd/codient
+ifeq ($(OS),Windows_NT)
+install: build
+	powershell -NoProfile -Command "New-Item -ItemType Directory -Force -Path '$(INSTALL_DIR)' | Out-Null; Copy-Item -Force '$(BIN)' -Destination (Join-Path '$(INSTALL_DIR)' 'codient$(EXE)')"
+else
+install: build
+	mkdir -p "$(INSTALL_DIR)"
+	cp "$(BIN)" "$(INSTALL_DIR)/codient$(EXE)"
+	chmod +x "$(INSTALL_DIR)/codient$(EXE)"
+endif
 
 clean:
 	$(RM) -r $(BIN_DIR)

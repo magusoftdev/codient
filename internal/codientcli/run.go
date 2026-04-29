@@ -58,6 +58,7 @@ func Run() int {
 		workspace     = flag.String("workspace", "", "root directory for workspace tools (overrides config and cwd default)")
 		a2aFlag       = flag.Bool("a2a", false, "start an A2A (Agent-to-Agent) protocol server instead of the CLI")
 		a2aAddr       = flag.String("a2a-addr", ":8080", "listen address for the A2A server")
+		acpFlag       = flag.Bool("acp", false, "Agent Client Protocol: JSON-RPC NDJSON on stdin/stdout (e.g. Codient Unity); stdout is ACP-only; use with -plain and without -repl/-print")
 		showVersion   = flag.Bool("version", false, "print version and exit")
 		update        = flag.Bool("update", false, "update codient to the latest release and exit")
 		outputFormat  = flag.String("output-format", "text", "with -print: text|json|stream-json")
@@ -204,6 +205,33 @@ func Run() int {
 			agentLog = agentlog.New(logFile)
 		}
 		return runA2AServer(a2aCtx, cfg, *a2aAddr, agentLog)
+	}
+
+	if *acpFlag {
+		if err := validateACPFlags(printMode, *repl, *stream, *ping, *listModels, *listTools, *a2aFlag, *update, *showVersion, len(imageFlagPaths)); err != nil {
+			fmt.Fprintf(os.Stderr, "%v\n", err)
+			return 2
+		}
+		cancel()
+		acpCtx, acpCancel := signal.NotifyContext(context.Background(), os.Interrupt)
+		defer acpCancel()
+		var agentLog *agentlog.Logger
+		if effectiveLog != "" {
+			logFile, err := os.OpenFile(effectiveLog, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "log: %v\n", err)
+				return 2
+			}
+			defer logFile.Close()
+			agentLog = agentlog.New(logFile)
+		}
+		// MCP connect can take minutes on bad networks; never block the ACP stdio loop on it.
+		var mcpMgr *mcpclient.Manager
+		if len(cfg.MCPServers) > 0 {
+			mcpMgr = mcpclient.NewManager(Version)
+		}
+		client := openaiclient.New(cfg)
+		return runACPServer(acpCtx, cfg, agentMode, client, mcpMgr, agentLog, *maxTurns, *maxCostUSD)
 	}
 
 	if *stream {
