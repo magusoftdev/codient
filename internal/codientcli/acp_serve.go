@@ -113,14 +113,14 @@ func runACPServer(ctx context.Context, cfg *config.Config, agentMode prompt.Mode
 
 	tracker := &tokentracker.Tracker{}
 	stub := &session{
-		cfg:            cfg,
-		client:         client,
-		progressOut:    progressOut,
-		mcpMgr:         mcpMgr,
-		repoMap:        rm,
-		agentLog:       agentLog,
-		tokenTracker:   tracker,
-		acpNoDelegate:  true,
+		cfg:           cfg,
+		client:        client,
+		progressOut:   progressOut,
+		mcpMgr:        mcpMgr,
+		repoMap:       rm,
+		agentLog:      agentLog,
+		tokenTracker:  tracker,
+		acpNoDelegate: true,
 	}
 	if len(cfg.ExecAllowlist) > 0 {
 		stub.execAllow = tools.NewSessionExecAllow(cfg.ExecAllowlist)
@@ -129,24 +129,24 @@ func runACPServer(ctx context.Context, cfg *config.Config, agentMode prompt.Mode
 	tr := acpserver.NewTransport()
 	registryReady := make(chan struct{})
 	srv := &acpServer{
-		tr:              tr,
-		cfg:             cfg,
-		mode:            agentMode,
-		client:          client,
-		agentLog:        agentLog,
-		version:         Version,
-		maxTurns:        maxTurns,
-		maxCostUSD:      maxCostUSD,
-		repoInstr:       repoInstr,
-		projectCtx:      projectCtx,
-		memory:          mem,
-		memOpts:         memOpts,
-		stub:            stub,
-		initialized:     false,
-		sessions:        make(map[string]*acpChatSession),
-		progressWriter:  progressOut,
-		tokenTracker:    tracker,
-		registryReady:   registryReady,
+		tr:             tr,
+		cfg:            cfg,
+		mode:           agentMode,
+		client:         client,
+		agentLog:       agentLog,
+		version:        Version,
+		maxTurns:       maxTurns,
+		maxCostUSD:     maxCostUSD,
+		repoInstr:      repoInstr,
+		projectCtx:     projectCtx,
+		memory:         mem,
+		memOpts:        memOpts,
+		stub:           stub,
+		initialized:    false,
+		sessions:       make(map[string]*acpChatSession),
+		progressWriter: progressOut,
+		tokenTracker:   tracker,
+		registryReady:  registryReady,
 	}
 	if agentMode == prompt.ModeAsk {
 		srv.postReplyCheck = BuildPostReplyCheckForACP(cfg, client, tracker, agentMode, progressOut)
@@ -203,29 +203,29 @@ func runACPServer(ctx context.Context, cfg *config.Config, agentMode prompt.Mode
 }
 
 type acpServer struct {
-	tr              *acpserver.Transport
-	cfg             *config.Config
-	mode            prompt.Mode
-	client          *openaiclient.Client
-	agentLog        *agentlog.Logger
-	version         string
-	maxTurns        int
-	maxCostUSD      float64
-	repoInstr       string
-	projectCtx      string
-	memory          string
-	memOpts         *tools.MemoryOptions
-	stub            *session
+	tr         *acpserver.Transport
+	cfg        *config.Config
+	mode       prompt.Mode
+	client     *openaiclient.Client
+	agentLog   *agentlog.Logger
+	version    string
+	maxTurns   int
+	maxCostUSD float64
+	repoInstr  string
+	projectCtx string
+	memory     string
+	memOpts    *tools.MemoryOptions
+	stub       *session
 	// registryReady is closed after the first buildRegistry + systemPrompt (session/* needs a populated stub).
-	registryReady <-chan struct{}
-	initialized     bool
-	sessions        map[string]*acpChatSession
-	mu              sync.Mutex
-	progressWriter  io.Writer
-	postReplyCheck  func(context.Context, agent.PostReplyCheckInfo) string
-	tokenTracker    *tokentracker.Tracker
+	registryReady    <-chan struct{}
+	initialized      bool
+	sessions         map[string]*acpChatSession
+	mu               sync.Mutex
+	progressWriter   io.Writer
+	postReplyCheck   func(context.Context, agent.PostReplyCheckInfo) string
+	tokenTracker     *tokentracker.Tracker
 	permissionSessID string
-	permMu            sync.Mutex
+	permMu           sync.Mutex
 }
 
 type acpChatSession struct {
@@ -482,7 +482,18 @@ func (s *acpServer) handleSessionPrompt(ctx context.Context, params json.RawMess
 		_ = s.tr.WriteError(id, -32603, runErr.Error())
 		return
 	}
-	_ = reply
+	if strings.TrimSpace(reply) != "" && cw.chunks == 0 {
+		_ = s.tr.SendNotification("session/update", map[string]any{
+			"sessionId": p.SessionID,
+			"update": map[string]any{
+				"sessionUpdate": "agent_message_chunk",
+				"content": map[string]any{
+					"type": "text",
+					"text": reply,
+				},
+			},
+		})
+	}
 	_ = s.tr.WriteResult(id, map[string]any{"stopReason": "end_turn"})
 }
 
@@ -569,6 +580,7 @@ func acpStructuredPatchPreview(name string, args json.RawMessage) map[string]any
 type acpChunkWriter struct {
 	tr        *acpserver.Transport
 	sessionID string
+	chunks    int
 }
 
 func (w *acpChunkWriter) Write(p []byte) (int, error) {
@@ -588,6 +600,7 @@ func (w *acpChunkWriter) Write(p []byte) (int, error) {
 	}); err != nil {
 		return 0, err
 	}
+	w.chunks++
 	return len(p), nil
 }
 
