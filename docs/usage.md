@@ -149,6 +149,7 @@ Inside a session you can use slash commands to control the agent:
 | `/config [key] [value]` | View or set any configuration key (no args = show all, key = show one, key value = set and save) |
 | `/setup` | Guided setup wizard for API connection, chat model selection, optional plan-mode model override, and optional embedding model for semantic search |
 | `/create-skill` | Guided wizard to author a **skill** (`SKILL.md` under user or workspace skills dirs); refreshes the in-session skill catalog |
+| `/create-rule` | Guided wizard to author a **Cursor-style rule** (`.mdc` under **`.cursor/rules/`** in the workspace; same frontmatter as Cursor). Codient does not load these into the CLI system prompt—they apply in Cursor and compatible editors |
 | `/skills` | List discovered skills (name, scope, `read_file` path) |
 | `/compact` | Summarize conversation history to save context space |
 | `/model <name>` | Switch to a different model (shortcut for `/config model`) |
@@ -235,6 +236,8 @@ If the same **`name`** appears in both places, the **workspace** skill wins. The
 **`read_file`:** Paths under the workspace work as usual. Paths for **user** skills (shown in the catalog) are resolved under `<state-dir>/skills/` when the file is not found under the workspace—so global skills remain readable without widening access to arbitrary files outside the workspace.
 
 **REPL:** **`/create-skill`** walks you through scope, folder id, description, and optional `disable-model-invocation`, then writes **`SKILL.md`**. **`/skills`** prints what codient discovered on disk. Starting a new session with **`/new`** reloads the skill catalog from disk (as does restarting codient). Editing skills manually without **`/new`** takes effect after restart unless you run **`/create-skill`** again or use **`/new`** (which reloads skills).
+
+**Cursor rules:** **`/create-rule`** writes **`.cursor/rules/<stem>.mdc`** with YAML frontmatter (`description`, **`alwaysApply`**, optional **`globs`**) like Cursor’s rule editor. The codient CLI does not inject these files into its system prompt; use **`AGENTS.md`**, **`.codient/instructions.md`**, or **skills** for codient-native guidance.
 
 **ACP / Unity:** Slash commands run only in the interactive CLI REPL; editor sessions still receive the **Agent skills** section in the system prompt when codient starts.
 

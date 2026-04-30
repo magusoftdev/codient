@@ -1265,6 +1265,15 @@ func (s *session) buildSlashCommands(ctx context.Context, sc *bufio.Scanner) *sl
 		},
 	})
 	cmds.Register(slashcmd.Command{
+		Name:        "create-rule",
+		Usage:       "/create-rule",
+		Description: "guided wizard to create a Cursor-style rule (.mdc under .cursor/rules in the workspace)",
+		Run: func(string) error {
+			s.runCreateRuleWizard(sc)
+			return nil
+		},
+	})
+	cmds.Register(slashcmd.Command{
 		Name:        "skills",
 		Description: "list discovered agent skills (name, scope, read_file path)",
 		Run: func(string) error {

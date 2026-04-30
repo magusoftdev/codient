@@ -32,10 +32,7 @@ func shouldProbeOllamaUnload(apiBase string) bool {
 			return false
 		}
 	}
-	if strings.HasSuffix(h, ".openai.azure.com") {
-		return false
-	}
-	return true
+	return !strings.HasSuffix(h, ".openai.azure.com")
 }
 
 // TryOllamaUnloadModel asks an Ollama server to unload modelID from memory (POST /api/generate with keep_alive 0).
