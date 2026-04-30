@@ -16,7 +16,7 @@ else
   INSTALL_DIR := $(DEFAULT_INSTALL_DIR)
 endif
 
-.PHONY: all help build install clean test test-unit test-short test-race test-integration test-integration-strict vet fmt mod-tidy check lint govulncheck run release major minor patch
+.PHONY: all help build install clean test test-unit test-short test-race test-integration test-integration-strict test-acp vet fmt mod-tidy check lint govulncheck run release major minor patch
 
 all: build
 
@@ -32,6 +32,7 @@ help:
 	@echo "  make test-race      go test -race ./..."
 	@echo "  make test-integration        live API tests (CODIENT_INTEGRATION=1 only)"
 	@echo "  make test-integration-strict live + strict tool tests (+ CODIENT_INTEGRATION_STRICT_TOOLS=1)"
+	@echo "  make test-acp                live ACP subprocess tests (Unity-identical JSON-RPC; needs model)"
 	@echo "  make vet            go vet ./..."
 	@echo "  make fmt            go fmt ./..."
 	@echo "  make mod-tidy       go mod tidy"
@@ -83,6 +84,12 @@ test-integration-strict: export CODIENT_INTEGRATION = 1
 test-integration-strict: export CODIENT_INTEGRATION_STRICT_TOOLS = 1
 test-integration-strict:
 	$(GO) test -tags=integration -count=1 ./...
+
+# Black-box ACP: spawns codient -acp and drives session/* over stdio (same path as Codient Unity).
+test-acp: export CODIENT_INTEGRATION = 1
+test-acp: export CODIENT_INTEGRATION_STRICT_TOOLS = 1
+test-acp:
+	$(GO) test -tags=integration -count=1 -timeout 30m ./internal/codientcli/ -run TestACPIntegration
 
 vet:
 	$(GO) vet ./...

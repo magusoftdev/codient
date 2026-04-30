@@ -14,28 +14,30 @@ type textToolCall struct {
 }
 
 var (
-	// Matches <function=NAME>...</function> blocks, with optional <tool_call> wrapper.
+	// Matches <function=NAME>...</function> blocks.
 	reFunctionBlock = regexp.MustCompile(`(?s)<function=([^>]+)>(.*?)</function>`)
 	// Matches <parameter=KEY>VALUE</parameter> inside a function block.
 	reParameter = regexp.MustCompile(`(?s)<parameter=([^>]+)>(.*?)</parameter>`)
+	// Matches <tool_call>JSON</tool_call> blocks (Qwen-style).
+	reToolCallJSON = regexp.MustCompile(`(?s)<tool_call>\s*(\{.*?\})\s*</tool_call>`)
 )
 
 // containsTextToolCalls is a fast check for whether content likely contains
 // XML-style tool calls worth parsing.
 func containsTextToolCalls(content string) bool {
-	return strings.Contains(content, "<function=")
+	return strings.Contains(content, "<function=") || strings.Contains(content, "<tool_call>")
 }
 
 // parseTextToolCalls extracts XML-style tool calls from text content.
+// Supports both <function=NAME><parameter=K>V</parameter></function>
+// and <tool_call>{"name":"...","arguments":{...}}</tool_call> formats.
 // Returns nil if no valid tool calls are found.
 func parseTextToolCalls(content string) []textToolCall {
-	matches := reFunctionBlock.FindAllStringSubmatch(content, -1)
-	if len(matches) == 0 {
-		return nil
-	}
-
 	var calls []textToolCall
-	for _, m := range matches {
+
+	// Try <function=NAME> format first.
+	funcMatches := reFunctionBlock.FindAllStringSubmatch(content, -1)
+	for _, m := range funcMatches {
 		name := strings.TrimSpace(m[1])
 		body := m[2]
 		if name == "" {
@@ -53,6 +55,34 @@ func parseTextToolCalls(content string) []textToolCall {
 		}
 
 		calls = append(calls, textToolCall{Name: name, Args: args})
+	}
+
+	// Try <tool_call>JSON</tool_call> format (Qwen-style).
+	tcMatches := reToolCallJSON.FindAllStringSubmatch(content, -1)
+	for _, m := range tcMatches {
+		var payload struct {
+			Name      string                     `json:"name"`
+			Arguments map[string]json.RawMessage `json:"arguments"`
+		}
+		if err := json.Unmarshal([]byte(m[1]), &payload); err != nil || payload.Name == "" {
+			continue
+		}
+		args := make(map[string]string, len(payload.Arguments))
+		for k, v := range payload.Arguments {
+			s := string(v)
+			if len(s) >= 2 && s[0] == '"' && s[len(s)-1] == '"' {
+				var unquoted string
+				if err := json.Unmarshal(v, &unquoted); err == nil {
+					s = unquoted
+				}
+			}
+			args[k] = s
+		}
+		calls = append(calls, textToolCall{Name: payload.Name, Args: args})
+	}
+
+	if len(calls) == 0 {
+		return nil
 	}
 	return calls
 }
@@ -81,9 +111,11 @@ func textToolCallArgsJSON(args map[string]string) json.RawMessage {
 	return b
 }
 
-// reToolCallMarkup matches XML tool call tags that may appear as fragments
-// in a text reply (e.g. when the model hits the step limit mid-call).
-var reToolCallMarkup = regexp.MustCompile(`(?s)</?(?:tool_call|function(?:=[^>]*)?)>|<parameter=[^>]*>.*?</parameter>`)
+// reToolCallMarkup matches XML tool call tags and complete blocks that may
+// appear as fragments in a text reply (e.g. when the model hits the step
+// limit mid-call). Handles both <function=...>...</function> and
+// <tool_call>JSON</tool_call> formats.
+var reToolCallMarkup = regexp.MustCompile(`(?s)<tool_call>\s*\{.*?\}\s*</tool_call>|</?(?:tool_call|function(?:=[^>]*)?)>|<parameter=[^>]*>.*?</parameter>`)
 
 // stripTextToolCallFragments removes XML tool call markup from text content.
 // Used to clean up the final reply when the model emits partial/leftover

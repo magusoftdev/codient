@@ -36,6 +36,7 @@ import (
 	"codient/internal/repomap"
 	"codient/internal/selfupdate"
 	"codient/internal/sessionstore"
+	"codient/internal/skills"
 	"codient/internal/slashcmd"
 	"codient/internal/subagent"
 	"codient/internal/tokentracker"
@@ -59,6 +60,7 @@ type session struct {
 	repoInstructions string
 	projectContext   string
 	memory           string               // cross-session memory (global + workspace), loaded at startup
+	skillsCatalog    string               // "## Agent skills" markdown; refreshed on /new and /create-skill
 	memOpts          *tools.MemoryOptions // passed to build-mode registry for memory_update tool
 
 	// REPL state
@@ -86,6 +88,8 @@ type session struct {
 	execDeniedACP func(context.Context, string, []string) tools.ExecPromptChoice
 	// acpNoDelegate skips delegate_task and create_pull_request when true (ACP stub session).
 	acpNoDelegate bool
+	// acpCallClient issues JSON-RPC requests to the ACP client (e.g. Codient Unity). Nil outside -acp.
+	acpCallClient func(context.Context, string, any) (json.RawMessage, error)
 
 	fetchAllow    *tools.SessionFetchAllow // mutable fetch_url host approvals for this process; nil until first fetch
 	fetchPromptMu sync.Mutex               // serializes fetch allow prompts and post-lock re-checks
@@ -155,6 +159,33 @@ func (s *session) setMode(m prompt.Mode) {
 	if s.tui != nil {
 		s.tui.prog.Send(tuiModeMsg(string(m)))
 	}
+}
+
+func (s *session) loadSkillsCatalog() {
+	s.skillsCatalog = ""
+	sd, err := config.StateDir()
+	if err != nil || sd == "" {
+		return
+	}
+	cat, err := skills.LoadCatalogMarkdown(sd, s.cfg.EffectiveWorkspace())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "codient: skills: %v\n", err)
+		return
+	}
+	s.skillsCatalog = cat
+}
+
+func (s *session) rebuildSystemPromptWithRepoMap(rm *repomap.Map) {
+	s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory, s.skillsCatalog, rm)
+}
+
+func (s *session) rebuildSystemPrompt() {
+	s.rebuildSystemPromptWithRepoMap(s.repoMap)
+}
+
+func (s *session) refreshSkillsCatalog() {
+	s.loadSkillsCatalog()
+	s.rebuildSystemPromptWithRepoMap(s.repoMap)
 }
 
 func (s *session) newRunner() *agent.Runner {
@@ -707,7 +738,7 @@ func (s *session) runSession(ctx context.Context, initialPrompt string, newSessi
 				if modeErr == nil && mode != s.mode {
 					s.setMode(mode)
 					s.registry = buildRegistry(s.cfg, mode, s, s.memOpts)
-					s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory, s.repoMap)
+					s.rebuildSystemPrompt()
 				}
 				if existing.PlanPhase != "" {
 					s.planPhase = planstore.Phase(existing.PlanPhase)
@@ -762,13 +793,15 @@ func (s *session) runSession(ctx context.Context, initialPrompt string, newSessi
 	s.scanner = sc
 	resolveAstGrep(s.cfg, sc)
 	s.registry = buildRegistry(s.cfg, s.mode, s, s.memOpts)
-	s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory, s.repoMap)
+	s.loadSkillsCatalog()
+	s.rebuildSystemPrompt()
 
 	if strings.TrimSpace(s.cfg.Model) == "" {
 		s.runSetupWizard(ctx, sc)
 		s.client = openaiclient.New(s.cfg)
 		s.registry = buildRegistry(s.cfg, s.mode, s, s.memOpts)
-		s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory, s.repoMap)
+		s.loadSkillsCatalog()
+		s.rebuildSystemPrompt()
 	}
 
 	s.probeAndSetContext(ctx)
@@ -1215,9 +1248,27 @@ func (s *session) buildSlashCommands(ctx context.Context, sc *bufio.Scanner) *sl
 			s.runSetupWizard(ctx, sc)
 			s.client = openaiclient.New(s.cfg)
 			s.registry = buildRegistry(s.cfg, s.mode, s, s.memOpts)
-			s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory, s.repoMap)
+			s.loadSkillsCatalog()
+			s.rebuildSystemPrompt()
 			s.cfg.ContextWindowTokens = 0
 			s.probeAndSetContext(ctx)
+			return nil
+		},
+	})
+	cmds.Register(slashcmd.Command{
+		Name:        "create-skill",
+		Usage:       "/create-skill",
+		Description: "guided wizard to create a SKILL.md agent skill (workspace or user scope)",
+		Run: func(string) error {
+			s.runCreateSkillWizard(sc)
+			return nil
+		},
+	})
+	cmds.Register(slashcmd.Command{
+		Name:        "skills",
+		Description: "list discovered agent skills (name, scope, read_file path)",
+		Run: func(string) error {
+			s.runListSkillsCommand()
 			return nil
 		},
 	})
@@ -1271,8 +1322,9 @@ func (s *session) buildSlashCommands(ctx context.Context, sc *bufio.Scanner) *sl
 			if len(s.cfg.ExecAllowlist) > 0 {
 				s.execAllow = tools.NewSessionExecAllow(s.cfg.ExecAllowlist)
 				s.registry = buildRegistry(s.cfg, s.mode, s, s.memOpts)
-				s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory, s.repoMap)
 			}
+			s.loadSkillsCatalog()
+			s.rebuildSystemPrompt()
 			s.captureGitSessionState(s.cfg.EffectiveWorkspace())
 			fmt.Fprintf(os.Stderr, "codient: new session %s\n", s.sessionID)
 			fmt.Fprintf(os.Stderr, "%s\n", assistout.ModeHint(s.cfg.Plain, string(s.mode)))
@@ -1425,7 +1477,7 @@ func (s *session) buildSlashCommands(ctx context.Context, sc *bufio.Scanner) *sl
 			s.cfg.Workspace = path
 			s.projectContext = projectinfo.Detect(s.cfg.EffectiveWorkspace())
 			s.registry = buildRegistry(s.cfg, s.mode, s, s.memOpts)
-			s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory, s.repoMap)
+			s.rebuildSystemPrompt()
 			s.captureGitSessionState(s.cfg.EffectiveWorkspace())
 			s.warnIfNotGitRepo()
 			fmt.Fprintf(os.Stderr, "codient: workspace set to %s\n", path)
@@ -1684,7 +1736,7 @@ func (s *session) reloadMemory() {
 		return
 	}
 	s.memory = mem
-	s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory, s.repoMap)
+	s.rebuildSystemPrompt()
 }
 
 func (s *session) runEditor(editor, path string) error {
@@ -1730,10 +1782,10 @@ func (s *session) handleConfig(ctx context.Context, args string) error {
 	switch key {
 	case "sandbox_mode", "sandbox_ro_paths", "sandbox_container_image", "exec_env_passthrough":
 		s.registry = buildRegistry(s.cfg, s.mode, s, s.memOpts)
-		s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory, s.repoMap)
+		s.rebuildSystemPrompt()
 	case "model", "base_url", "api_key", "max_concurrent":
 		s.client = openaiclient.New(s.cfg)
-		s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory, s.repoMap)
+		s.rebuildSystemPrompt()
 		if key == "model" || key == "base_url" {
 			s.cfg.ContextWindowTokens = 0
 			s.probeAndSetContext(ctx)
@@ -1742,9 +1794,9 @@ func (s *session) handleConfig(ctx context.Context, args string) error {
 		"fetch_web_rate_per_sec", "fetch_web_rate_burst",
 		"search_max_results":
 		s.registry = buildRegistry(s.cfg, s.mode, s, s.memOpts)
-		s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory, s.repoMap)
+		s.rebuildSystemPrompt()
 	case "autocheck_cmd", "lint_cmd", "test_cmd":
-		s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory, s.repoMap)
+		s.rebuildSystemPrompt()
 	case "embedding_model":
 		s.startCodeIndex(ctx)
 	case "repo_map_tokens":
@@ -1763,7 +1815,7 @@ func (s *session) handleConfig(ctx context.Context, args string) error {
 
 	if mode, _, ok := parseModeConfigKey(key); ok && mode == string(s.mode) {
 		s.client = openaiclient.NewForMode(s.cfg, mode)
-		s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory, s.repoMap)
+		s.rebuildSystemPrompt()
 	}
 	return nil
 }
@@ -2182,7 +2234,7 @@ func (s *session) setConfig(key, value string) error {
 	case "ast_grep":
 		s.cfg.AstGrep = value
 		s.registry = buildRegistry(s.cfg, s.mode, s, s.memOpts)
-		s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory, s.repoMap)
+		s.rebuildSystemPrompt()
 	case "embedding_model":
 		s.cfg.EmbeddingModel = value
 	case "repo_map_tokens":
@@ -2375,7 +2427,7 @@ func (s *session) startCodeIndex(ctx context.Context) {
 	}
 	s.codeIndex = codeindex.New(ws, s.client, model)
 	s.registry = buildRegistry(s.cfg, s.mode, s, s.memOpts)
-	s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory, s.repoMap)
+	s.rebuildSystemPrompt()
 	fmt.Fprintf(os.Stderr, "codient: indexing workspace for semantic search...\n")
 	go func() {
 		s.codeIndex.BuildOrUpdate(ctx)
@@ -2398,13 +2450,13 @@ func (s *session) startRepoMap(ctx context.Context) {
 	if s.cfg.RepoMapTokens < 0 {
 		s.repoMap = nil
 		s.registry = buildRegistry(s.cfg, s.mode, s, s.memOpts)
-		s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory, nil)
+		s.rebuildSystemPromptWithRepoMap(nil)
 		return
 	}
 
 	s.repoMap = repomap.New(ws)
 	s.registry = buildRegistry(s.cfg, s.mode, s, s.memOpts)
-	s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory, s.repoMap)
+	s.rebuildSystemPrompt()
 
 	fmt.Fprintf(os.Stderr, "codient: building repository map...\n")
 	go func() {
@@ -2417,7 +2469,7 @@ func (s *session) startRepoMap(ctx context.Context) {
 			s.replAsyncStderrNote(fmt.Sprintf("codient: repo map ready (%d files, %d symbols)\n", nf, nt))
 		}
 		s.registry = buildRegistry(s.cfg, s.mode, s, s.memOpts)
-		s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory, s.repoMap)
+		s.rebuildSystemPrompt()
 	}()
 }
 

@@ -420,6 +420,9 @@ func TestPersistentConfig_FeedsIntoLoad(t *testing.T) {
 	if c.BaseURL != defaultBaseURL {
 		t.Fatalf("BaseURL should default: got %q", c.BaseURL)
 	}
+	if !c.AcpPreloadModelOnSetModel {
+		t.Fatal("expected AcpPreloadModelOnSetModel true by default when omitted from config")
+	}
 }
 
 func TestLoad_StreamWithToolsConfig(t *testing.T) {
@@ -472,20 +475,38 @@ func TestLoad_DesignSaveExplicitFalse(t *testing.T) {
 	}
 }
 
+func TestLoad_AcpPreloadModelOnSetModelExplicitFalse(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CODIENT_STATE_DIR", dir)
+	f := false
+	pc := &PersistentConfig{AcpPreloadModelOnSetModel: &f}
+	if err := SavePersistentConfig(pc); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.AcpPreloadModelOnSetModel {
+		t.Fatal("expected AcpPreloadModelOnSetModel false when explicitly set")
+	}
+}
+
 func TestConfigToPersistent_RoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("CODIENT_STATE_DIR", dir)
 
 	cfg := &Config{
-		BaseURL:            "http://test/v1",
-		APIKey:             "key",
-		Model:              "m",
-		MaxConcurrent:      5,
-		FetchPreapproved:   false,
-		StreamReply:        false,
-		DesignSave:         false,
-		FetchWebRatePerSec: 8,
-		FetchWebRateBurst:  3,
+		BaseURL:                   "http://test/v1",
+		APIKey:                    "key",
+		Model:                     "m",
+		MaxConcurrent:             5,
+		FetchPreapproved:          false,
+		StreamReply:               false,
+		DesignSave:                false,
+		AcpPreloadModelOnSetModel: false,
+		FetchWebRatePerSec:        8,
+		FetchWebRateBurst:         3,
 	}
 	pc := ConfigToPersistent(cfg)
 	if err := SavePersistentConfig(pc); err != nil {
@@ -498,8 +519,8 @@ func TestConfigToPersistent_RoundTrip(t *testing.T) {
 	if c.BaseURL != "http://test/v1" || c.Model != "m" || c.MaxConcurrent != 5 {
 		t.Fatalf("round-trip failed: %+v", c)
 	}
-	if c.FetchPreapproved || c.StreamReply || c.DesignSave {
-		t.Fatalf("*bool round-trip failed: fetch=%v stream=%v design=%v", c.FetchPreapproved, c.StreamReply, c.DesignSave)
+	if c.FetchPreapproved || c.StreamReply || c.DesignSave || c.AcpPreloadModelOnSetModel {
+		t.Fatalf("*bool round-trip failed: fetch=%v stream=%v design=%v acpPreload=%v", c.FetchPreapproved, c.StreamReply, c.DesignSave, c.AcpPreloadModelOnSetModel)
 	}
 	if c.FetchWebRatePerSec != 8 || c.FetchWebRateBurst != 3 {
 		t.Fatalf("fetch web rate round-trip: got %d/%d", c.FetchWebRatePerSec, c.FetchWebRateBurst)

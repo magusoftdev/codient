@@ -25,7 +25,9 @@ type Params struct {
 	ProjectContext         string // auto-detected project summary (language, framework, etc.)
 	RepoMap                string // structural overview (paths + symbols), optional
 	Memory            string // cross-session memory (global + workspace), already loaded and truncated
+	SkillsCatalog     string // optional "## Agent skills" markdown from ~/.codient/skills and .codient/skills
 	ReviewMode        bool   // when true, appends review/verification guidance
+	UnityACPEditor    bool   // when true, append Codient Unity / unity_* tool guidance (ACP + Unity-shaped workspace)
 }
 
 // Build returns the full system message: persona/rules, dynamic tools, repo notes, user -system.
@@ -66,6 +68,10 @@ func Build(p Params) string {
 		b.WriteString("\n\n")
 		b.WriteString(sectionDelegation(mode))
 	}
+	if p.UnityACPEditor {
+		b.WriteString("\n\n")
+		b.WriteString(sectionUnityACPEditor(mode))
+	}
 	if p.ReviewMode {
 		b.WriteString("\n\n")
 		b.WriteString(sectionReviewMode())
@@ -85,6 +91,10 @@ func Build(p Params) string {
 	if strings.TrimSpace(p.RepoInstructions) != "" {
 		b.WriteString("\n\n## Repository instructions (from workspace files)\n\n")
 		b.WriteString(strings.TrimSpace(p.RepoInstructions))
+	}
+	if strings.TrimSpace(p.SkillsCatalog) != "" {
+		b.WriteString("\n\n")
+		b.WriteString(strings.TrimSpace(p.SkillsCatalog))
 	}
 	if strings.TrimSpace(p.Memory) != "" {
 		b.WriteString("\n\n## Memory (cross-session)\n\n")
@@ -251,6 +261,30 @@ func hasDelegateTask(reg *tools.Registry) bool {
 	return false
 }
 
+func sectionUnityACPEditor(mode Mode) string {
+	var b strings.Builder
+	b.WriteString(`## Unity Editor (ACP)
+
+You are connected to **Codient Unity** over the Agent Client Protocol. **unity_** tools forward JSON-RPC to the Unity Editor on the user's machine: they read (and in build mode, may mutate) the **loaded project**—not just files on disk.
+
+- Prefer **unity_query_scene_hierarchy** / **unity_inspect_component** before proposing scene or Inspector changes.
+- Game objects are identified by **EntityId** (a non-negative integer in JSON tool arguments). Use values returned from hierarchy or inspect tools; do not invent ids.
+- Optional **scenePath** is a project-relative path to a **loaded** .unity scene (e.g. Assets/Scenes/Main.unity). Omit it to use the active scene.
+- **unity_query_prefab_hierarchy** reads a **.prefab** asset path under the project without requiring it to be in the active scene.
+- **unity_get_console_errors** surfaces recent Editor console messages when available.
+- **unity_summarize_project_packages** lists Packages/manifest.json dependencies and .asmdef files under Assets/ (bounded).`)
+	if mode == ModeBuild {
+		b.WriteString(`
+
+- **unity_apply_actions** applies structured scene edits. The user must **confirm** in a Unity dialog before changes run. Use **schemaVersion** 1 and a JSON **actions** array; each action has **op** plus fields for that operation.`)
+	} else {
+		b.WriteString(`
+
+- **unity_apply_actions** is **not** available in this session mode—use file tools and explain Inspector steps, or ask the user to switch to build mode in Codient Unity.`)
+	}
+	return b.String()
+}
+
 func sectionDelegation(mode Mode) string {
 	if mode == ModeBuild {
 		return `## Task delegation (delegate_task)
@@ -389,6 +423,30 @@ func sectionPerToolNotes(p Params) string {
 	}
 	if _, ok := set["delegate_task"]; ok {
 		b.WriteString("- **delegate_task**: Spawn a sub-agent with its own fresh context. The sub-agent runs to completion and returns its reply as the tool result. Multiple concurrent delegate_task calls run in parallel. See the **Task delegation** section above for guidelines.\n")
+	}
+	if _, ok := set["unity_query_scene_hierarchy"]; ok {
+		b.WriteString("- **unity_query_scene_hierarchy**: Returns the hierarchy for the active scene or optional **scenePath** (must be loaded). Optional **rootGameObjectEntityId** / legacy **rootGameObjectInstanceId** and **maxDepth**.\n")
+	}
+	if _, ok := set["unity_search_asset_database"]; ok {
+		b.WriteString("- **unity_search_asset_database**: **searchFilter** (required) plus optional **searchInFolders** (project-relative paths). Same semantics as Unity's AssetDatabase.FindAssets.\n")
+	}
+	if _, ok := set["unity_inspect_component"]; ok {
+		b.WriteString("- **unity_inspect_component**: Requires **componentTypeName** and **gameObjectEntityId** (preferred) or legacy **gameObjectInstanceId**.\n")
+	}
+	if _, ok := set["unity_list_loaded_scenes"]; ok {
+		b.WriteString("- **unity_list_loaded_scenes**: No parameters. Lists loaded scenes and which is active.\n")
+	}
+	if _, ok := set["unity_query_prefab_hierarchy"]; ok {
+		b.WriteString("- **unity_query_prefab_hierarchy**: **prefabAssetPath** (required) to a .prefab under the project; optional **maxDepth**.\n")
+	}
+	if _, ok := set["unity_get_console_errors"]; ok {
+		b.WriteString("- **unity_get_console_errors**: Optional **maxEntries** (default 50). May return an empty list if the Editor console API is unavailable.\n")
+	}
+	if _, ok := set["unity_summarize_project_packages"]; ok {
+		b.WriteString("- **unity_summarize_project_packages**: No parameters. Bounded summary of package manifest and asmdef paths.\n")
+	}
+	if _, ok := set["unity_apply_actions"]; ok {
+		b.WriteString("- **unity_apply_actions**: **schemaVersion** must be 1. **actions** is an array of objects with **op** (e.g. create_empty_gameobject, destroy_gameobject, set_gameobject_name, set_parent, add_component, set_component_property). The Unity Editor prompts the user before applying.\n")
 	}
 	if _, ok := set["echo"]; ok {
 		b.WriteString("- **echo** / **get_time**: Utility tools for sanity checks.\n")

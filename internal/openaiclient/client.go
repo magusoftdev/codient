@@ -8,12 +8,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
-	"net/http"
-	"strings"
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
 	"github.com/openai/openai-go/v3/shared"
+	"io"
+	"net/http"
+	"strings"
 
 	"codient/internal/config"
 )
@@ -322,14 +322,80 @@ func (c *Client) CreateEmbedding(ctx context.Context, model string, inputs []str
 	return all, nil
 }
 
-// ModelsResponse is a minimal parse of GET /v1/models for CLI listing.
-type ModelsResponse struct {
-	Data []struct {
-		ID string `json:"id"`
-	} `json:"data"`
+// ExtractModelIDsFromJSON parses GET /models JSON used by OpenAI-compat and several local servers:
+// top-level "data" and/or "models" arrays of strings or objects. Object fields recognized in order:
+// id, model, key (LM Studio catalog entries often expose only key), name.
+func ExtractModelIDsFromJSON(body []byte) ([]string, error) {
+	if len(strings.TrimSpace(string(body))) == 0 {
+		return nil, fmt.Errorf("empty models body")
+	}
+	var probe map[string]json.RawMessage
+	if err := json.Unmarshal(body, &probe); err != nil {
+		return nil, fmt.Errorf("decode models: %w", err)
+	}
+
+	seen := make(map[string]struct{})
+	var ids []string
+	add := func(s string) {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			return
+		}
+		if _, ok := seen[s]; ok {
+			return
+		}
+		seen[s] = struct{}{}
+		ids = append(ids, s)
+	}
+
+	for _, top := range []string{"data", "models"} {
+		raw, ok := probe[top]
+		if !ok || len(raw) == 0 || string(raw) == "null" {
+			continue
+		}
+		appendIDsFromJSONArray(raw, add)
+	}
+
+	return ids, nil
 }
 
-// ListModels fetches model ids (optional helper for operators).
+func appendIDsFromJSONArray(raw json.RawMessage, add func(string)) {
+	var arr []json.RawMessage
+	if err := json.Unmarshal(raw, &arr); err != nil {
+		return
+	}
+	for _, el := range arr {
+		var s string
+		if json.Unmarshal(el, &s) == nil {
+			add(s)
+			continue
+		}
+		var obj map[string]any
+		if json.Unmarshal(el, &obj) != nil {
+			continue
+		}
+		var pick string
+		for _, key := range []string{"id", "model", "key", "name"} {
+			if v, ok := obj[key]; ok && v != nil {
+				switch t := v.(type) {
+				case string:
+					pick = t
+				case float64:
+					pick = fmt.Sprint(int64(t))
+				default:
+					pick = fmt.Sprint(v)
+				}
+				pick = strings.TrimSpace(pick)
+				if pick != "" {
+					break
+				}
+			}
+		}
+		add(pick)
+	}
+}
+
+// ListModels fetches model ids from GET /models relative to client base URL.
 func (c *Client) ListModels(ctx context.Context) ([]string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+"/models", nil)
 	if err != nil {
@@ -348,15 +414,5 @@ func (c *Client) ListModels(ctx context.Context) ([]string, error) {
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
 		return nil, fmt.Errorf("models: %s: %s", res.Status, strings.TrimSpace(string(body)))
 	}
-	var out ModelsResponse
-	if err := json.Unmarshal(body, &out); err != nil {
-		return nil, fmt.Errorf("decode models: %w", err)
-	}
-	ids := make([]string, 0, len(out.Data))
-	for _, d := range out.Data {
-		if d.ID != "" {
-			ids = append(ids, d.ID)
-		}
-	}
-	return ids, nil
+	return ExtractModelIDsFromJSON(body)
 }

@@ -147,8 +147,16 @@ func copyFileAbs(src, dst string, mode fs.FileMode) error {
 
 // pathStatWorkspace returns a short text description of path metadata (no file contents).
 func pathStatWorkspace(root, rel string) (string, error) {
-	abs, err := absUnderRoot(root, rel)
+	return pathStatWorkspaceOrSkills(root, "", rel)
+}
+
+// pathStatWorkspaceOrSkills resolves like read_file (workspace first, then user skills library).
+func pathStatWorkspaceOrSkills(workspaceRoot, userSkillsLib, rel string) (string, error) {
+	abs, err := resolveReadableAbs(workspaceRoot, userSkillsLib, rel)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return fmt.Sprintf("path: %s\nexists: false", filepath.ToSlash(rel)), nil
+		}
 		return "", err
 	}
 	fi, err := os.Lstat(abs)

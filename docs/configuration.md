@@ -115,6 +115,7 @@ Run `/config` with no arguments to see all current values. `/config <key>` shows
 | `log` | Default JSONL log path | *(empty)* |
 | `stream_reply` | Stream assistant tokens to stdout | `true` |
 | `progress` | Force progress output on stderr | `false` |
+| `acp_preload_model_on_set_model` | When **`true`** (default), ACP **`session/set_model`** runs a minimal chat completion so local inference servers load the model before the RPC returns; set **`false`** to skip (saves one completion per switch) | `true` |
 | **Plan** | | |
 | `design_save_dir` | Override directory for saved plans | `<workspace>/.codient/plans` |
 | `design_save` | Save plan-mode plans to disk | `true` |

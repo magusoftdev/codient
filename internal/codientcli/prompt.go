@@ -1,13 +1,24 @@
 package codientcli
 
 import (
+	"path/filepath"
+
 	"codient/internal/codeindex"
 	"codient/internal/config"
 	"codient/internal/sandbox"
 	"codient/internal/prompt"
 	"codient/internal/repomap"
+	"codient/internal/skills"
 	"codient/internal/tools"
 )
+
+func userSkillsReadLib() string {
+	sd, err := config.StateDir()
+	if err != nil || sd == "" {
+		return ""
+	}
+	return filepath.Join(sd, skills.UserSkillsSubdir)
+}
 
 func fetchOptsFrom(cfg *config.Config, s *session, netLimit *tools.RateLimiter) *tools.FetchOptions {
 	opts := &tools.FetchOptions{
@@ -51,12 +62,13 @@ func buildRegistry(cfg *config.Config, mode prompt.Mode, s *session, memOpts *to
 		idx = s.codeIndex
 		rm = s.repoMap
 	}
+	uskill := userSkillsReadLib()
 	var reg *tools.Registry
 	switch mode {
 	case prompt.ModeAsk:
-		reg = tools.DefaultReadOnly(cfg.EffectiveWorkspace(), fetch, search, sgPath, idx, rm)
+		reg = tools.DefaultReadOnly(cfg.EffectiveWorkspace(), uskill, fetch, search, sgPath, idx, rm)
 	case prompt.ModePlan:
-		reg = tools.DefaultReadOnlyPlan(cfg.EffectiveWorkspace(), fetch, search, sgPath, idx, rm)
+		reg = tools.DefaultReadOnlyPlan(cfg.EffectiveWorkspace(), uskill, fetch, search, sgPath, idx, rm)
 	default:
 		var execOpts *tools.ExecOptions
 		if len(cfg.ExecAllowlist) > 0 {
@@ -85,7 +97,7 @@ func buildRegistry(cfg *config.Config, mode prompt.Mode, s *session, memOpts *to
 				execOpts.Allowlist = cfg.ExecAllowlist
 			}
 		}
-		reg = tools.Default(cfg.EffectiveWorkspace(), execOpts, fetch, search, sgPath, idx, rm, memOpts)
+		reg = tools.Default(cfg.EffectiveWorkspace(), uskill, execOpts, fetch, search, sgPath, idx, rm, memOpts)
 	}
 	if s != nil && mode == prompt.ModeBuild && !s.acpNoDelegate {
 		tools.RegisterCreatePullRequest(reg, s.gitPullRequestContextFn())
@@ -98,11 +110,19 @@ func buildRegistry(cfg *config.Config, mode prompt.Mode, s *session, memOpts *to
 	if s != nil && !s.acpNoDelegate {
 		tools.RegisterDelegateTask(reg, string(mode), s.delegateTaskFn())
 	}
+	if s != nil && s.acpCallClient != nil {
+		registerUnityACPToolsForMode(reg, mode, s.acpCallClient)
+	}
 	return reg
 }
 
 // buildAgentSystemPrompt assembles the layered agent system message (tools, repo notes, -system).
-func buildAgentSystemPrompt(cfg *config.Config, reg *tools.Registry, mode prompt.Mode, userSystem, repoInstructions, projectContext, memory string, rm *repomap.Map) string {
+func buildAgentSystemPrompt(cfg *config.Config, reg *tools.Registry, mode prompt.Mode, userSystem, repoInstructions, projectContext, memory, skillsCatalog string, rm *repomap.Map) string {
+	return buildAgentSystemPromptEx(cfg, reg, mode, userSystem, repoInstructions, projectContext, memory, skillsCatalog, rm, false)
+}
+
+// buildAgentSystemPromptEx is like buildAgentSystemPrompt but can enable Unity ACP editor guidance when unityACPEditor is true.
+func buildAgentSystemPromptEx(cfg *config.Config, reg *tools.Registry, mode prompt.Mode, userSystem, repoInstructions, projectContext, memory, skillsCatalog string, rm *repomap.Map, unityACPEditor bool) string {
 	repoMapText := repomap.PromptText(cfg.RepoMapTokens, rm)
 	return prompt.Build(prompt.Params{
 		Cfg:                    cfg,
@@ -113,8 +133,10 @@ func buildAgentSystemPrompt(cfg *config.Config, reg *tools.Registry, mode prompt
 		ProjectContext:         projectContext,
 		RepoMap:                repoMapText,
 		Memory:                 memory,
+		SkillsCatalog:          skillsCatalog,
 		AutoCheckBuildResolved: effectiveAutoCheckCmd(cfg),
 		AutoCheckLintResolved:  effectiveLintCmd(cfg),
 		AutoCheckTestResolved:  effectiveTestCmd(cfg),
+		UnityACPEditor:         unityACPEditor,
 	})
 }

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"sync"
 	"time"
 )
@@ -268,6 +269,14 @@ func SummarizeArgs(name string, argsJSON []byte) map[string]any {
 				m["message"] = string(r[:80]) + "…"
 			} else {
 				m["message"] = msg
+			}
+		}
+	}
+	if strings.HasPrefix(name, "unity_") {
+		m["unity_tool"] = name
+		if name == "unity_apply_actions" {
+			if n, ok := raw["actions"].([]any); ok {
+				m["actions_count"] = len(n)
 			}
 		}
 	}

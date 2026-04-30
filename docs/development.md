@@ -14,4 +14,5 @@ Lighter integration runs (see `make help`):
 ```bash
 make test-integration         # live API only (CODIENT_INTEGRATION=1)
 make test-integration-strict  # + strict tool tests (no run_command test unless you set CODIENT_INTEGRATION_RUN_COMMAND=1 yourself)
+make test-acp                 # live ACP subprocess tests (spawns codient -acp; same JSON-RPC as Codient Unity)
 ```

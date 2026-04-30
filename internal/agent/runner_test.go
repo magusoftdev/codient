@@ -920,6 +920,364 @@ func TestRunner_PostReplyCheckNilNoop(t *testing.T) {
 	}
 }
 
+func TestRunner_RequestsFinalResponseWhenModelReturnsEmpty(t *testing.T) {
+	empty := `{
+  "id": "x",
+  "object": "chat.completion",
+  "created": 1,
+  "model": "m",
+  "choices": [{
+    "index": 0,
+    "message": {
+      "role": "assistant",
+      "content": ""
+    },
+    "finish_reason": "stop"
+  }]
+}`
+	final := `{
+  "id": "y",
+  "object": "chat.completion",
+  "created": 2,
+  "model": "m",
+  "choices": [{
+    "index": 0,
+    "message": {
+      "role": "assistant",
+      "content": "final text"
+    },
+    "finish_reason": "stop"
+  }]
+}`
+	llm := &mockLLM{model: "m", script: []string{empty, final}}
+	r := &Runner{LLM: llm, Cfg: &config.Config{}, Tools: tools.NewRegistry()}
+	out, _, err := r.Run(context.Background(), "", openai.UserMessage("hello"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != "final text" {
+		t.Fatalf("got %q", out)
+	}
+	if llm.calls != 2 {
+		t.Fatalf("expected 2 llm calls, got %d", llm.calls)
+	}
+}
+
+func TestRunner_ParsesToolCallsFromReasoningContentWhenContentEmpty(t *testing.T) {
+	withReasoningToolCall := `{
+  "id": "x",
+  "object": "chat.completion",
+  "created": 1,
+  "model": "m",
+  "choices": [{
+    "index": 0,
+    "message": {
+      "role": "assistant",
+      "content": "",
+      "reasoning_content": "<tool_call><function=echo><parameter=message>hi</parameter></function></tool_call>",
+      "tool_calls": []
+    },
+    "finish_reason": "stop"
+  }]
+}`
+	final := `{
+  "id": "y",
+  "object": "chat.completion",
+  "created": 2,
+  "model": "m",
+  "choices": [{
+    "index": 0,
+    "message": {
+      "role": "assistant",
+      "content": "done"
+    },
+    "finish_reason": "stop"
+  }]
+}`
+	llm := &mockLLM{model: "m", script: []string{withReasoningToolCall, final}}
+	reg := tools.NewRegistry()
+	reg.Register(mustEchoTool(t))
+	r := &Runner{LLM: llm, Cfg: &config.Config{}, Tools: reg}
+	out, _, err := r.Run(context.Background(), "", openai.UserMessage("hello"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != "done" {
+		t.Fatalf("got %q", out)
+	}
+	if llm.calls != 2 {
+		t.Fatalf("expected 2 llm calls, got %d", llm.calls)
+	}
+}
+
+func TestRunner_EmitsIntentForToolRound(t *testing.T) {
+	toolRound := `{
+  "id": "x",
+  "object": "chat.completion",
+  "created": 1,
+  "model": "m",
+  "choices": [{
+    "index": 0,
+    "message": {
+      "role": "assistant",
+      "content": "I will inspect one file first.",
+      "tool_calls": [{
+        "id": "call_1",
+        "type": "function",
+        "function": {
+          "name": "echo",
+          "arguments": "{\"message\":\"x\"}"
+        }
+      }]
+    },
+    "finish_reason": "tool_calls"
+  }]
+}`
+	final := `{
+  "id": "y",
+  "object": "chat.completion",
+  "created": 2,
+  "model": "m",
+  "choices": [{
+    "index": 0,
+    "message": {
+      "role": "assistant",
+      "content": "done"
+    },
+    "finish_reason": "stop"
+  }]
+}`
+	llm := &mockLLM{model: "m", script: []string{toolRound, final}}
+	reg := tools.NewRegistry()
+	reg.Register(mustEchoTool(t))
+	var gotIntent string
+	r := &Runner{
+		LLM: llm, Cfg: &config.Config{}, Tools: reg,
+		OnIntent: func(text string) { gotIntent = text },
+	}
+	out, _, err := r.Run(context.Background(), "", openai.UserMessage("hi"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != "done" {
+		t.Fatalf("got %q", out)
+	}
+	if gotIntent != "I will inspect one file first." {
+		t.Fatalf("intent = %q", gotIntent)
+	}
+}
+
+func TestRunner_SyntheticIntentWhenContentEmpty(t *testing.T) {
+	toolRound := `{
+  "id": "x",
+  "object": "chat.completion",
+  "created": 1,
+  "model": "m",
+  "choices": [{
+    "index": 0,
+    "message": {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [{
+        "id": "call_1",
+        "type": "function",
+        "function": {
+          "name": "read_file",
+          "arguments": "{\"path\":\"main.go\"}"
+        }
+      }]
+    },
+    "finish_reason": "tool_calls"
+  }],
+  "usage": { "prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2 }
+}`
+	final := `{
+  "id": "y",
+  "object": "chat.completion",
+  "created": 2,
+  "model": "m",
+  "choices": [{
+    "index": 0,
+    "message": {
+      "role": "assistant",
+      "content": "done"
+    },
+    "finish_reason": "stop"
+  }],
+  "usage": { "prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2 }
+}`
+	llm := &mockLLM{model: "m", script: []string{toolRound, final}}
+	reg := tools.NewRegistry()
+	reg.Register(mustEchoTool(t))
+	var gotIntent string
+	r := &Runner{
+		LLM: llm, Cfg: &config.Config{}, Tools: reg,
+		OnIntent: func(text string) { gotIntent = text },
+	}
+	out, _, err := r.Run(context.Background(), "", openai.UserMessage("read main.go"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != "done" {
+		t.Fatalf("got %q", out)
+	}
+	if gotIntent == "" {
+		t.Fatal("expected synthetic intent when model content is empty")
+	}
+	if !strings.Contains(gotIntent, "main.go") {
+		t.Fatalf("synthetic intent should mention the file; got %q", gotIntent)
+	}
+}
+
+func TestRunner_ReplyFromReasoningContentWhenContentEmpty(t *testing.T) {
+	js := `{
+  "id": "x",
+  "object": "chat.completion",
+  "created": 1,
+  "model": "m",
+  "choices": [{
+    "index": 0,
+    "message": {
+      "role": "assistant",
+      "content": "",
+      "reasoning_content": "Here is my response to your question."
+    },
+    "finish_reason": "stop"
+  }],
+  "usage": { "prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2 }
+}`
+	llm := &mockLLM{model: "m", script: []string{js}}
+	reg := tools.NewRegistry()
+	cfg := &config.Config{}
+	tr := &tokentracker.Tracker{}
+	r := &Runner{LLM: llm, Cfg: cfg, Tools: reg, Tracker: tr}
+	out, _, err := r.Run(context.Background(), "", openai.UserMessage("hi"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != "Here is my response to your question." {
+		t.Fatalf("expected reasoning_content as reply, got %q", out)
+	}
+}
+
+func TestRunner_EmitsIntentFromReasoningContent(t *testing.T) {
+	toolRound := `{
+  "id": "x",
+  "object": "chat.completion",
+  "created": 1,
+  "model": "m",
+  "choices": [{
+    "index": 0,
+    "message": {
+      "role": "assistant",
+      "content": "",
+      "reasoning_content": "I will analyze the project structure first.",
+      "tool_calls": [{
+        "id": "call_1",
+        "type": "function",
+        "function": {
+          "name": "echo",
+          "arguments": "{\"message\":\"x\"}"
+        }
+      }]
+    },
+    "finish_reason": "tool_calls"
+  }],
+  "usage": { "prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2 }
+}`
+	final := `{
+  "id": "y",
+  "object": "chat.completion",
+  "created": 2,
+  "model": "m",
+  "choices": [{
+    "index": 0,
+    "message": {
+      "role": "assistant",
+      "content": "done"
+    },
+    "finish_reason": "stop"
+  }],
+  "usage": { "prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2 }
+}`
+	llm := &mockLLM{model: "m", script: []string{toolRound, final}}
+	reg := tools.NewRegistry()
+	reg.Register(mustEchoTool(t))
+	var gotIntent string
+	r := &Runner{
+		LLM: llm, Cfg: &config.Config{}, Tools: reg,
+		OnIntent: func(text string) { gotIntent = text },
+	}
+	out, _, err := r.Run(context.Background(), "", openai.UserMessage("hi"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != "done" {
+		t.Fatalf("got %q", out)
+	}
+	if gotIntent != "I will analyze the project structure first." {
+		t.Fatalf("intent = %q, want reasoning_content text", gotIntent)
+	}
+}
+
+func TestRunner_SyntheticIntentForTextToolCallPath(t *testing.T) {
+	// Simulates models like Qwen3.5 that embed XML tool calls in
+	// reasoning_content with no natural language surrounding them.
+	// The runner must generate a synthetic intent via OnIntent.
+	toolRound := `{
+  "id": "x",
+  "object": "chat.completion",
+  "created": 1,
+  "model": "m",
+  "choices": [{
+    "index": 0,
+    "message": {
+      "role": "assistant",
+      "content": "",
+      "reasoning_content": "<tool_call>{\"name\":\"read_file\",\"arguments\":{\"path\":\"main.go\"}}</tool_call>"
+    },
+    "finish_reason": "stop"
+  }],
+  "usage": { "prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2 }
+}`
+	final := `{
+  "id": "y",
+  "object": "chat.completion",
+  "created": 2,
+  "model": "m",
+  "choices": [{
+    "index": 0,
+    "message": {
+      "role": "assistant",
+      "content": "Here is the file."
+    },
+    "finish_reason": "stop"
+  }],
+  "usage": { "prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2 }
+}`
+	llm := &mockLLM{model: "m", script: []string{toolRound, final}}
+	reg := tools.NewRegistry()
+	reg.Register(mustReadFileTool(t))
+	var gotIntent string
+	r := &Runner{
+		LLM: llm, Cfg: &config.Config{}, Tools: reg,
+		OnIntent: func(text string) { gotIntent = text },
+	}
+	out, _, err := r.Run(context.Background(), "", openai.UserMessage("show main.go"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != "Here is the file." {
+		t.Fatalf("got %q", out)
+	}
+	if gotIntent == "" {
+		t.Fatal("expected synthetic intent for text tool call path, got empty")
+	}
+	if !strings.Contains(strings.ToLower(gotIntent), "main.go") {
+		t.Fatalf("intent = %q, expected mention of main.go", gotIntent)
+	}
+}
+
 func TestRunner_MaxTurnsAllowsSingleCompletion(t *testing.T) {
 	js := `{
   "id": "x",

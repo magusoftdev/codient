@@ -112,9 +112,63 @@ func TestParseTextToolCalls_Malformed(t *testing.T) {
 	}
 }
 
+func TestParseTextToolCalls_QwenJSONSingle(t *testing.T) {
+	content := `<tool_call>{"name":"read_file","arguments":{"path":"main.go"}}</tool_call>`
+	calls := parseTextToolCalls(content)
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 call, got %d", len(calls))
+	}
+	if calls[0].Name != "read_file" {
+		t.Fatalf("name: got %q", calls[0].Name)
+	}
+	if calls[0].Args["path"] != "main.go" {
+		t.Fatalf("path arg: got %q", calls[0].Args["path"])
+	}
+}
+
+func TestParseTextToolCalls_QwenJSONMultiple(t *testing.T) {
+	content := `<tool_call>{"name":"read_file","arguments":{"path":"main.go"}}</tool_call>
+<tool_call>{"name":"list_dir","arguments":{"path":"."}}</tool_call>`
+	calls := parseTextToolCalls(content)
+	if len(calls) != 2 {
+		t.Fatalf("expected 2 calls, got %d", len(calls))
+	}
+	if calls[0].Name != "read_file" {
+		t.Fatalf("first name: got %q", calls[0].Name)
+	}
+	if calls[1].Name != "list_dir" {
+		t.Fatalf("second name: got %q", calls[1].Name)
+	}
+}
+
+func TestParseTextToolCalls_QwenJSONBadJSON(t *testing.T) {
+	content := `<tool_call>not valid json</tool_call>`
+	calls := parseTextToolCalls(content)
+	if len(calls) != 0 {
+		t.Fatalf("expected 0 calls for malformed JSON, got %d", len(calls))
+	}
+}
+
+func TestParseTextToolCalls_QwenJSONNumericArg(t *testing.T) {
+	content := `<tool_call>{"name":"read_file","arguments":{"path":"main.go","max_lines":100}}</tool_call>`
+	calls := parseTextToolCalls(content)
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 call, got %d", len(calls))
+	}
+	if calls[0].Args["path"] != "main.go" {
+		t.Fatalf("path: got %q", calls[0].Args["path"])
+	}
+	if calls[0].Args["max_lines"] != "100" {
+		t.Fatalf("max_lines: got %q", calls[0].Args["max_lines"])
+	}
+}
+
 func TestContainsTextToolCalls(t *testing.T) {
 	if !containsTextToolCalls("<function=list_dir>") {
-		t.Fatal("expected true")
+		t.Fatal("expected true for <function=")
+	}
+	if !containsTextToolCalls(`<tool_call>{"name":"read_file"}</tool_call>`) {
+		t.Fatal("expected true for <tool_call>")
 	}
 	if containsTextToolCalls("no tool calls here") {
 		t.Fatal("expected false")
@@ -203,6 +257,16 @@ func TestStripTextToolCallFragments(t *testing.T) {
 			name:  "strips incomplete function open",
 			input: "stuff <function=read_file> trailing",
 			want:  "stuff  trailing",
+		},
+		{
+			name:  "strips Qwen-style tool_call JSON block",
+			input: "I'll read the file.\n<tool_call>{\"name\":\"read_file\",\"arguments\":{\"path\":\"main.go\"}}</tool_call>",
+			want:  "I'll read the file.",
+		},
+		{
+			name:  "strips multiple Qwen-style blocks",
+			input: "<tool_call>{\"name\":\"read_file\",\"arguments\":{\"path\":\"a.go\"}}</tool_call>\n<tool_call>{\"name\":\"list_dir\",\"arguments\":{\"path\":\".\"}}</tool_call>",
+			want:  "",
 		},
 		{
 			name:  "preserves non-XML angle brackets",

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"codient/internal/config"
@@ -13,6 +14,7 @@ import (
 	"codient/internal/sandbox"
 	"codient/internal/prompt"
 	"codient/internal/repomap"
+	"codient/internal/skills"
 	"codient/internal/tools"
 )
 
@@ -25,11 +27,15 @@ func RegistryForMode(cfg *config.Config, mode prompt.Mode, rm *repomap.Map) *too
 	fetch := FetchOpts(cfg, netLimit)
 	search := SearchOpts(cfg, netLimit)
 	sgPath := cfg.AstGrep
+	uskill := ""
+	if sd, err := config.StateDir(); err == nil && sd != "" {
+		uskill = filepath.Join(sd, skills.UserSkillsSubdir)
+	}
 	switch mode {
 	case prompt.ModeAsk:
-		return tools.DefaultReadOnly(ws, fetch, search, sgPath, nil, rm)
+		return tools.DefaultReadOnly(ws, uskill, fetch, search, sgPath, nil, rm)
 	case prompt.ModePlan:
-		return tools.DefaultReadOnlyPlan(ws, fetch, search, sgPath, nil, rm)
+		return tools.DefaultReadOnlyPlan(ws, uskill, fetch, search, sgPath, nil, rm)
 	default:
 		var execOpts *tools.ExecOptions
 		if len(cfg.ExecAllowlist) > 0 {
@@ -53,7 +59,7 @@ func RegistryForMode(cfg *config.Config, mode prompt.Mode, rm *repomap.Map) *too
 				WorkspaceRoot: ws,
 			}
 		}
-		return tools.Default(ws, execOpts, fetch, search, sgPath, nil, rm, memOpts)
+		return tools.Default(ws, uskill, execOpts, fetch, search, sgPath, nil, rm, memOpts)
 	}
 }
 
@@ -77,6 +83,14 @@ func SystemPromptForMode(cfg *config.Config, reg *tools.Registry, mode prompt.Mo
 	if err != nil {
 		fmt.Fprintf(errWriter, "codient: memory: %v\n", err)
 	}
+	skillsCat := ""
+	if stateDir != "" {
+		var skErr error
+		skillsCat, skErr = skills.LoadCatalogMarkdown(stateDir, cfg.EffectiveWorkspace())
+		if skErr != nil {
+			fmt.Fprintf(errWriter, "codient: skills: %v\n", skErr)
+		}
+	}
 	return prompt.Build(prompt.Params{
 		Cfg:              cfg,
 		Reg:              reg,
@@ -85,6 +99,7 @@ func SystemPromptForMode(cfg *config.Config, reg *tools.Registry, mode prompt.Mo
 		ProjectContext:   projCtx,
 		RepoMap:          strings.TrimSpace(repoMapText),
 		Memory:           mem,
+		SkillsCatalog:    skillsCat,
 	})
 }
 

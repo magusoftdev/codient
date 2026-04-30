@@ -113,6 +113,8 @@ type Config struct {
 	StreamReply bool
 	// Progress forces progress output on stderr.
 	Progress bool
+	// AcpPreloadModelOnSetModel runs a minimal chat completion after ACP session/set_model so local servers load the model before the next user message (default true).
+	AcpPreloadModelOnSetModel bool
 	// DesignSaveDir overrides the directory for saved implementation plans.
 	DesignSaveDir string
 	// DesignSave controls whether plan-mode plans are saved to disk (default true).
@@ -297,6 +299,10 @@ func Load() (*Config, error) {
 	if pc.GitAutoCommit != nil {
 		gitAutoCommit = *pc.GitAutoCommit
 	}
+	acpPreloadModelOnSetModel := true
+	if pc.AcpPreloadModelOnSetModel != nil {
+		acpPreloadModelOnSetModel = *pc.AcpPreloadModelOnSetModel
+	}
 	protectedBranches := ParseGitProtectedBranches(pc.GitProtectedBranches)
 	if len(protectedBranches) == 0 {
 		protectedBranches = []string{"main", "master", "develop"}
@@ -355,6 +361,7 @@ func Load() (*Config, error) {
 		LogPath:              strings.TrimSpace(pc.LogPath),
 		StreamReply:          streamReply,
 		Progress:             pc.Progress,
+		AcpPreloadModelOnSetModel: acpPreloadModelOnSetModel,
 		DesignSaveDir:        strings.TrimSpace(pc.DesignSaveDir),
 		DesignSave:           designSave,
 		ProjectContext:       strings.TrimSpace(pc.ProjectContext),

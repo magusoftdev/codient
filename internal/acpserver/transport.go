@@ -32,10 +32,16 @@ type Transport struct {
 	out io.Writer
 	log io.Writer
 
-	mu       sync.Mutex
-	nextID   atomic.Int32
-	pending  sync.Map // int32 -> chan WireMsg
+	mu      sync.Mutex
+	nextID  atomic.Int32
+	pending sync.Map     // int32 -> chan WireMsg
 	readErr atomic.Value // stores error
+
+	// ConsumeInbound, if set, is invoked from ReadLoop for inbound lines that are not
+	// JSON-RPC responses dispatched to pending clients. If it returns true, the message
+	// is not forwarded on the outbound channel (used for session/cancel while a blocking
+	// request is in flight).
+	ConsumeInbound func(msg WireMsg) bool
 }
 
 // NewTransport returns an ACP stdio transport using os.Stdin/os.Stdout/os.Stderr.
@@ -173,6 +179,9 @@ func (t *Transport) ReadLoop(ctx context.Context, out chan<- WireMsg) {
 			continue
 		}
 		if t.dispatchResponse(msg) {
+			continue
+		}
+		if t.ConsumeInbound != nil && t.ConsumeInbound(msg) {
 			continue
 		}
 		select {

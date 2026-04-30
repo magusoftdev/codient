@@ -26,6 +26,14 @@ Integration tests that call a live API need a configured model and are not run i
 make test-integration
 ```
 
+ACP stdio parity with Codient Unity (spawns `codient -acp`, NDJSON JSON-RPC):
+
+```bash
+make test-acp
+```
+
+Uses the same `~/.codient/config.json` (or `CODIENT_STATE_DIR`) as other live tests; set **`CODIENT_INTEGRATION_STRICT_TOOLS=1`** for tool-using cases (see [Development](docs/development.md)).
+
 ## Style
 
 - Run `make fmt` before committing.

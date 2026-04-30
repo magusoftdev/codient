@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -43,6 +44,7 @@ import (
 // Coverage: builtins (echo, get_time), read-only workspace tools (read_file, list_dir, grep,
 // search_files), optional run_command (CODIENT_INTEGRATION_RUN_COMMAND=1). write_file and
 // str_replace are intentionally omitted (mutating; run a manual check in a throwaway workspace if needed).
+// Also: OnIntent + multi-tool-round + stream+intent (ACP-parity paths). Black-box ACP tests: make test-acp.
 
 func TestIntegration_AgentDirectReply(t *testing.T) {
 	skipUnlessIntegration(t)
@@ -57,7 +59,7 @@ func TestIntegration_AgentDirectReply(t *testing.T) {
 		t.Fatal(err)
 	}
 	client := openaiclient.New(cfg)
-	reg := tools.Default("", nil, nil, nil, "", nil, nil, nil)
+	reg := tools.Default("", "", nil, nil, nil, "", nil, nil, nil)
 	ar := &agent.Runner{LLM: client, Cfg: cfg, Tools: reg}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
@@ -119,6 +121,106 @@ func TestIntegration_AgentUsesEchoTool_WithStreamWriter(t *testing.T) {
 	}
 	if !strings.Contains(reply, mark) {
 		t.Fatalf("expected final reply to contain tool output %q; got: %q", mark, reply)
+	}
+}
+
+// TestIntegration_OnIntentFires wires OnIntent during a live tool round. Some models omit assistant
+// preface when calling tools; we require a successful echo round-trip and log intent lines when present.
+func TestIntegration_OnIntentFires(t *testing.T) {
+	skipUnlessIntegration(t)
+	skipUnlessStrictTools(t)
+	if testing.Short() {
+		t.Skip("skipping live LLM call in -short mode")
+	}
+	ar, ctx, cancel := newLiveRunner(t, "")
+	defer cancel()
+	var mu sync.Mutex
+	var intents []string
+	ar.OnIntent = func(text string) {
+		mu.Lock()
+		intents = append(intents, strings.TrimSpace(text))
+		mu.Unlock()
+	}
+	const mark = "CODIENT_INTENT_MARK_88aa"
+	sys := "You have a function tool named echo. When the user asks you to echo a message, you MUST call echo with JSON {\"message\": <their exact string>} and nothing else until the tool returns."
+	user := "Use the echo tool now with message exactly: " + mark
+	reply, _, err := ar.Run(ctx, sys, openai.UserMessage(user), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reply, mark) {
+		t.Fatalf("expected final reply to contain %q; got: %q", mark, stringutil.TruncateRunes(reply, 800))
+	}
+	mu.Lock()
+	n := len(intents)
+	mu.Unlock()
+	if n == 0 {
+		t.Log("OnIntent did not fire (model may use tool_calls without assistant preface); echo round-trip still succeeded")
+	} else {
+		t.Logf("OnIntent fired %d time(s); first: %q", n, stringutil.TruncateRunes(intents[0], 200))
+	}
+}
+
+// TestIntegration_MultiToolRoundCompletes requires list_dir then read_file in one user turn (two tool rounds).
+func TestIntegration_MultiToolRoundCompletes(t *testing.T) {
+	skipUnlessIntegration(t)
+	skipUnlessStrictTools(t)
+	if testing.Short() {
+		t.Skip("skipping live LLM call in -short mode")
+	}
+	const needle = "CODIENT_MULTI_ROUND_FILE_9c2e"
+	dir := workspaceFixture(t, map[string]string{
+		"step_two_readme.txt": needle,
+	})
+	ar, ctx, cancel := newLiveRunner(t, dir)
+	defer cancel()
+	sys := "You have list_dir and read_file. " +
+		"Step 1: call list_dir with JSON {\"path\": \".\", \"max_depth\": 0}. " +
+		"Step 2: call read_file with JSON {\"path\": \"step_two_readme.txt\"}. " +
+		"After both tools return, your reply MUST contain the exact substring " + needle + "."
+	user := "List the workspace root, then read step_two_readme.txt, then answer including the file contents."
+	reply, _, err := ar.Run(ctx, sys, openai.UserMessage(user), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reply, needle) {
+		t.Fatalf("expected reply to contain %q after two tool rounds; got: %q", needle, stringutil.TruncateRunes(reply, 1500))
+	}
+}
+
+// TestIntegration_StreamWriterWithToolRoundsAndIntent matches the ACP path: non-nil stream writer + tools + OnIntent.
+func TestIntegration_StreamWriterWithToolRoundsAndIntent(t *testing.T) {
+	skipUnlessIntegration(t)
+	skipUnlessStrictTools(t)
+	if testing.Short() {
+		t.Skip("skipping live LLM call in -short mode")
+	}
+	ar, ctx, cancel := newLiveRunner(t, "")
+	defer cancel()
+	var mu sync.Mutex
+	var intents []string
+	ar.OnIntent = func(text string) {
+		mu.Lock()
+		intents = append(intents, strings.TrimSpace(text))
+		mu.Unlock()
+	}
+	const mark = "CODIENT_STREAM_INTENT_MARK_77bb"
+	sys := "You have a function tool named echo. When the user asks you to echo a message, you MUST call echo with JSON {\"message\": <their exact string>} and nothing else until the tool returns."
+	user := "Use the echo tool now with message exactly: " + mark
+	reply, _, err := ar.Run(ctx, sys, openai.UserMessage(user), io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reply, mark) {
+		t.Fatalf("expected final reply to contain tool output %q; got: %q", mark, reply)
+	}
+	mu.Lock()
+	n := len(intents)
+	mu.Unlock()
+	if n == 0 {
+		t.Log("OnIntent did not fire with stream writer (model-dependent)")
+	} else {
+		t.Logf("OnIntent with stream writer: %d snippet(s)", n)
 	}
 }
 
@@ -329,7 +431,7 @@ func newLiveRunnerOpts(t *testing.T, workspace string, exec *tools.ExecOptions) 
 		cfg.Workspace = wsRoot
 	}
 	client := openaiclient.New(cfg)
-	reg := tools.Default(wsRoot, exec, nil, nil, "", nil, nil, nil)
+	reg := tools.Default(wsRoot, "", exec, nil, nil, "", nil, nil, nil)
 	ar := &agent.Runner{LLM: client, Cfg: cfg, Tools: reg}
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
 	return ar, ctx, cancel

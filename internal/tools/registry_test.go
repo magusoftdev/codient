@@ -10,7 +10,7 @@ import (
 )
 
 func TestEcho(t *testing.T) {
-	r := Default("", nil, nil, nil, "", nil, nil, nil)
+	r := Default("", "", nil, nil, nil, "", nil, nil, nil)
 	out, err := r.Run(context.Background(), "echo", json.RawMessage(`{"message":"hi"}`))
 	if err != nil {
 		t.Fatal(err)
@@ -43,6 +43,26 @@ func TestReadFileWorkspace(t *testing.T) {
 	_, err = readFileWorkspace(dir, "../outside", 100, 0, 0)
 	if err == nil {
 		t.Fatal("expected escape error")
+	}
+}
+
+func TestReadFile_UserSkillsFallback(t *testing.T) {
+	ws := t.TempDir()
+	lib := t.TempDir()
+	skillDir := filepath.Join(lib, "my-skill")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	skillPath := filepath.Join(skillDir, "SKILL.md")
+	if err := os.WriteFile(skillPath, []byte("skill body"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s, err := readFileWorkspaceOrUserSkills(ws, lib, "my-skill/SKILL.md", 1024, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s != "skill body" {
+		t.Fatalf("got %q", s)
 	}
 }
 
@@ -115,7 +135,7 @@ func TestWriteFileWorkspace(t *testing.T) {
 
 func TestWriteFileToolViaRegistry(t *testing.T) {
 	dir := t.TempDir()
-	r := Default(dir, nil, nil, nil, "", nil, nil, nil)
+	r := Default(dir, "", nil, nil, nil, "", nil, nil, nil)
 	out, err := r.Run(context.Background(), "write_file", json.RawMessage(`{
 		"path": "pkg/x.go",
 		"content": "package pkg\n",
@@ -138,7 +158,7 @@ func TestWriteFileToolViaRegistry(t *testing.T) {
 
 func TestWriteFileRejectsEmptyContent(t *testing.T) {
 	dir := t.TempDir()
-	r := Default(dir, nil, nil, nil, "", nil, nil, nil)
+	r := Default(dir, "", nil, nil, nil, "", nil, nil, nil)
 	_, err := r.Run(context.Background(), "write_file", json.RawMessage(`{
 		"path": "empty.go",
 		"content": ""
@@ -156,7 +176,7 @@ func TestWriteFileRejectsEmptyContent(t *testing.T) {
 
 func TestDefaultWorkspaceToolsRegistered(t *testing.T) {
 	dir := t.TempDir()
-	r := Default(dir, nil, nil, nil, "", nil, nil, nil)
+	r := Default(dir, "", nil, nil, nil, "", nil, nil, nil)
 	names := map[string]bool{}
 	for _, n := range r.Names() {
 		names[n] = true
@@ -173,7 +193,7 @@ func TestDefaultWorkspaceToolsRegistered(t *testing.T) {
 
 func TestDefaultReadOnly_OmitsMutatingTools(t *testing.T) {
 	dir := t.TempDir()
-	r := DefaultReadOnly(dir, nil, nil, "", nil, nil)
+	r := DefaultReadOnly(dir, "", nil, nil, "", nil, nil)
 	names := r.Names()
 	for _, n := range names {
 		if n == "write_file" || n == "run_command" || n == "remove_path" || n == "move_path" || n == "copy_path" {
@@ -194,7 +214,7 @@ func TestDefaultReadOnly_OmitsMutatingTools(t *testing.T) {
 
 func TestDefaultReadOnlyPlan_NoEcho(t *testing.T) {
 	dir := t.TempDir()
-	r := DefaultReadOnlyPlan(dir, nil, nil, "", nil, nil)
+	r := DefaultReadOnlyPlan(dir, "", nil, nil, "", nil, nil)
 	for _, n := range r.Names() {
 		if n == "echo" {
 			t.Fatal("plan registry must not include echo")
@@ -213,7 +233,7 @@ func TestDefaultReadOnlyPlan_NoEcho(t *testing.T) {
 
 func TestDefault_WithFetch_IncludesFetchURL(t *testing.T) {
 	dir := t.TempDir()
-	r := Default(dir, nil, &FetchOptions{
+	r := Default(dir, "", nil, &FetchOptions{
 		AllowHosts: []string{"example.com"},
 		MaxBytes:   4096,
 		TimeoutSec: 10,
@@ -231,7 +251,7 @@ func TestDefault_WithFetch_IncludesFetchURL(t *testing.T) {
 
 func TestDefault_WithSearch_IncludesWebSearch(t *testing.T) {
 	dir := t.TempDir()
-	r := Default(dir, nil, nil, &SearchOptions{}, "", nil, nil, nil)
+	r := Default(dir, "", nil, nil, &SearchOptions{}, "", nil, nil, nil)
 	found := false
 	for _, n := range r.Names() {
 		if n == "web_search" {
@@ -245,7 +265,7 @@ func TestDefault_WithSearch_IncludesWebSearch(t *testing.T) {
 
 func TestDefault_WithAllowlist_IncludesRunCommand(t *testing.T) {
 	dir := t.TempDir()
-	r := Default(dir, &ExecOptions{
+	r := Default(dir, "", &ExecOptions{
 		Allowlist:      []string{"go"},
 		TimeoutSeconds: 30,
 		MaxOutputBytes: 1024,

@@ -11,6 +11,8 @@ When the API returns usage metadata, codient aggregates **prompt and completion 
 
 **Repository:** [github.com/vaughanb/codient](https://github.com/vaughanb/codient)
 
+**Unity Editor:** the companion [Codient Unity](https://github.com/vaughanb/codient-unity) package runs this binary in **ACP** mode from the Unity Editor (chat UI, Unity context tools, optional release install). You need a `codient` build whose **`-help`** lists **`-acp`**. See [ACP stdio](docs/usage.md#acp-stdio-agent) and the Unity project README when both repos are checked out side by side.
+
 ## Install
 
 You need a running server with OpenAI-style `/v1/chat/completions` (the default in config is `http://127.0.0.1:1234/v1`, typical for local stacks). Prebuilt release installs do not require Go on your PATH; [Go](https://go.dev/dl/) **1.26+** is only required for `go install` or `make install` from a clone (see `go.mod`).

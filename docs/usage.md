@@ -125,9 +125,15 @@ codient -plain -progress -acp -mode build -workspace /path/to/project
 ```
 
 - **`-mode`** selects **build**, **ask**, or **plan** (same tool policies as the CLI).
-- **`session/new`** requires **`cwd`** to match the configured workspace (same rule as **`-workspace`**).
+- **`initialize`** result includes **`defaultChatModel`**: the trimmed chat model id from the agent’s effective config for the current **`-mode`** (same default the OpenAI client uses when **`session/new`** omits **`model`**). Editors can align a model picker with this when the user has no saved preference or a stale id.
+- **`session/new`** requires **`cwd`** to match the configured workspace (same rule as **`-workspace`**). Optional **`model`** selects a chat model id for that session (OpenAI-compatible API); omit it to use the configured default (same as the CLI).
+- **`session/set_model`** updates **`model`** for an existing **`sessionId`** without clearing server-side conversation history. Omit **`model`** or send an empty string to revert that session to the configured default. Returns **`{"model": "<trimmed id>"}`** (empty string means default). Fails with **`session_busy`** while a **`session/prompt`** turn is in progress on that session.
+  - **Preload (default on):** unless disabled, the agent runs a **minimal non-streaming chat completion** (not added to conversation history) so local inference servers load the model **before** the RPC returns. On failure, the session’s previous model is restored and the RPC fails with **`preload:`** in the error message. Disable per request with **`"preload": false`**, or set **`acp_preload_model_on_set_model`** to **`false`** in **`config.json`** to skip preloads for all switches.
+  - **Progress:** while switching models, the agent may emit JSON-RPC notifications **`session/model_status`** with **`params`**: **`sessionId`**, **`phase`** (`unloading` \| `loading` \| `ready` \| `error`), and optional **`message`**. On Ollama-compatible hosts (OpenAI base URL ending in **`/v1`**, not known cloud APIs), **`unloading`** precedes a best-effort **`POST …/api/generate`** unload (`keep_alive: 0`) for the previous model before the new one is warmed. Clients may show these in UI chrome without treating them as transcript content.
+- **`agent/list_models`** returns ids from **`GET …/models`** on the effective connection for the current **`codient -mode`** (top-level **`base_url`** plus any per-mode **`models`** overrides in **`config.json`**). Parsing accepts OpenAI **`data`** arrays, common alternate **`models`** arrays (including LM Studio-style objects with **`key`**), and object entries keyed by **`id`**, **`model`**, **`key`**, or **`name`** — same endpoint as **`codient -list-models`**.
 - **stderr** may carry human-readable progress; **stdout** is reserved for ACP messages only.
 - **`-max-turns`** and **`-max-cost`** apply per user prompt turn, like headless mode.
+- **Codient Unity / Editor-shaped workspaces:** When **`-workspace`** looks like a Unity project (**`Assets/`** plus **`ProjectSettings/ProjectVersion.txt`**), the agent system prompt includes **Unity ACP** guidance. In **`-acp`**, the agent registers **`unity_*`** tools that issue JSON-RPC **`unity/...`** requests on stdout; the editor client (Codient Unity) runs them on the **Unity main thread** and returns results on stdin—same transport as **`session/request_permission`**. Read tools (hierarchy, assets, prefabs, console snapshot, package/asmdef summary) work in **ask** / **plan** / **build**; **`unity_apply_actions`** is **build mode only** and requires a **user confirmation** dialog in Unity before mutating the scene. API keys and chat payloads still follow your **`config.json`** / provider rules; nothing is sent to Unity except what the model requests through those tools.
 
 Implementation: [`internal/acpserver/`](../internal/acpserver/) (transport) and [`internal/codientcli/acp_serve.go`](../internal/codientcli/acp_serve.go) (handlers).
 
@@ -142,6 +148,8 @@ Inside a session you can use slash commands to control the agent:
 | `/ask` (or `/a`) | Switch to ask mode (read-only Q&A) |
 | `/config [key] [value]` | View or set any configuration key (no args = show all, key = show one, key value = set and save) |
 | `/setup` | Guided setup wizard for API connection, chat model selection, optional plan-mode model override, and optional embedding model for semantic search |
+| `/create-skill` | Guided wizard to author a **skill** (`SKILL.md` under user or workspace skills dirs); refreshes the in-session skill catalog |
+| `/skills` | List discovered skills (name, scope, `read_file` path) |
 | `/compact` | Summarize conversation history to save context space |
 | `/model <name>` | Switch to a different model (shortcut for `/config model`) |
 | `/workspace <path>` | Change the workspace directory |
@@ -212,6 +220,23 @@ Both files are Markdown. Global memory is loaded first, workspace memory second,
 | `.codient/instructions.md` | Codient-specific project instructions |
 
 These are read-only from the agent's perspective (capped at 32 KiB total) and complement the read-write memory files.
+
+## Agent skills
+
+**Skills** are optional folders containing **`SKILL.md`**: YAML frontmatter (`name`, `description`, and optionally `disable-model-invocation`) plus markdown instructions. They behave like Cursor-style agent skills: a short **Agent skills** section is injected into the system prompt listing each skill’s name, description, and the path to pass to **`read_file`**. When a task matches a skill, the model should read that file before following it.
+
+| Scope | Location |
+|-------|----------|
+| **User (global)** | `<state-dir>/skills/<skill-id>/SKILL.md` (default state dir `~/.codient`, or `CODIENT_STATE_DIR`) |
+| **Workspace** | `<workspace>/.codient/skills/<skill-id>/SKILL.md` |
+
+If the same **`name`** appears in both places, the **workspace** skill wins. The catalog is capped in size; very large lists may show `[truncated]`.
+
+**`read_file`:** Paths under the workspace work as usual. Paths for **user** skills (shown in the catalog) are resolved under `<state-dir>/skills/` when the file is not found under the workspace—so global skills remain readable without widening access to arbitrary files outside the workspace.
+
+**REPL:** **`/create-skill`** walks you through scope, folder id, description, and optional `disable-model-invocation`, then writes **`SKILL.md`**. **`/skills`** prints what codient discovered on disk. Starting a new session with **`/new`** reloads the skill catalog from disk (as does restarting codient). Editing skills manually without **`/new`** takes effect after restart unless you run **`/create-skill`** again or use **`/new`** (which reloads skills).
+
+**ACP / Unity:** Slash commands run only in the interactive CLI REPL; editor sessions still receive the **Agent skills** section in the system prompt when codient starts.
 
 ## Plan mode and saved plans
 

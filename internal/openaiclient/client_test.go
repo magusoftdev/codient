@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -172,6 +174,44 @@ func TestListModels(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(ids) != 2 || ids[0] != "a" || ids[1] != "b" {
+		t.Fatalf("got %#v", ids)
+	}
+}
+
+func TestExtractModelIDsFromJSON_LMStudioStyleModelsKeyOnly(t *testing.T) {
+	// LM Studio (and similar) often list entries under "models" with "key", not OpenAI's "data"[].id
+	body := []byte(`{"models":[{"type":"llm","key":"google/gemma-mini"},{"type":"embedding","key":"nomic-embed"}]}`)
+	ids, err := ExtractModelIDsFromJSON(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sort.Strings(ids)
+	want := []string{"google/gemma-mini", "nomic-embed"}
+	if !reflect.DeepEqual(ids, want) {
+		t.Fatalf("got %#v want %#v", ids, want)
+	}
+}
+
+func TestExtractModelIDsFromJSON_DataModelsAndNameShapes(t *testing.T) {
+	ids, err := ExtractModelIDsFromJSON([]byte(
+		`{"data":[{"id":"a"}],"models":[{"name":"named-only"},{"id":"explicit-id"}]} `,
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sort.Strings(ids)
+	want := []string{"a", "explicit-id", "named-only"}
+	if !reflect.DeepEqual(ids, want) {
+		t.Fatalf("got %#v want %#v", ids, want)
+	}
+}
+
+func TestExtractModelIDsFromJSON_StringElements(t *testing.T) {
+	ids, err := ExtractModelIDsFromJSON([]byte(`{"data":["qwen-mini","gpt-style"]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ids) != 2 || ids[0] != "qwen-mini" || ids[1] != "gpt-style" {
 		t.Fatalf("got %#v", ids)
 	}
 }
@@ -402,5 +442,34 @@ func TestNewForMode_PartialOverride(t *testing.T) {
 	}
 	if c.apiKey != "default-key" {
 		t.Fatalf("apiKey should inherit: got %q", c.apiKey)
+	}
+}
+
+func TestTryOllamaUnloadModel_PostsToNativeAPI(t *testing.T) {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/generate" && r.Method == http.MethodPost {
+			hits.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"model":"m","created_at":"t","response":"","done":true,"done_reason":"unload"}`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	c := New(testConfig(srv.URL+"/v1", "base-model"))
+	if err := c.TryOllamaUnloadModel(context.Background(), "llama3"); err != nil {
+		t.Fatal(err)
+	}
+	if hits.Load() != 1 {
+		t.Fatalf("expected 1 POST /api/generate, got %d", hits.Load())
+	}
+}
+
+func TestTryOllamaUnloadModel_SkipsCloudHost(t *testing.T) {
+	c := New(testConfig("https://api.openai.com/v1", "gpt-4o-mini"))
+	if err := c.TryOllamaUnloadModel(context.Background(), "gpt-4o-mini"); err != nil {
+		t.Fatal(err)
 	}
 }

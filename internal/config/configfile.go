@@ -82,6 +82,9 @@ type PersistentConfig struct {
 	StreamReply *bool `json:"stream_reply,omitempty"`
 	Progress    bool  `json:"progress,omitempty"`
 
+	// AcpPreloadModelOnSetModel: when false, ACP session/set_model skips the warmup chat completion (default true when omitted).
+	AcpPreloadModelOnSetModel *bool `json:"acp_preload_model_on_set_model,omitempty"`
+
 	// Plan save
 	DesignSaveDir string `json:"design_save_dir,omitempty"`
 	DesignSave    *bool  `json:"design_save,omitempty"`
@@ -288,6 +291,10 @@ func ConfigToPersistent(cfg *Config) *PersistentConfig {
 	if !cfg.UpdateNotify {
 		f := false
 		pc.UpdateNotify = &f
+	}
+	if !cfg.AcpPreloadModelOnSetModel {
+		f := false
+		pc.AcpPreloadModelOnSetModel = &f
 	}
 	pc.CostPerMTok = cfg.CostPerMTok
 	pc.HooksEnabled = cfg.HooksEnabled

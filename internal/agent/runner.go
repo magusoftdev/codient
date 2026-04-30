@@ -100,6 +100,8 @@ type Runner struct {
 	OnToolBefore func(ctx context.Context, toolCallID, name string, args json.RawMessage)
 	// OnToolAfter is invoked after each tool execution with the display string and API error if any.
 	OnToolAfter func(ctx context.Context, toolCallID, name string, args json.RawMessage, display string, err error)
+	// OnIntent is invoked when the model emits an intent/thinking preface before tool calls.
+	OnIntent func(text string)
 	// StopHookActive is true when the next assistant text follows a Stop-hook continuation in this RunConversation.
 	StopHookActive bool
 	toolUseSeq     atomic.Uint64
@@ -141,6 +143,7 @@ func (r *Runner) RunConversation(ctx context.Context, system string, history []o
 	llmRound := 0
 	streamedFinal := false
 	consecutiveToolFails := 0
+	finalReplyNudgeSent := false
 	const maxConsecutiveToolFails = 3
 	var turnTools []string
 
@@ -207,16 +210,35 @@ func (r *Runner) RunConversation(ctx context.Context, system string, history []o
 
 		msg := res.Choices[0].Message
 		if len(msg.ToolCalls) == 0 {
+			toolCallSource := assistantTextToolCallSource(msg)
 			// Check for XML-style tool calls embedded in text (e.g. Qwen3-coder).
 			// Skip if we've already hit the consecutive failure limit — the model
 			// is stuck and parsing more text tool calls will loop forever.
-			if msg.Content != "" && consecutiveToolFails < maxConsecutiveToolFails && containsTextToolCalls(msg.Content) {
-				if parsed := parseTextToolCalls(msg.Content); len(parsed) > 0 {
-					msgs = append(msgs, openai.AssistantMessage(msg.Content))
+			if toolCallSource != "" && consecutiveToolFails < maxConsecutiveToolFails && containsTextToolCalls(toolCallSource) {
+				if parsed := parseTextToolCalls(toolCallSource); len(parsed) > 0 {
+			if r.OnIntent != nil {
+					intent := strings.TrimSpace(stripTextToolCallFragments(toolCallSource))
+					if intent != "" {
+						r.OnIntent(intent)
+					} else if len(parsed) > 0 {
+						tc0 := parsed[0]
+						args0 := textToolCallArgsJSON(tc0.Args)
+						if s := syntheticIntentSentence(tc0.Name, args0); s != "" {
+							r.OnIntent(s)
+						}
+					}
+				}
+				assistantHistoryText := strings.TrimSpace(msg.Content)
+					if assistantHistoryText == "" {
+						assistantHistoryText = strings.TrimSpace(stripTextToolCallFragments(toolCallSource))
+					}
+					if assistantHistoryText != "" {
+						msgs = append(msgs, openai.AssistantMessage(assistantHistoryText))
+					}
 
 					thinkingPrinted := false
 					if r.Progress != nil {
-						if line := FormatThinkingProgressLine(r.ProgressPlain, r.ProgressMode, msg.Content); line != "" {
+						if line := FormatThinkingProgressLine(r.ProgressPlain, r.ProgressMode, toolCallSource); line != "" {
 							fmt.Fprintf(r.Progress, "\n%s\n", line)
 							thinkingPrinted = true
 						}
@@ -316,15 +338,19 @@ func (r *Runner) RunConversation(ctx context.Context, system string, history []o
 				}
 			}
 
-			if r.Progress != nil {
-				suf := roundUsageSuffix(res, r.Cfg.ContextWindowTokens)
-				fmt.Fprintf(r.Progress, "%sllm %s  ·  reply%s\n", progressNestedIndent, formatProgressDur(llmDur), suf)
+		if r.Progress != nil {
+			suf := roundUsageSuffix(res, r.Cfg.ContextWindowTokens)
+			fmt.Fprintf(r.Progress, "%sllm %s  ·  reply%s\n", progressNestedIndent, formatProgressDur(llmDur), suf)
+		}
+		replyContent := msg.Content
+		if replyContent == "" && toolCallSource != "" && !containsTextToolCalls(toolCallSource) {
+			replyContent = strings.TrimSpace(toolCallSource)
+		}
+		if replyContent != "" {
+			content := replyContent
+			if containsTextToolCalls(content) {
+				content = stripTextToolCallFragments(content)
 			}
-			if msg.Content != "" {
-				content := msg.Content
-				if containsTextToolCalls(content) {
-					content = stripTextToolCallFragments(content)
-				}
 				if r.PostReplyCheck != nil {
 					if inject := r.PostReplyCheck(ctx, PostReplyCheckInfo{
 						Reply:     content,
@@ -365,9 +391,32 @@ func (r *Runner) RunConversation(ctx context.Context, system string, history []o
 			if strings.TrimSpace(msg.Refusal) != "" {
 				return "", nil, false, fmt.Errorf("model refusal: %s", strings.TrimSpace(msg.Refusal))
 			}
-			return "", nil, false, fmt.Errorf("model returned no content and no tool calls")
+			if !finalReplyNudgeSent {
+				finalReplyNudgeSent = true
+				msgs = append(msgs, openai.UserMessage("Please provide a brief final response to the user now. Do not call tools."))
+				if r.Progress != nil {
+					if line := FormatStatusProgressLine(r.ProgressPlain, r.ProgressMode, "requesting final response text…"); line != "" {
+						fmt.Fprintf(r.Progress, "%s\n", line)
+					}
+				}
+				continue
+			}
+			fr := string(res.Choices[0].FinishReason)
+		return "", nil, false, fmt.Errorf("model returned no content and no tool calls (finish_reason=%s)", fr)
 		}
 
+		intentEmitted := false
+		if r.OnIntent != nil {
+			intent := strings.TrimSpace(msg.Content)
+			if intent == "" {
+				intent = strings.TrimSpace(assistantTextToolCallSource(msg))
+				intent = stripTextToolCallFragments(intent)
+			}
+			if intent != "" {
+				r.OnIntent(intent)
+				intentEmitted = true
+			}
+		}
 		msgs = append(msgs, msg.ToParam())
 
 		type toolResult struct {
@@ -392,13 +441,22 @@ func (r *Runner) RunConversation(ctx context.Context, system string, history []o
 				thinkingPrinted = true
 			}
 		}
-		if r.Progress != nil && !thinkingPrinted && len(calls) > 0 {
-			v0 := calls[0]
-			args0 := json.RawMessage(v0.Function.Arguments)
-			if line := FormatSyntheticIntentThinkingLine(r.ProgressPlain, r.ProgressMode, v0.Function.Name, args0); line != "" {
-				fmt.Fprintf(r.Progress, "\n%s\n", line)
+	if len(calls) > 0 {
+		v0 := calls[0]
+		args0 := json.RawMessage(v0.Function.Arguments)
+		if !thinkingPrinted {
+			if r.Progress != nil {
+				if line := FormatSyntheticIntentThinkingLine(r.ProgressPlain, r.ProgressMode, v0.Function.Name, args0); line != "" {
+					fmt.Fprintf(r.Progress, "\n%s\n", line)
+				}
 			}
 		}
+		if r.OnIntent != nil && !intentEmitted {
+			if s := syntheticIntentSentence(v0.Function.Name, args0); s != "" {
+				r.OnIntent(s)
+			}
+		}
+	}
 
 		results := make([]toolResult, len(calls))
 		if r.Progress != nil {
@@ -491,6 +549,23 @@ func (r *Runner) RunConversation(ctx context.Context, system string, history []o
 			fmt.Fprintf(r.Progress, "  ⚠ %d consecutive tool failures — requesting text reply\n", consecutiveToolFails)
 		}
 	}
+}
+
+func assistantTextToolCallSource(msg openai.ChatCompletionMessage) string {
+	if strings.TrimSpace(msg.Content) != "" {
+		return msg.Content
+	}
+	raw := strings.TrimSpace(msg.RawJSON())
+	if raw == "" {
+		return ""
+	}
+	var payload struct {
+		ReasoningContent string `json:"reasoning_content"`
+	}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		return ""
+	}
+	return payload.ReasoningContent
 }
 
 type autoCheckInput struct {

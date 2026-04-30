@@ -94,15 +94,16 @@ func (r *Registry) Run(ctx context.Context, name string, args json.RawMessage) (
 
 // Default returns a registry with safe builtins and, when workspace is non-empty,
 // coding tools scoped to that directory (config workspace or -workspace).
+// userSkillsReadLib, when non-empty, is a second read root for read_file/path_stat (codient user skills); try workspace first, then this directory.
 // exec enables run_command when non-nil and Allowlist is non-empty (exec_allowlist in config).
 // fetch enables fetch_url when non-nil and AllowHosts is non-empty (fetch_allow_hosts / preapproved in config).
 // search enables web_search when non-nil (always enabled in default builds).
-func Default(workspace string, exec *ExecOptions, fetch *FetchOptions, search *SearchOptions, astGrepPath string, idx *codeindex.Index, rm *repomap.Map, mem *MemoryOptions) *Registry {
+func Default(workspace string, userSkillsReadLib string, exec *ExecOptions, fetch *FetchOptions, search *SearchOptions, astGrepPath string, idx *codeindex.Index, rm *repomap.Map, mem *MemoryOptions) *Registry {
 	r := NewRegistry()
 	registerBuiltinTools(r, true)
 	root := strings.TrimSpace(workspace)
 	if root != "" {
-		registerWorkspaceTools(r, root, exec, fetch, search, astGrepPath)
+		registerWorkspaceTools(r, root, userSkillsReadLib, exec, fetch, search, astGrepPath)
 	}
 	registerMemoryUpdate(r, mem)
 	registerSemanticSearch(r, idx)
@@ -112,14 +113,15 @@ func Default(workspace string, exec *ExecOptions, fetch *FetchOptions, search *S
 
 // DefaultReadOnly is like Default but omits write_file and run_command: read/search/list/grep
 // only (plus echo and get_time). Use for Ask mode.
+// userSkillsReadLib is optional; see Default.
 // fetch enables fetch_url when non-nil and AllowHosts is non-empty.
 // search enables web_search when non-nil.
-func DefaultReadOnly(workspace string, fetch *FetchOptions, search *SearchOptions, astGrepPath string, idx *codeindex.Index, rm *repomap.Map) *Registry {
+func DefaultReadOnly(workspace string, userSkillsReadLib string, fetch *FetchOptions, search *SearchOptions, astGrepPath string, idx *codeindex.Index, rm *repomap.Map) *Registry {
 	r := NewRegistry()
 	registerBuiltinTools(r, true)
 	root := strings.TrimSpace(workspace)
 	if root != "" {
-		registerWorkspaceReadTools(r, root, fetch, search, astGrepPath)
+		registerWorkspaceReadTools(r, root, userSkillsReadLib, fetch, search, astGrepPath)
 	}
 	registerSemanticSearch(r, idx)
 	registerRepoMap(r, rm)
@@ -128,12 +130,12 @@ func DefaultReadOnly(workspace string, fetch *FetchOptions, search *SearchOption
 
 // DefaultReadOnlyPlan is like DefaultReadOnly but omits echo so the model cannot substitute
 // a one-line echo for a written design. Use for Plan mode.
-func DefaultReadOnlyPlan(workspace string, fetch *FetchOptions, search *SearchOptions, astGrepPath string, idx *codeindex.Index, rm *repomap.Map) *Registry {
+func DefaultReadOnlyPlan(workspace string, userSkillsReadLib string, fetch *FetchOptions, search *SearchOptions, astGrepPath string, idx *codeindex.Index, rm *repomap.Map) *Registry {
 	r := NewRegistry()
 	registerBuiltinTools(r, false)
 	root := strings.TrimSpace(workspace)
 	if root != "" {
-		registerWorkspaceReadTools(r, root, fetch, search, astGrepPath)
+		registerWorkspaceReadTools(r, root, userSkillsReadLib, fetch, search, astGrepPath)
 	}
 	registerSemanticSearch(r, idx)
 	registerRepoMap(r, rm)
@@ -178,22 +180,24 @@ func registerBuiltinTools(r *Registry, withEcho bool) {
 	})
 }
 
-func registerWorkspaceTools(r *Registry, root string, exec *ExecOptions, fetch *FetchOptions, search *SearchOptions, astGrepPath string) {
-	registerWorkspaceReadTools(r, root, fetch, search, astGrepPath)
+func registerWorkspaceTools(r *Registry, root string, userSkillsReadLib string, exec *ExecOptions, fetch *FetchOptions, search *SearchOptions, astGrepPath string) {
+	registerWorkspaceReadTools(r, root, userSkillsReadLib, fetch, search, astGrepPath)
 	registerWorkspaceMutatingTools(r, root, exec)
 }
 
-func registerWorkspaceReadTools(r *Registry, root string, fetch *FetchOptions, search *SearchOptions, astGrepPath string) {
+func registerWorkspaceReadTools(r *Registry, root string, userSkillsReadLib string, fetch *FetchOptions, search *SearchOptions, astGrepPath string) {
+	userLib := strings.TrimSpace(userSkillsReadLib)
 	r.Register(Tool{
 		Name: "read_file",
 		Description: "Reads a UTF-8 text file under the configured workspace root. " +
+			"If the path is not found under the workspace, read_file also checks the codient user skills library when configured (paths from the Agent skills section). " +
 			"Optional max_bytes (default 262144) and 1-based start_line/end_line to return a slice of lines.",
 		Parameters: shared.FunctionParameters{
 			"type": "object",
 			"properties": map[string]any{
 				"path": map[string]any{
 					"type":        "string",
-					"description": "Path relative to workspace root.",
+					"description": "Path relative to workspace root, or a path under the user skills library as listed in Agent skills.",
 				},
 				"max_bytes": map[string]any{
 					"type":        "integer",
@@ -224,6 +228,9 @@ func registerWorkspaceReadTools(r *Registry, root string, fetch *FetchOptions, s
 			mb := int64(defaultReadMaxBytes)
 			if p.MaxBytes != nil && *p.MaxBytes > 0 {
 				mb = *p.MaxBytes
+			}
+			if userLib != "" {
+				return readFileWorkspaceOrUserSkills(root, userLib, p.Path, mb, p.StartLine, p.EndLine)
 			}
 			return readFileWorkspace(root, p.Path, mb, p.StartLine, p.EndLine)
 		},
@@ -373,14 +380,15 @@ func registerWorkspaceReadTools(r *Registry, root string, fetch *FetchOptions, s
 
 	r.Register(Tool{
 		Name: "path_stat",
-		Description: "Returns metadata for a path under the workspace without reading file contents: " +
-			"exists, file/directory/symlink, size, mode, mod_time. Use before read_file when you only need presence or size.",
+		Description: "Returns metadata for a path without reading file contents: " +
+			"exists, file/directory/symlink, size, mode, mod_time. Resolves like read_file (workspace, then user skills library when configured). " +
+			"Use before read_file when you only need presence or size.",
 		Parameters: shared.FunctionParameters{
 			"type": "object",
 			"properties": map[string]any{
 				"path": map[string]any{
 					"type":        "string",
-					"description": "Path relative to workspace root.",
+					"description": "Path relative to workspace root, or under the user skills library as listed in Agent skills.",
 				},
 			},
 			"required":             []string{"path"},
@@ -392,6 +400,9 @@ func registerWorkspaceReadTools(r *Registry, root string, fetch *FetchOptions, s
 			}
 			if err := json.Unmarshal(args, &p); err != nil {
 				return "", fmt.Errorf("invalid arguments: %w", err)
+			}
+			if userLib != "" {
+				return pathStatWorkspaceOrSkills(root, userLib, p.Path)
 			}
 			return pathStatWorkspace(root, p.Path)
 		},

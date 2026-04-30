@@ -51,13 +51,53 @@ func absUnderRoot(root, rel string) (abs string, err error) {
 	return absFull, nil
 }
 
-func readFileWorkspace(root, rel string, maxBytes int64, startLine, endLine int) (string, error) {
+// resolveReadableAbs tries the workspace root first, then an optional second root
+// (e.g. ~/.codient/skills) when the path is not found under the workspace.
+// rel must be relative (not absolute); escapes under either root return an error.
+func resolveReadableAbs(workspaceRoot, secondRoot, rel string) (abs string, err error) {
+	rel = strings.TrimSpace(rel)
+	if rel == "" {
+		return "", fmt.Errorf("path is required")
+	}
+	var wsStatErr error
+	wsAbs, wsErr := absUnderRoot(workspaceRoot, rel)
+	if wsErr == nil {
+		_, wsStatErr = os.Lstat(wsAbs)
+		if wsStatErr == nil {
+			return wsAbs, nil
+		}
+		if !errors.Is(wsStatErr, os.ErrNotExist) {
+			return "", wsStatErr
+		}
+	}
+	if strings.TrimSpace(secondRoot) == "" {
+		if wsErr != nil {
+			return "", wsErr
+		}
+		return "", wsStatErr
+	}
+	secAbs, secErr := absUnderRoot(secondRoot, rel)
+	if secErr != nil {
+		if wsErr != nil {
+			return "", wsErr
+		}
+		return "", fmt.Errorf("%w: %s", os.ErrNotExist, rel)
+	}
+	if _, err := os.Lstat(secAbs); err != nil {
+		if wsErr != nil {
+			return "", wsErr
+		}
+		if errors.Is(err, os.ErrNotExist) {
+			return "", fmt.Errorf("%w: %s", os.ErrNotExist, rel)
+		}
+		return "", err
+	}
+	return secAbs, nil
+}
+
+func readFileAt(abs string, maxBytes int64, startLine, endLine int) (string, error) {
 	if maxBytes <= 0 {
 		maxBytes = defaultReadMaxBytes
-	}
-	abs, err := absUnderRoot(root, rel)
-	if err != nil {
-		return "", err
 	}
 	b, err := os.ReadFile(abs)
 	if err != nil {
@@ -107,6 +147,23 @@ func readFileWorkspace(root, rel string, maxBytes int64, startLine, endLine int)
 		s = fmt.Sprintf("(lines %d-%d of file)\n%s", start, end, b.String())
 	}
 	return s, nil
+}
+
+func readFileWorkspace(root, rel string, maxBytes int64, startLine, endLine int) (string, error) {
+	abs, err := absUnderRoot(root, rel)
+	if err != nil {
+		return "", err
+	}
+	return readFileAt(abs, maxBytes, startLine, endLine)
+}
+
+// readFileWorkspaceOrUserSkills resolves rel under workspace first, then under userSkillsLib.
+func readFileWorkspaceOrUserSkills(workspaceRoot, userSkillsLib, rel string, maxBytes int64, startLine, endLine int) (string, error) {
+	abs, err := resolveReadableAbs(workspaceRoot, userSkillsLib, rel)
+	if err != nil {
+		return "", err
+	}
+	return readFileAt(abs, maxBytes, startLine, endLine)
 }
 
 func listDirWorkspace(root, rel string, maxDepth, maxEntries int) (string, error) {

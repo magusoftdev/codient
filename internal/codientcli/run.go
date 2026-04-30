@@ -28,6 +28,7 @@ import (
 	"codient/internal/prompt"
 	"codient/internal/repomap"
 	"codient/internal/selfupdate"
+	"codient/internal/skills"
 	"codient/internal/tokentracker"
 	"codient/internal/tools"
 )
@@ -161,7 +162,7 @@ func Run() int {
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()
 
-	client := openaiclient.New(cfg)
+	client := openaiclient.NewForMode(cfg, string(agentMode))
 
 	// Quick commands that don't need a full session.
 	if *ping {
@@ -230,7 +231,6 @@ func Run() int {
 		if len(cfg.MCPServers) > 0 {
 			mcpMgr = mcpclient.NewManager(Version)
 		}
-		client := openaiclient.New(cfg)
 		return runACPServer(acpCtx, cfg, agentMode, client, mcpMgr, agentLog, *maxTurns, *maxCostUSD)
 	}
 
@@ -291,6 +291,10 @@ func Run() int {
 		fmt.Fprintf(os.Stderr, "memory: %v\n", err)
 		return 2
 	}
+	skillsCat := ""
+	if stateDir != "" {
+		skillsCat, _ = skills.LoadCatalogMarkdown(stateDir, cfg.EffectiveWorkspace())
+	}
 	var memOpts *tools.MemoryOptions
 	if stateDir != "" || cfg.EffectiveWorkspace() != "" {
 		memOpts = &tools.MemoryOptions{
@@ -317,6 +321,7 @@ func Run() int {
 		repoInstructions: repoInstr,
 		projectContext:   projectCtx,
 		memory:           mem,
+		skillsCatalog:    skillsCat,
 		memOpts:          memOpts,
 		execAllow:        execAllow,
 		tokenTracker:     &tokentracker.Tracker{},
@@ -348,9 +353,9 @@ func Run() int {
 		}
 	}
 
-	s.client = openaiclient.New(cfg)
+	s.client = openaiclient.NewForMode(cfg, string(agentMode))
 	s.registry = buildRegistry(cfg, agentMode, s, memOpts)
-	s.systemPrompt = buildAgentSystemPrompt(cfg, s.registry, agentMode, *system, repoInstr, projectCtx, mem, s.repoMap)
+	s.systemPrompt = buildAgentSystemPrompt(cfg, s.registry, agentMode, *system, repoInstr, projectCtx, mem, skillsCat, s.repoMap)
 
 	attached, err := loadImagePaths(imageFlagPaths)
 	if err != nil {

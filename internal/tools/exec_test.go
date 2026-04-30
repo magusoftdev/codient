@@ -179,7 +179,7 @@ func TestRunCommandToolViaRegistry(t *testing.T) {
 		t.Skip("go not in PATH")
 	}
 	dir := t.TempDir()
-	r := Default(dir, &ExecOptions{
+	r := Default(dir, "", &ExecOptions{
 		Allowlist:      []string{"go"},
 		TimeoutSeconds: 60,
 		MaxOutputBytes: 32 * 1024,

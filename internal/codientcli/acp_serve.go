@@ -10,11 +10,13 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/openai/openai-go/v3"
+	"github.com/openai/openai-go/v3/shared"
 
 	"codient/internal/acpctx"
 	"codient/internal/acpserver"
@@ -23,13 +25,19 @@ import (
 	"codient/internal/config"
 	"codient/internal/mcpclient"
 	"codient/internal/openaiclient"
+	"codient/internal/projectinfo"
 	"codient/internal/prompt"
 	"codient/internal/repomap"
+	"codient/internal/skills"
 	"codient/internal/tokentracker"
 	"codient/internal/tools"
 )
 
-const acpProtocolVersion = 1
+const (
+	acpProtocolVersion = 1
+	// acpSetModelWarmMax caps how long session/set_model may block on the warmup completion (beyond cfg.MaxCompletionSeconds).
+	acpSetModelWarmMax = 10 * time.Minute
+)
 
 func validateACPFlags(printMode, repl, stream, ping, listModels, listTools, a2a, update, version bool, nImages int) error {
 	var bad []string
@@ -90,6 +98,10 @@ func runACPServer(ctx context.Context, cfg *config.Config, agentMode prompt.Mode
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "memory: %v\n", err)
 	}
+	skillsCat := ""
+	if stateDir != "" {
+		skillsCat, _ = skills.LoadCatalogMarkdown(stateDir, cfg.EffectiveWorkspace())
+	}
 	var memOpts *tools.MemoryOptions
 	if stateDir != "" || cfg.EffectiveWorkspace() != "" {
 		memOpts = &tools.MemoryOptions{
@@ -113,20 +125,24 @@ func runACPServer(ctx context.Context, cfg *config.Config, agentMode prompt.Mode
 
 	tracker := &tokentracker.Tracker{}
 	stub := &session{
-		cfg:           cfg,
-		client:        client,
-		progressOut:   progressOut,
-		mcpMgr:        mcpMgr,
-		repoMap:       rm,
-		agentLog:      agentLog,
-		tokenTracker:  tracker,
-		acpNoDelegate: true,
+		cfg:            cfg,
+		client:         client,
+		progressOut:    progressOut,
+		mcpMgr:         mcpMgr,
+		repoMap:        rm,
+		agentLog:       agentLog,
+		tokenTracker:   tracker,
+		acpNoDelegate:  true,
+		skillsCatalog:  skillsCat,
 	}
 	if len(cfg.ExecAllowlist) > 0 {
 		stub.execAllow = tools.NewSessionExecAllow(cfg.ExecAllowlist)
 	}
 
 	tr := acpserver.NewTransport()
+	stub.acpCallClient = func(ctx context.Context, method string, params any) (json.RawMessage, error) {
+		return tr.CallClient(ctx, method, params)
+	}
 	registryReady := make(chan struct{})
 	srv := &acpServer{
 		tr:             tr,
@@ -152,13 +168,24 @@ func runACPServer(ctx context.Context, cfg *config.Config, agentMode prompt.Mode
 		srv.postReplyCheck = BuildPostReplyCheckForACP(cfg, client, tracker, agentMode, progressOut)
 	}
 
+	// Process session/cancel in the read loop so cancellation reaches the active turn while
+	// session/prompt is still blocked on the main handler goroutine.
+	tr.ConsumeInbound = func(msg acpserver.WireMsg) bool {
+		if msg.Method == "session/cancel" && msg.ID == nil {
+			srv.handleNotification(ctx, msg.Method, msg.Params)
+			return true
+		}
+		return false
+	}
+
 	stub.execDeniedACP = srv.execPromptDenied
 
 	// Build tool registry off the hot path: stdin must be drained (ReadLoop) while buildRegistry scans the workspace.
 	go func() {
 		defer close(registryReady)
 		stub.registry = buildRegistry(cfg, agentMode, stub, memOpts)
-		stub.systemPrompt = buildAgentSystemPrompt(cfg, stub.registry, agentMode, "", repoInstr, projectCtx, mem, rm)
+		unityACP := projectinfo.LooksLikeUnityEditorProject(cfg.EffectiveWorkspace())
+		stub.systemPrompt = buildAgentSystemPromptEx(cfg, stub.registry, agentMode, "", repoInstr, projectCtx, mem, skillsCat, rm, unityACP)
 
 		if stub.mcpMgr != nil && len(cfg.MCPServers) > 0 {
 			mgr := stub.mcpMgr
@@ -171,7 +198,7 @@ func runACPServer(ctx context.Context, cfg *config.Config, agentMode prompt.Mode
 				}
 				stub.acpRegistryMu.Lock()
 				stub.registry = buildRegistry(cfg, agentMode, stub, memOpts)
-				stub.systemPrompt = buildAgentSystemPrompt(cfg, stub.registry, agentMode, "", repoInstr, projectCtx, mem, rm)
+				stub.systemPrompt = buildAgentSystemPromptEx(cfg, stub.registry, agentMode, "", repoInstr, projectCtx, mem, skillsCat, rm, unityACP)
 				stub.acpRegistryMu.Unlock()
 			}()
 		}
@@ -233,8 +260,27 @@ type acpChatSession struct {
 	history       []openai.ChatCompletionMessageParamUnion
 	systemPrompt  string
 	workspaceRoot string
+	modelID       string
 	cancelMu      sync.Mutex
 	cancelTurn    context.CancelFunc
+	// setModelMu serializes session/set_model (including preload) per session.
+	setModelMu sync.Mutex
+}
+
+// acpLLMWithModel delegates to *openaiclient.Client but reports a session-selected model id.
+type acpLLMWithModel struct {
+	inner *openaiclient.Client
+	id    string
+}
+
+func (w acpLLMWithModel) Model() string { return w.id }
+
+func (w acpLLMWithModel) ChatCompletion(ctx context.Context, params openai.ChatCompletionNewParams) (*openai.ChatCompletion, error) {
+	return w.inner.ChatCompletion(ctx, params)
+}
+
+func (w acpLLMWithModel) ChatCompletionStream(ctx context.Context, params openai.ChatCompletionNewParams, streamTo io.Writer) (*openai.ChatCompletion, error) {
+	return w.inner.ChatCompletionStream(ctx, params, streamTo)
 }
 
 func newSessionID() string {
@@ -328,8 +374,12 @@ func (s *acpServer) handleRequest(ctx context.Context, method string, params jso
 	switch method {
 	case "initialize":
 		s.handleInitialize(ctx, params, id)
+	case "agent/list_models":
+		s.handleAgentListModels(ctx, id)
 	case "session/new":
 		s.handleSessionNew(ctx, params, id)
+	case "session/set_model":
+		s.handleSessionSetModel(ctx, params, id)
 	case "session/prompt":
 		s.handleSessionPrompt(ctx, params, id)
 	default:
@@ -347,8 +397,10 @@ func (s *acpServer) handleInitialize(_ context.Context, params json.RawMessage, 
 		return
 	}
 	s.initialized = true
+	defaultModel := strings.TrimSpace(s.client.Model())
 	_ = s.tr.WriteResult(id, map[string]any{
 		"protocolVersion": acpProtocolVersion,
+		"defaultChatModel": defaultModel,
 		"agentCapabilities": map[string]any{
 			"loadSession": false,
 			"promptCapabilities": map[string]any{
@@ -370,6 +422,23 @@ func (s *acpServer) handleInitialize(_ context.Context, params json.RawMessage, 
 	})
 }
 
+// handleAgentListModels returns model ids from the configured OpenAI-compatible GET /v1/models endpoint.
+func (s *acpServer) handleAgentListModels(ctx context.Context, id int) {
+	listCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	defer cancel()
+	ids, err := s.client.ListModels(listCtx)
+	if err != nil {
+		_ = s.tr.WriteError(id, -32603, err.Error())
+		return
+	}
+	sort.Strings(ids)
+	out := make([]map[string]string, 0, len(ids))
+	for _, m := range ids {
+		out = append(out, map[string]string{"id": m})
+	}
+	_ = s.tr.WriteResult(id, map[string]any{"models": out})
+}
+
 func (s *acpServer) handleSessionNew(ctx context.Context, params json.RawMessage, id int) {
 	if !s.initialized {
 		_ = s.tr.WriteError(id, -32002, "not initialized")
@@ -380,7 +449,8 @@ func (s *acpServer) handleSessionNew(ctx context.Context, params json.RawMessage
 		return
 	}
 	var p struct {
-		Cwd string `json:"cwd"`
+		Cwd   string `json:"cwd"`
+		Model string `json:"model"`
 	}
 	if err := json.Unmarshal(params, &p); err != nil {
 		_ = s.tr.WriteError(id, -32602, "invalid params")
@@ -406,11 +476,143 @@ func (s *acpServer) handleSessionNew(ctx context.Context, params json.RawMessage
 		history:       nil,
 		systemPrompt:  sp,
 		workspaceRoot: cwd,
+		modelID:       strings.TrimSpace(p.Model),
 	}
 	s.mu.Lock()
 	s.sessions[sid] = sess
 	s.mu.Unlock()
 	_ = s.tr.WriteResult(id, map[string]any{"sessionId": sid})
+}
+
+// handleSessionSetModel updates the per-session model id without clearing history (Codient Unity model picker).
+func (s *acpServer) handleSessionSetModel(ctx context.Context, params json.RawMessage, id int) {
+	if !s.initialized {
+		_ = s.tr.WriteError(id, -32002, "not initialized")
+		return
+	}
+	if err := s.waitACPRegistryReady(ctx); err != nil {
+		_ = s.tr.WriteError(id, -32603, err.Error())
+		return
+	}
+	var p struct {
+		SessionID string `json:"sessionId"`
+		Model     string `json:"model"`
+		Preload   *bool  `json:"preload"`
+	}
+	if err := json.Unmarshal(params, &p); err != nil || strings.TrimSpace(p.SessionID) == "" {
+		_ = s.tr.WriteError(id, -32602, "invalid session/set_model params")
+		return
+	}
+	s.mu.Lock()
+	sess := s.sessions[p.SessionID]
+	s.mu.Unlock()
+	if sess == nil {
+		_ = s.tr.WriteError(id, -32001, "unknown session")
+		return
+	}
+
+	preload := s.cfg.AcpPreloadModelOnSetModel
+	if p.Preload != nil {
+		preload = *p.Preload
+	}
+
+	sess.setModelMu.Lock()
+	defer sess.setModelMu.Unlock()
+
+	mid := strings.TrimSpace(p.Model)
+	sess.cancelMu.Lock()
+	if sess.cancelTurn != nil {
+		sess.cancelMu.Unlock()
+		_ = s.tr.WriteError(id, -32603, "session_busy")
+		return
+	}
+	prev := strings.TrimSpace(sess.modelID)
+	sess.cancelMu.Unlock()
+
+	prevEff := s.acpEffectiveModelID(prev)
+	newEff := s.acpEffectiveModelID(mid)
+	switching := !strings.EqualFold(prevEff, newEff)
+
+	// Ollama keeps the previous model resident until evicted; unload it before warming the new one.
+	if switching && prevEff != "" {
+		_ = s.tr.SendNotification("session/model_status", map[string]any{
+			"sessionId": p.SessionID,
+			"phase":     "unloading",
+			"message":   "Unloading previous model from the inference server…",
+		})
+		_ = s.client.TryOllamaUnloadModel(ctx, prevEff)
+	}
+
+	sess.cancelMu.Lock()
+	sess.modelID = mid
+	sess.cancelMu.Unlock()
+
+	if preload && switching {
+		llm := s.acpSessionChatClient(sess)
+		if err := s.acpWarmSessionModel(ctx, p.SessionID, llm); err != nil {
+			sess.cancelMu.Lock()
+			sess.modelID = prev
+			sess.cancelMu.Unlock()
+			_ = s.tr.SendNotification("session/model_status", map[string]any{
+				"sessionId": p.SessionID,
+				"phase":     "error",
+				"message":   err.Error(),
+			})
+			_ = s.tr.WriteError(id, -32603, "session/set_model preload: "+err.Error())
+			return
+		}
+	}
+
+	_ = s.tr.WriteResult(id, map[string]any{"model": mid})
+}
+
+func (s *acpServer) acpEffectiveModelID(sessionModelTrimmed string) string {
+	if sessionModelTrimmed != "" {
+		return sessionModelTrimmed
+	}
+	return strings.TrimSpace(s.client.Model())
+}
+
+func (s *acpServer) acpSessionChatClient(sess *acpChatSession) agent.ChatClient {
+	sess.cancelMu.Lock()
+	mid := strings.TrimSpace(sess.modelID)
+	sess.cancelMu.Unlock()
+	if mid != "" {
+		return acpLLMWithModel{inner: s.client, id: mid}
+	}
+	return s.client
+}
+
+func (s *acpServer) acpWarmSessionModel(ctx context.Context, sessionID string, llm agent.ChatClient) error {
+	_ = s.tr.SendNotification("session/model_status", map[string]any{
+		"sessionId": sessionID,
+		"phase":     "loading",
+		"message":   "Contacting inference server and loading model…",
+	})
+	warmTimeout := time.Duration(s.cfg.MaxCompletionSeconds) * time.Second
+	if warmTimeout < 30*time.Second {
+		warmTimeout = 30 * time.Second
+	}
+	if warmTimeout > acpSetModelWarmMax {
+		warmTimeout = acpSetModelWarmMax
+	}
+	warmCtx, cancel := context.WithTimeout(ctx, warmTimeout)
+	defer cancel()
+	params := openai.ChatCompletionNewParams{
+		Model:    shared.ChatModel(llm.Model()),
+		Messages: []openai.ChatCompletionMessageParamUnion{openai.UserMessage(".")},
+	}
+	params.MaxCompletionTokens = openai.Int(1)
+	_, err := llm.ChatCompletion(warmCtx, params)
+	if err != nil {
+		return err
+	}
+	_ = s.tr.SendNotification("session/model_status", map[string]any{
+		"sessionId": sessionID,
+		"phase":     "ready",
+		"message":   "",
+	})
+	return nil
 }
 
 func (s *acpServer) handleSessionPrompt(ctx context.Context, params json.RawMessage, id int) {
@@ -494,7 +696,7 @@ func (s *acpServer) handleSessionPrompt(ctx context.Context, params json.RawMess
 			},
 		})
 	}
-	_ = s.tr.WriteResult(id, map[string]any{"stopReason": "end_turn"})
+	_ = s.tr.WriteResult(id, map[string]any{"stopReason": "end_turn", "reply": reply})
 }
 
 func (sess *acpChatSession) setCancel(c context.CancelFunc) {
@@ -608,8 +810,9 @@ func (s *acpServer) newACPRunnerLocked(sess *acpChatSession) *agent.Runner {
 	s.stub.acpRegistryMu.RLock()
 	reg := s.stub.registry
 	s.stub.acpRegistryMu.RUnlock()
+	llm := s.acpSessionChatClient(sess)
 	r := &agent.Runner{
-		LLM:            s.client,
+		LLM:            llm,
 		Cfg:            s.cfg,
 		Tools:          reg,
 		Log:            s.agentLog,
@@ -647,12 +850,41 @@ func (s *acpServer) newACPRunnerLocked(sess *acpChatSession) *agent.Runner {
 			},
 		})
 	}
+	r.OnIntent = func(text string) {
+		intent := strings.TrimSpace(text)
+		if intent == "" {
+			return
+		}
+		intent = acpTruncateRunes(intent, 800)
+		_ = s.tr.SendNotification("session/update", map[string]any{
+			"sessionId": sid,
+			"update": map[string]any{
+				"sessionUpdate": "plan",
+				"entries": []map[string]any{
+					{"content": intent},
+				},
+			},
+		})
+		// Fallback for UIs that don't currently render plan entries:
+		// mirror intent as one assistant text chunk.
+		_ = s.tr.SendNotification("session/update", map[string]any{
+			"sessionId": sid,
+			"update": map[string]any{
+				"sessionUpdate": "agent_message_chunk",
+				"content": map[string]any{
+					"type": "text",
+					"text": intent + "\n\n",
+				},
+			},
+		})
+	}
 	r.OnToolAfter = func(ctx context.Context, toolCallID, name string, args json.RawMessage, display string, err error) {
 		_ = ctx
 		st := "completed"
 		if err != nil || strings.HasPrefix(display, "error:") {
 			st = "failed"
 		}
+		display = acpToolDisplayForUpdate(name, display, st == "failed")
 		update := map[string]any{
 			"sessionUpdate": "tool_call_update",
 			"toolCallId":    toolCallID,
@@ -700,20 +932,209 @@ func acpToolKind(name string) string {
 		return "execute"
 	case "fetch_url", "web_search":
 		return "fetch"
+	case "unity_apply_actions":
+		return "edit"
 	default:
+		if strings.HasPrefix(name, "unity_") {
+			return "read"
+		}
 		return "other"
 	}
 }
 
 func acpToolTitle(name string, args json.RawMessage) string {
-	sum := agentlog.SummarizeArgs(name, args)
-	b, _ := json.Marshal(sum)
-	line := name
-	if len(b) > 0 {
-		line += " " + string(b)
+	d := acpToolDescriptor(name, args)
+	line := acpToolCliTitle(name, d)
+	if len(line) <= 160 {
+		return line
 	}
-	if len(line) > 160 {
-		return line[:157] + "..."
+	return line[:157] + "..."
+}
+
+func acpToolCliTitle(name, descriptor string) string {
+	d := strings.TrimSpace(descriptor)
+	switch name {
+	case "read_file", "read_lines":
+		if d == "" {
+			return "reading file"
+		}
+		return "reading " + d
+	case "list_dir":
+		if d == "" {
+			return "listing workspace"
+		}
+		return "listing " + d
+	case "glob", "glob_files", "search_files":
+		if d == "" {
+			return "searching files"
+		}
+		return "searching files " + d
+	case "grep":
+		if d == "" {
+			return "searching code"
+		}
+		return "searching code " + d
+	case "path_stat":
+		if d == "" {
+			return "checking path"
+		}
+		return "checking " + d
+	case "run_command", "run_shell":
+		if d == "" {
+			return "running command"
+		}
+		return "running " + d
+	case "fetch_url":
+		if d == "" {
+			return "fetching url"
+		}
+		return "fetching " + d
+	case "web_search":
+		if d == "" {
+			return "searching web"
+		}
+		return "searching web " + d
+	default:
+		if d == "" {
+			return name
+		}
+		return name + " " + d
 	}
-	return line
+}
+
+func acpToolDisplayForUpdate(name, display string, isFailed bool) string {
+	d := strings.TrimSpace(display)
+	if d == "" {
+		return ""
+	}
+	// Keep error payloads visible for debugging, but still bounded.
+	if isFailed {
+		return acpTruncateRunes(d, 1200)
+	}
+	if strings.HasPrefix(name, "unity_") {
+		return acpTruncateRunes(d, 1400)
+	}
+	switch name {
+	case "read_file", "read_lines":
+		return "(file content hidden)"
+	case "grep":
+		return acpTruncateRunes(d, 800)
+	case "list_dir", "glob", "search_files", "semantic_search", "repo_map":
+		return acpTruncateRunes(d, 1000)
+	default:
+		return acpTruncateRunes(d, 1400)
+	}
+}
+
+func acpTruncateRunes(s string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	rs := []rune(s)
+	if len(rs) <= max {
+		return s
+	}
+	return string(rs[:max]) + "\n…[truncated]"
+}
+
+func acpToolDescriptor(name string, args json.RawMessage) string {
+	var obj map[string]any
+	if len(args) > 0 {
+		_ = json.Unmarshal(args, &obj)
+	}
+	switch name {
+	case "read_file", "read_lines", "path_stat", "write_file", "insert_lines", "str_replace", "patch_file", "remove_path":
+		return acpQuoted(obj, "path")
+	case "move_path", "copy_path":
+		from := acpQuoted(obj, "from")
+		to := acpQuoted(obj, "to")
+		if from != "" && to != "" {
+			return from + " -> " + to
+		}
+		return strings.TrimSpace(from + " " + to)
+	case "grep":
+		pat := acpQuoted(obj, "pattern")
+		scope := acpQuoted(obj, "path_prefix")
+		if scope == "" {
+			return pat
+		}
+		return pat + " in " + scope
+	case "list_dir":
+		path := acpQuoted(obj, "path")
+		if path == "" {
+			return "\".\""
+		}
+		return path
+	case "glob":
+		pat := acpQuoted(obj, "pattern")
+		scope := acpQuoted(obj, "under")
+		if scope == "" {
+			return pat
+		}
+		return pat + " under " + scope
+	case "search_files":
+		sub := acpQuoted(obj, "substring")
+		sfx := acpQuoted(obj, "suffix")
+		if sub != "" && sfx != "" {
+			return sub + " + " + sfx
+		}
+		if sub != "" {
+			return sub
+		}
+		return sfx
+	case "run_command":
+		return acpQuoted(obj, "command")
+	case "run_shell":
+		return acpQuoted(obj, "command")
+	case "fetch_url":
+		return acpQuoted(obj, "url")
+	case "web_search":
+		return acpQuoted(obj, "query")
+	case "find_references":
+		return acpQuoted(obj, "symbol")
+	case "unity_query_scene_hierarchy":
+		return acpQuoted(obj, "scenePath")
+	case "unity_query_prefab_hierarchy":
+		return acpQuoted(obj, "prefabAssetPath")
+	case "unity_search_asset_database":
+		return acpQuoted(obj, "searchFilter")
+	case "unity_inspect_component":
+		return acpQuoted(obj, "componentTypeName")
+	case "unity_apply_actions":
+		if obj == nil {
+			return ""
+		}
+		if v, ok := obj["actions"].([]any); ok {
+			return fmt.Sprintf("%d actions", len(v))
+		}
+		return "apply_actions"
+	default:
+		sum := agentlog.SummarizeArgs(name, args)
+		if b, err := json.Marshal(sum); err == nil {
+			out := strings.TrimSpace(string(b))
+			if out != "" && out != "{}" {
+				return out
+			}
+		}
+		return ""
+	}
+}
+
+func acpQuoted(m map[string]any, key string) string {
+	if m == nil {
+		return ""
+	}
+	v, ok := m[key]
+	if !ok {
+		return ""
+	}
+	s, ok := v.(string)
+	if !ok {
+		return ""
+	}
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	return fmt.Sprintf("%q", s)
 }
