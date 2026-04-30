@@ -36,6 +36,10 @@ go.work.sum
 # Codient session/design state (workspace-specific)
 .codient/
 
+# XML/log dumps at repo root from mis-invoked Unity batch tests or other tooling
+/TestResults-*.xml
+/TestResults-*.log
+
 # Editor/IDE
 .idea/
 .cursorj/
