@@ -1,11 +1,13 @@
 package gitutil
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -179,6 +181,54 @@ func TestDiffStatHead(t *testing.T) {
 	if !strings.Contains(stat, "1 file changed") {
 		t.Fatalf("expected stat summary line, got: %q", stat)
 	}
+}
+
+func TestDelegateWorktreeAddRemove(t *testing.T) {
+	dir := initRepoWithFile(t)
+	parent := filepath.Dir(dir)
+	wt := filepath.Join(parent, "codient-delegate-wt-one")
+	ctx := context.Background()
+	if err := AddDelegateWorktree(ctx, dir, wt); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(wt, "hello.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(data)) != "hello" {
+		t.Fatalf("worktree file: got %q", string(data))
+	}
+	if err := RemoveDelegateWorktree(ctx, dir, wt); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(wt); !os.IsNotExist(err) {
+		t.Fatalf("expected worktree dir removed, stat err=%v", err)
+	}
+}
+
+func TestDelegateWorktreeParallelAdds(t *testing.T) {
+	dir := initRepoWithFile(t)
+	parent := filepath.Dir(dir)
+	wt1 := filepath.Join(parent, "codient-delegate-wt-a")
+	wt2 := filepath.Join(parent, "codient-delegate-wt-b")
+	ctx := context.Background()
+	var wg sync.WaitGroup
+	var err1, err2 error
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		err1 = AddDelegateWorktree(ctx, dir, wt1)
+	}()
+	go func() {
+		defer wg.Done()
+		err2 = AddDelegateWorktree(ctx, dir, wt2)
+	}()
+	wg.Wait()
+	if err1 != nil || err2 != nil {
+		t.Fatalf("parallel add: err1=%v err2=%v", err1, err2)
+	}
+	_ = RemoveDelegateWorktree(ctx, dir, wt1)
+	_ = RemoveDelegateWorktree(ctx, dir, wt2)
 }
 
 func TestSplitNonEmpty(t *testing.T) {

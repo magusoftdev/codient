@@ -67,6 +67,9 @@ func TestLoad_Defaults(t *testing.T) {
 	if !c.GitAutoCommit {
 		t.Fatal("expected GitAutoCommit true by default")
 	}
+	if c.DelegateGitWorktrees {
+		t.Fatal("expected DelegateGitWorktrees false by default")
+	}
 	if len(c.GitProtectedBranches) != 3 || c.GitProtectedBranches[0] != "main" {
 		t.Fatalf("default GitProtectedBranches: %#v", c.GitProtectedBranches)
 	}
@@ -492,6 +495,14 @@ func TestLoad_AcpPreloadModelOnSetModelExplicitFalse(t *testing.T) {
 	}
 }
 
+func TestConfigToPersistent_DelegateGitWorktrees(t *testing.T) {
+	cfg := &Config{DelegateGitWorktrees: true}
+	pc := ConfigToPersistent(cfg)
+	if !pc.DelegateGitWorktrees {
+		t.Fatal("expected DelegateGitWorktrees in persistent snapshot")
+	}
+}
+
 func TestConfigToPersistent_RoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("CODIENT_STATE_DIR", dir)
@@ -507,6 +518,7 @@ func TestConfigToPersistent_RoundTrip(t *testing.T) {
 		AcpPreloadModelOnSetModel: false,
 		FetchWebRatePerSec:        8,
 		FetchWebRateBurst:         3,
+		DelegateGitWorktrees:      true,
 	}
 	pc := ConfigToPersistent(cfg)
 	if err := SavePersistentConfig(pc); err != nil {
@@ -524,6 +536,9 @@ func TestConfigToPersistent_RoundTrip(t *testing.T) {
 	}
 	if c.FetchWebRatePerSec != 8 || c.FetchWebRateBurst != 3 {
 		t.Fatalf("fetch web rate round-trip: got %d/%d", c.FetchWebRatePerSec, c.FetchWebRateBurst)
+	}
+	if !c.DelegateGitWorktrees {
+		t.Fatal("expected DelegateGitWorktrees true after round-trip")
 	}
 }
 

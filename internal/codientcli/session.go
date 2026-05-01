@@ -3,6 +3,8 @@ package codientcli
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -103,7 +105,7 @@ type session struct {
 	// replInputActive is true while the REPL is blocking on readUserInput. When set,
 	// replAsyncStderrNote defers messages to pendingAsyncNotes instead of printing
 	// immediately, avoiding visual corruption of the user's input line.
-	replInputActive    bool
+	replInputActive   bool
 	pendingAsyncNotes []string
 
 	codeIndex *codeindex.Index // semantic search index; nil when embedding_model is not configured
@@ -230,12 +232,44 @@ func (s *session) delegateTaskFn() tools.DelegateRunner {
 		if progress != nil {
 			progress = newPrefixWriter([]byte("  │ "), progress)
 		}
+		cfg := s.cfg
+		repoMap := s.repoMap
+		mainWS := s.cfg.EffectiveWorkspace()
+		if s.cfg.DelegateGitWorktrees && mainWS != "" && gitutil.IsRepo(mainWS) {
+			stateDir, serr := config.StateDir()
+			if serr != nil {
+				return "", fmt.Errorf("delegate_git_worktrees: state dir: %w", serr)
+			}
+			base := filepath.Join(stateDir, "delegate-worktrees")
+			if err := os.MkdirAll(base, 0o755); err != nil {
+				return "", fmt.Errorf("delegate_git_worktrees: mkdir: %w", err)
+			}
+			var idBuf [16]byte
+			if _, err := rand.Read(idBuf[:]); err != nil {
+				return "", fmt.Errorf("delegate_git_worktrees: %w", err)
+			}
+			wtPath := filepath.Join(base, hex.EncodeToString(idBuf[:]))
+			if err := gitutil.AddDelegateWorktree(ctx, mainWS, wtPath); err != nil {
+				return "", err
+			}
+			defer func() {
+				rmCtx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+				defer cancel()
+				if rmErr := gitutil.RemoveDelegateWorktree(rmCtx, mainWS, wtPath); rmErr != nil {
+					fmt.Fprintf(os.Stderr, "codient: delegate worktree cleanup: %v\n", rmErr)
+				}
+			}()
+			c2 := *s.cfg
+			c2.Workspace = wtPath
+			cfg = &c2
+			repoMap = nil
+		}
 		res, err := subagent.Run(ctx, subagent.RunParams{
-			Cfg:      s.cfg,
+			Cfg:      cfg,
 			Mode:     mode,
 			Task:     task,
 			Context:  extraContext,
-			RepoMap:  s.repoMap,
+			RepoMap:  repoMap,
 			Log:      s.agentLog,
 			Progress: progress,
 			Tracker:  s.tokenTracker,
@@ -1874,6 +1908,7 @@ func (s *session) printAllConfig() {
 	fmt.Fprintf(w, "  test_cmd:              %s\n", s.cfg.TestCmd)
 	fmt.Fprintf(w, "\n  -- Git (build mode) --\n")
 	fmt.Fprintf(w, "  git_auto_commit:       %v\n", s.cfg.GitAutoCommit)
+	fmt.Fprintf(w, "  delegate_git_worktrees: %v\n", s.cfg.DelegateGitWorktrees)
 	fmt.Fprintf(w, "  git_protected_branches: %s\n", strings.Join(s.cfg.GitProtectedBranches, ","))
 	fmt.Fprintf(w, "  checkpoint_auto:       %s (plan|all|off)\n", s.cfg.CheckpointAuto)
 	fmt.Fprintf(w, "\n  -- UI/Output --\n")
@@ -2036,6 +2071,8 @@ func (s *session) getConfigValue(key string) (string, bool) {
 		return fmt.Sprintf("%g %g (input output USD per 1M tokens)", s.cfg.CostPerMTok.Input, s.cfg.CostPerMTok.Output), true
 	case "git_auto_commit":
 		return strconv.FormatBool(s.cfg.GitAutoCommit), true
+	case "delegate_git_worktrees":
+		return strconv.FormatBool(s.cfg.DelegateGitWorktrees), true
 	case "git_protected_branches":
 		return strings.Join(s.cfg.GitProtectedBranches, ","), true
 	case "checkpoint_auto":
@@ -2282,6 +2319,12 @@ func (s *session) setConfig(key, value string) error {
 			return fmt.Errorf("git_auto_commit must be true or false")
 		}
 		s.cfg.GitAutoCommit = b
+	case "delegate_git_worktrees":
+		b, err := parseBool(value)
+		if err != nil {
+			return fmt.Errorf("delegate_git_worktrees must be true or false")
+		}
+		s.cfg.DelegateGitWorktrees = b
 	case "git_protected_branches":
 		s.cfg.GitProtectedBranches = config.ParseGitProtectedBranches(value)
 		if len(s.cfg.GitProtectedBranches) == 0 {

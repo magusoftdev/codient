@@ -38,8 +38,8 @@ type PersistentConfig struct {
 	ExecEnvPassthrough string `json:"exec_env_passthrough,omitempty"`
 
 	// Sandbox: off | native | container | auto (default off). Environment scrubbing applies whenever exec runs.
-	SandboxMode         string `json:"sandbox_mode,omitempty"`
-	SandboxReadOnlyPaths string `json:"sandbox_ro_paths,omitempty"`
+	SandboxMode           string `json:"sandbox_mode,omitempty"`
+	SandboxReadOnlyPaths  string `json:"sandbox_ro_paths,omitempty"`
 	SandboxContainerImage string `json:"sandbox_container_image,omitempty"`
 
 	// Context
@@ -123,6 +123,9 @@ type PersistentConfig struct {
 
 	// HooksEnabled opts into ~/.codient/hooks.json and <workspace>/.codient/hooks.json lifecycle hooks.
 	HooksEnabled bool `json:"hooks_enabled,omitempty"`
+
+	// DelegateGitWorktrees runs each delegate_task sub-agent in a detached git worktree at HEAD (default false).
+	DelegateGitWorktrees bool `json:"delegate_git_worktrees,omitempty"`
 }
 
 // ModeConnectionOverride holds optional per-mode overrides for base_url, api_key, and model.
@@ -231,46 +234,46 @@ func SavePersistentConfig(pc *PersistentConfig) error {
 // ConfigToPersistent builds a PersistentConfig from the runtime Config for saving.
 func ConfigToPersistent(cfg *Config) *PersistentConfig {
 	pc := &PersistentConfig{
-		BaseURL:              cfg.BaseURL,
-		APIKey:               cfg.APIKey,
-		Model:                cfg.Model,
-		Mode:                 cfg.Mode,
-		Workspace:            cfg.Workspace,
-		MaxConcurrent:        cfg.MaxConcurrent,
-		ExecAllowlist:        strings.Join(cfg.ExecAllowlist, ","),
-		ExecEnvPassthrough:   strings.Join(cfg.ExecEnvPassthrough, ","),
-		ExecTimeoutSec:       cfg.ExecTimeoutSeconds,
-		ExecMaxOutBytes:      cfg.ExecMaxOutputBytes,
-		SandboxMode:          cfg.SandboxMode,
-		SandboxReadOnlyPaths: strings.Join(cfg.SandboxReadOnlyPaths, ","),
+		BaseURL:               cfg.BaseURL,
+		APIKey:                cfg.APIKey,
+		Model:                 cfg.Model,
+		Mode:                  cfg.Mode,
+		Workspace:             cfg.Workspace,
+		MaxConcurrent:         cfg.MaxConcurrent,
+		ExecAllowlist:         strings.Join(cfg.ExecAllowlist, ","),
+		ExecEnvPassthrough:    strings.Join(cfg.ExecEnvPassthrough, ","),
+		ExecTimeoutSec:        cfg.ExecTimeoutSeconds,
+		ExecMaxOutBytes:       cfg.ExecMaxOutputBytes,
+		SandboxMode:           cfg.SandboxMode,
+		SandboxReadOnlyPaths:  strings.Join(cfg.SandboxReadOnlyPaths, ","),
 		SandboxContainerImage: cfg.SandboxContainerImage,
-		ContextWindow:        cfg.ContextWindowTokens,
-		ContextReserve:       cfg.ContextReserveTokens,
-		MaxLLMRetries:        cfg.MaxLLMRetries,
-		StreamWithTools:      cfg.StreamWithTools,
-		FetchAllowHosts:      strings.Join(cfg.FetchAllowHosts, ","),
-		FetchMaxBytes:        cfg.FetchMaxBytes,
-		FetchTimeoutSec:      cfg.FetchTimeoutSec,
-		FetchWebRatePerSec:   cfg.FetchWebRatePerSec,
-		FetchWebRateBurst:    cfg.FetchWebRateBurst,
-		SearchMaxResults:     cfg.SearchMaxResults,
-		AutoCompactPct:       cfg.AutoCompactPct,
-		AutoCheckCmd:         cfg.AutoCheckCmd,
-		LintCmd:              cfg.LintCmd,
-		TestCmd:              cfg.TestCmd,
-		Plain:                cfg.Plain,
-		Quiet:                cfg.Quiet,
-		Verbose:              cfg.Verbose,
-		LogPath:              cfg.LogPath,
-		Progress:             cfg.Progress,
-		DesignSaveDir:        cfg.DesignSaveDir,
-		ProjectContext:       cfg.ProjectContext,
-		AstGrep:              cfg.AstGrep,
-		EmbeddingModel:       cfg.EmbeddingModel,
-		RepoMapTokens:        cfg.RepoMapTokens,
-		Models:               cfg.ModeModels,
-		MCPServers:           cfg.MCPServers,
-		GitProtectedBranches: strings.Join(cfg.GitProtectedBranches, ","),
+		ContextWindow:         cfg.ContextWindowTokens,
+		ContextReserve:        cfg.ContextReserveTokens,
+		MaxLLMRetries:         cfg.MaxLLMRetries,
+		StreamWithTools:       cfg.StreamWithTools,
+		FetchAllowHosts:       strings.Join(cfg.FetchAllowHosts, ","),
+		FetchMaxBytes:         cfg.FetchMaxBytes,
+		FetchTimeoutSec:       cfg.FetchTimeoutSec,
+		FetchWebRatePerSec:    cfg.FetchWebRatePerSec,
+		FetchWebRateBurst:     cfg.FetchWebRateBurst,
+		SearchMaxResults:      cfg.SearchMaxResults,
+		AutoCompactPct:        cfg.AutoCompactPct,
+		AutoCheckCmd:          cfg.AutoCheckCmd,
+		LintCmd:               cfg.LintCmd,
+		TestCmd:               cfg.TestCmd,
+		Plain:                 cfg.Plain,
+		Quiet:                 cfg.Quiet,
+		Verbose:               cfg.Verbose,
+		LogPath:               cfg.LogPath,
+		Progress:              cfg.Progress,
+		DesignSaveDir:         cfg.DesignSaveDir,
+		ProjectContext:        cfg.ProjectContext,
+		AstGrep:               cfg.AstGrep,
+		EmbeddingModel:        cfg.EmbeddingModel,
+		RepoMapTokens:         cfg.RepoMapTokens,
+		Models:                cfg.ModeModels,
+		MCPServers:            cfg.MCPServers,
+		GitProtectedBranches:  strings.Join(cfg.GitProtectedBranches, ","),
 	}
 	if !cfg.GitAutoCommit {
 		f := false
@@ -298,6 +301,7 @@ func ConfigToPersistent(cfg *Config) *PersistentConfig {
 	}
 	pc.CostPerMTok = cfg.CostPerMTok
 	pc.HooksEnabled = cfg.HooksEnabled
+	pc.DelegateGitWorktrees = cfg.DelegateGitWorktrees
 	pc.CheckpointAuto = cfg.CheckpointAuto
 	return pc
 }

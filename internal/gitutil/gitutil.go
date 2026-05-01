@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -475,6 +476,75 @@ func GhPRCreate(dir string, args []string) (string, error) {
 		return "", fmt.Errorf("gh: %w: %s", err, s)
 	}
 	return s, nil
+}
+
+// delegateWorktreeMu serializes git worktree add/remove against the same repository metadata,
+// avoiding races when multiple delegate_task calls run concurrently.
+var delegateWorktreeMu sync.Mutex
+
+// AddDelegateWorktree creates a new working tree at worktreePath with a detached HEAD at the
+// same commit as mainRepo's HEAD. mainRepo must be the root of a git working tree.
+func AddDelegateWorktree(ctx context.Context, mainRepo, worktreePath string) error {
+	delegateWorktreeMu.Lock()
+	defer delegateWorktreeMu.Unlock()
+	mainRepo = strings.TrimSpace(mainRepo)
+	if mainRepo == "" {
+		return fmt.Errorf("main repo path is empty")
+	}
+	absMain, err := filepath.Abs(mainRepo)
+	if err != nil {
+		return fmt.Errorf("main repo abs: %w", err)
+	}
+	absWT, err := filepath.Abs(worktreePath)
+	if err != nil {
+		return fmt.Errorf("worktree path abs: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "worktree", "add", "--detach", absWT, "HEAD")
+	cmd.Dir = absMain
+	cmd.Env = minimalGitEnv()
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("git worktree add: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// RemoveDelegateWorktree removes a working tree created for delegation. If git removal fails,
+// it attempts os.RemoveAll on the worktree path. Returns the first error encountered.
+func RemoveDelegateWorktree(ctx context.Context, mainRepo, worktreePath string) error {
+	delegateWorktreeMu.Lock()
+	defer delegateWorktreeMu.Unlock()
+	mainRepo = strings.TrimSpace(mainRepo)
+	if mainRepo == "" {
+		return nil
+	}
+	absMain, err := filepath.Abs(mainRepo)
+	if err != nil {
+		return err
+	}
+	absWT, err := filepath.Abs(worktreePath)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(ctx, 90*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "worktree", "remove", "--force", absWT)
+	cmd.Dir = absMain
+	cmd.Env = minimalGitEnv()
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		gitErr := fmt.Errorf("git worktree remove: %w: %s", err, strings.TrimSpace(string(out)))
+		if rmErr := os.RemoveAll(absWT); rmErr != nil {
+			return fmt.Errorf("%w (remove %s: %v)", gitErr, absWT, rmErr)
+		}
+		return nil
+	}
+	return nil
 }
 
 func splitNonEmpty(s string) []string {

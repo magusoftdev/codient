@@ -106,6 +106,7 @@ Run `/config` with no arguments to see all current values. `/config <key>` shows
 | `test_cmd` | **Test** check in the same sequence (empty = auto-detect, `off` = skip). Runs after lint succeeds. | *(auto)* |
 | **Git (build mode)** | | |
 | `git_auto_commit` | After each build turn that changes files, commit with message `codient: turn N` (set `false` for legacy file-restore `/undo` without commits) | `true` |
+| `delegate_git_worktrees` | When **`true`**, each **`delegate_task`** sub-agent runs in a **detached git worktree** at **`HEAD`** under `~/.codient/delegate-worktrees/` (requires a git workspace and `git` on `PATH`). Filesystem edits there are **not merged** into the parent workspace. Uncommitted changes in the main tree are **not** visible in the worktree. Sub-agents omit the **`repo_map`** tool for this path (MVP). | `false` |
 | `git_protected_branches` | Comma-separated branch names; when the first change lands on one of these, codient creates `codient/<task-slug>` and commits there | `main,master,develop` |
 | `checkpoint_auto` | Automatic checkpoints: **`plan`** (after each completed plan phase group), **`all`** (after each build turn that changes files and commits), **`off`** (manual `/checkpoint` only) | `plan` |
 | **UI/Output** | | |

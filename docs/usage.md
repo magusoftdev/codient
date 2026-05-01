@@ -126,6 +126,7 @@ codient -plain -progress -acp -mode build -workspace /path/to/project
 
 - **`-mode`** selects **build**, **ask**, or **plan** (same tool policies as the CLI).
 - **`initialize`** result includes **`defaultChatModel`**: the trimmed chat model id from the agent’s effective config for the current **`-mode`** (same default the OpenAI client uses when **`session/new`** omits **`model`**). Editors can align a model picker with this when the user has no saved preference or a stale id.
+- **`initialize` params `clientInfo.codientUnityPackageVersion`** (optional strict semver): when present, codient rejects the handshake if the Codient Unity package is **older** than the minimum this binary supports (JSON-RPC **`-32602`**). Older clients that omit the field keep working.
 - **`session/new`** requires **`cwd`** to match the configured workspace (same rule as **`-workspace`**). Optional **`model`** selects a chat model id for that session (OpenAI-compatible API); omit it to use the configured default (same as the CLI).
 - **`session/set_model`** updates **`model`** for an existing **`sessionId`** without clearing server-side conversation history. Omit **`model`** or send an empty string to revert that session to the configured default. Returns **`{"model": "<trimmed id>"}`** (empty string means default). Fails with **`session_busy`** while a **`session/prompt`** turn is in progress on that session.
   - **Preload (default on):** unless disabled, the agent runs a **minimal non-streaming chat completion** (not added to conversation history) so local inference servers load the model **before** the RPC returns. On failure, the session’s previous model is restored and the RPC fails with **`preload:`** in the error message. Disable per request with **`"preload": false`**, or set **`acp_preload_model_on_set_model`** to **`false`** in **`config.json`** to skip preloads for all switches.
@@ -267,6 +268,8 @@ The agent has a **`delegate_task`** tool that spawns an isolated sub-agent to ha
 Read-only parent modes (ask, plan) can only delegate to read-only sub-agents, preventing a plan/ask session from gaining write access through delegation.
 
 **Per-mode models** let you route sub-agents to different LLM backends. For example, a local model for build-mode edits and a remote API for ask-mode research — see the `models` key in config.
+
+**Git worktree isolation (optional):** Set **`delegate_git_worktrees`** to **`true`** in [config](configuration.md#config-file-reference-codientconfigjson) (or **`/config delegate_git_worktrees true`**) so each **`delegate_task`** runs with its tools rooted in a **separate detached worktree** at the same commit as **`HEAD`**, under **`~/.codient/delegate-worktrees/`**. Use this when parallel **`delegate_task`** calls should not share the working tree (e.g. concurrent **build**-mode edits). Changes in that worktree are **discarded** when the sub-agent finishes — they are **not** applied to your main checkout. **`HEAD`** only: uncommitted edits in the parent workspace are **not** included. While this is enabled, delegated runs skip the **`repo_map`** tool (isolation MVP).
 
 ## Streaming
 
