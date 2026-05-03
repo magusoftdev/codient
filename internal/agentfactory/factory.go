@@ -11,9 +11,9 @@ import (
 
 	"codient/internal/config"
 	"codient/internal/projectinfo"
-	"codient/internal/sandbox"
 	"codient/internal/prompt"
 	"codient/internal/repomap"
+	"codient/internal/sandbox"
 	"codient/internal/skills"
 	"codient/internal/tools"
 )

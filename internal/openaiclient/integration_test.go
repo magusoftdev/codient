@@ -13,8 +13,8 @@ import (
 	"github.com/openai/openai-go/v3/shared"
 
 	"codient/internal/config"
-	"codient/internal/stringutil"
 	"codient/internal/openaiclient"
+	"codient/internal/stringutil"
 )
 
 // Live tests against a running OpenAI-compatible server.
@@ -103,4 +103,3 @@ func TestIntegration_ChatCompletionNonEmpty(t *testing.T) {
 	}
 	t.Logf("model reply (%d runes): %s", len([]rune(content)), stringutil.TruncateRunes(content, 200))
 }
-

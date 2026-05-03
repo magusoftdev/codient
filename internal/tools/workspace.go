@@ -11,11 +11,11 @@ import (
 )
 
 const (
-	defaultReadMaxBytes      = 256 * 1024
+	defaultReadMaxBytes       = 256 * 1024
 	defaultExecMaxOutputBytes = 256 * 1024
-	defaultListMaxDepth      = 2
-	defaultListMaxEntries    = 200
-	defaultSearchMax         = 200
+	defaultListMaxDepth       = 2
+	defaultListMaxEntries     = 200
+	defaultSearchMax          = 200
 )
 
 var errHitLimit = errors.New("hit listing or search limit")

@@ -312,10 +312,10 @@ func registerWorkspaceReadTools(r *Registry, root string, userSkillsReadLib stri
 		},
 		Run: func(_ context.Context, args json.RawMessage) (string, error) {
 			var p struct {
-				Substring   string `json:"substring"`
-				Suffix      string `json:"suffix"`
-				Under       string `json:"under"`
-				MaxResults  *int   `json:"max_results"`
+				Substring  string `json:"substring"`
+				Suffix     string `json:"suffix"`
+				Under      string `json:"under"`
+				MaxResults *int   `json:"max_results"`
 			}
 			if err := json.Unmarshal(args, &p); err != nil {
 				return "", fmt.Errorf("invalid arguments: %w", err)
@@ -361,11 +361,11 @@ func registerWorkspaceReadTools(r *Registry, root string, userSkillsReadLib stri
 		},
 		Run: func(ctx context.Context, args json.RawMessage) (string, error) {
 			var p struct {
-				Pattern     string `json:"pattern"`
-				Literal     bool   `json:"literal"`
-				PathPrefix  string `json:"path_prefix"`
-				Glob        string `json:"glob"`
-				MaxMatches  *int   `json:"max_matches"`
+				Pattern    string `json:"pattern"`
+				Literal    bool   `json:"literal"`
+				PathPrefix string `json:"path_prefix"`
+				Glob       string `json:"glob"`
+				MaxMatches *int   `json:"max_matches"`
 			}
 			if err := json.Unmarshal(args, &p); err != nil {
 				return "", fmt.Errorf("invalid arguments: %w", err)
@@ -435,9 +435,9 @@ func registerWorkspaceReadTools(r *Registry, root string, userSkillsReadLib stri
 		},
 		Run: func(_ context.Context, args json.RawMessage) (string, error) {
 			var p struct {
-				Under       string `json:"under"`
-				Pattern     string `json:"pattern"`
-				MaxResults  *int   `json:"max_results"`
+				Under      string `json:"under"`
+				Pattern    string `json:"pattern"`
+				MaxResults *int   `json:"max_results"`
 			}
 			if err := json.Unmarshal(args, &p); err != nil {
 				return "", fmt.Errorf("invalid arguments: %w", err)

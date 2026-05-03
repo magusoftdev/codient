@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/openai/openai-go/v3"
 )
@@ -112,6 +113,45 @@ func LoadLatest(workspace string) (*SessionState, error) {
 		return nil, nil
 	}
 	return Load(best)
+}
+
+// ParseSessionFileID returns a safe session id for the filename stem under Dir(workspace).
+// Accepts "id" or "id.json"; rejects empty strings, path separators, "..", and characters
+// outside [A-Za-z0-9._-].
+func ParseSessionFileID(id string) (string, error) {
+	id = strings.TrimSpace(id)
+	id = strings.TrimSuffix(id, ".json")
+	if id == "" {
+		return "", fmt.Errorf("sessionstore: empty session id")
+	}
+	if filepath.Base(id) != id || strings.Contains(id, "..") {
+		return "", fmt.Errorf("sessionstore: invalid session id %q", id)
+	}
+	for _, r := range id {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' || r == '-' || r == '.' {
+			continue
+		}
+		return "", fmt.Errorf("sessionstore: invalid character in session id")
+	}
+	return id, nil
+}
+
+// LoadByWorkspaceAndID loads `<workspace>/.codient/sessions/<id>.json` after validating id.
+func LoadByWorkspaceAndID(workspace, id string) (*SessionState, error) {
+	ws := strings.TrimSpace(workspace)
+	if ws == "" {
+		return nil, fmt.Errorf("sessionstore: empty workspace")
+	}
+	safe, err := ParseSessionFileID(id)
+	if err != nil {
+		return nil, err
+	}
+	path := filepath.Join(Dir(ws), safe+".json")
+	st, err := Load(path)
+	if err != nil {
+		return nil, err
+	}
+	return st, nil
 }
 
 // Load reads a session from a specific file path.

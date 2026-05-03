@@ -17,7 +17,7 @@ type diffLine struct {
 type diffHunk struct {
 	OldStart, OldCount int
 	NewStart, NewCount int
-	Lines               []diffLine
+	Lines              []diffLine
 }
 
 var hunkHeaderRE = regexp.MustCompile(`^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@`)

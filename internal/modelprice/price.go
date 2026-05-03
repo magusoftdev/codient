@@ -10,7 +10,7 @@ import (
 
 // entry is one row in the built-in pricing table (USD per 1M tokens).
 type entry struct {
-	prefix   string // lowercase substring match
+	prefix                string // lowercase substring match
 	inPerMTok, outPerMTok float64
 }
 

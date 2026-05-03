@@ -134,6 +134,11 @@ type session struct {
 	maxTurns     int
 	maxCostUSD   float64
 
+	// singleTurnForceNew skips loading .codient/sessions when true (same as -new-session for REPL).
+	singleTurnForceNew bool
+	// singleTurnExplicitSessionID selects a session file by id; empty means load latest when not forcing new.
+	singleTurnExplicitSessionID string
+
 	// Multimodal: images from -image (first turn) or /image (next message).
 	initialImages []imageutil.ImageAttachment
 	pendingImages []imageutil.ImageAttachment
@@ -191,7 +196,7 @@ func (s *session) refreshSkillsCatalog() {
 }
 
 func (s *session) newRunner() *agent.Runner {
-	s.client = openaiclient.New(s.cfg)
+	s.client = openaiclient.NewForMode(s.cfg, string(s.mode))
 	r := &agent.Runner{
 		LLM: s.client, Cfg: s.cfg, Tools: s.registry,
 		Log: s.agentLog, Progress: s.progressOut,
@@ -644,14 +649,101 @@ func (s *session) userMessageForTurn(text string) (openai.ChatCompletionMessageP
 	return msg, line, nil
 }
 
+// countUserMessagesInOpenAIHistory counts user-role messages in the API history slice.
+func countUserMessagesInOpenAIHistory(msgs []openai.ChatCompletionMessageParamUnion) int {
+	n := 0
+	for _, m := range msgs {
+		b, err := json.Marshal(m)
+		if err != nil {
+			continue
+		}
+		if sessionstore.MessageRole(json.RawMessage(b)) == "user" {
+			n++
+		}
+	}
+	return n
+}
+
+// applyStoredSessionState restores REPL-persisted fields from disk (single-shot / -print resume).
+func (s *session) applyStoredSessionState(existing *sessionstore.SessionState) error {
+	if existing == nil {
+		return nil
+	}
+	ws := s.cfg.EffectiveWorkspace()
+	if ws != "" && strings.TrimSpace(existing.Workspace) != "" {
+		if filepath.Clean(strings.TrimSpace(existing.Workspace)) != filepath.Clean(ws) {
+			return fmt.Errorf("session workspace %q does not match %q", existing.Workspace, ws)
+		}
+	}
+	msgs, err := sessionstore.ToOpenAI(existing.Messages)
+	if err != nil {
+		return err
+	}
+	s.history = msgs
+	s.sessionID = existing.ID
+	if mode, modeErr := prompt.ParseMode(existing.Mode); modeErr == nil && mode != s.mode {
+		s.setMode(mode)
+	}
+	if existing.PlanPhase != "" {
+		s.planPhase = planstore.Phase(existing.PlanPhase)
+	}
+	if existing.CurrentCheckpointID != "" {
+		s.currentCheckpointID = existing.CurrentCheckpointID
+	}
+	if b := strings.TrimSpace(existing.CurrentBranch); b != "" {
+		s.convBranch = b
+	} else {
+		s.convBranch = "main"
+	}
+	s.loadPlanFromDisk()
+	s.loadSkillsCatalog()
+	s.registry = buildRegistry(s.cfg, s.mode, s, s.memOpts)
+	s.rebuildSystemPrompt()
+	return nil
+}
+
 func (s *session) runSingleTurn(ctx context.Context, user string, extra []imageutil.ImageAttachment) int {
 	if s.mcpMgr != nil {
 		defer s.mcpMgr.Close()
 	}
 	wsEarly := s.cfg.EffectiveWorkspace()
+
+	if strings.TrimSpace(s.singleTurnExplicitSessionID) != "" && s.singleTurnForceNew {
+		fmt.Fprintf(os.Stderr, "codient: ignoring -session-id because -new-session is set\n")
+	}
+
+	if wsEarly != "" && !s.singleTurnForceNew {
+		var existing *sessionstore.SessionState
+		var loadErr error
+		if id := strings.TrimSpace(s.singleTurnExplicitSessionID); id != "" {
+			existing, loadErr = sessionstore.LoadByWorkspaceAndID(wsEarly, id)
+		} else {
+			var err error
+			existing, err = sessionstore.LoadLatest(wsEarly)
+			if err != nil {
+				loadErr = err
+			}
+		}
+		if loadErr != nil {
+			fmt.Fprintf(os.Stderr, "codient: session resume: %v\n", loadErr)
+			if strings.TrimSpace(s.singleTurnExplicitSessionID) != "" {
+				return 2
+			}
+		}
+		if existing != nil {
+			if err := s.applyStoredSessionState(existing); err != nil {
+				fmt.Fprintf(os.Stderr, "codient: session resume: %v\n", err)
+				return 2
+			}
+		}
+	}
 	if strings.TrimSpace(s.sessionID) == "" {
 		s.sessionID = sessionstore.NewID(wsEarly)
 	}
+	if s.convBranch == "" {
+		s.convBranch = "main"
+	}
+
 	if hm, herr := hooks.LoadForConfig(s.cfg.HooksEnabled, wsEarly, s.cfg.Model, s.sessionID); herr != nil {
 		fmt.Fprintf(os.Stderr, "codient: hooks: %v\n", herr)
 	} else {
@@ -689,7 +781,8 @@ func (s *session) runSingleTurn(ctx context.Context, user string, extra []imageu
 		}
 	}
 	rawUser := user
-	user, err := applyTaskToFirstTurnIfNeeded(0, user, s.goal, s.taskFile)
+	priorUserTurns := countUserMessagesInOpenAIHistory(s.history)
+	user, err := applyTaskToFirstTurnIfNeeded(priorUserTurns, user, s.goal, s.taskFile)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "task: %v\n", err)
 		return 2
@@ -701,6 +794,7 @@ func (s *session) runSingleTurn(ctx context.Context, user string, extra []imageu
 	}
 	runner := s.newRunner()
 	reply, err := s.executeTurn(ctx, runner, msg)
+	s.autoSave()
 	if s.printMode {
 		if err == nil {
 			maybeSaveDesign(os.Stderr, s.cfg.EffectiveWorkspace(), s.designSaveDir, s.sessionID, s.mode, reply, designstore.TaskSlug(s.goal, s.taskFile, rawUser), s.cfg.DesignSave)

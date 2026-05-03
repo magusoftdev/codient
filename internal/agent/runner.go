@@ -216,19 +216,19 @@ func (r *Runner) RunConversation(ctx context.Context, system string, history []o
 			// is stuck and parsing more text tool calls will loop forever.
 			if toolCallSource != "" && consecutiveToolFails < maxConsecutiveToolFails && containsTextToolCalls(toolCallSource) {
 				if parsed := parseTextToolCalls(toolCallSource); len(parsed) > 0 {
-			if r.OnIntent != nil {
-					intent := strings.TrimSpace(stripTextToolCallFragments(toolCallSource))
-					if intent != "" {
-						r.OnIntent(intent)
-					} else if len(parsed) > 0 {
-						tc0 := parsed[0]
-						args0 := textToolCallArgsJSON(tc0.Args)
-						if s := syntheticIntentSentence(tc0.Name, args0); s != "" {
-							r.OnIntent(s)
+					if r.OnIntent != nil {
+						intent := strings.TrimSpace(stripTextToolCallFragments(toolCallSource))
+						if intent != "" {
+							r.OnIntent(intent)
+						} else if len(parsed) > 0 {
+							tc0 := parsed[0]
+							args0 := textToolCallArgsJSON(tc0.Args)
+							if s := syntheticIntentSentence(tc0.Name, args0); s != "" {
+								r.OnIntent(s)
+							}
 						}
 					}
-				}
-				assistantHistoryText := strings.TrimSpace(msg.Content)
+					assistantHistoryText := strings.TrimSpace(msg.Content)
 					if assistantHistoryText == "" {
 						assistantHistoryText = strings.TrimSpace(stripTextToolCallFragments(toolCallSource))
 					}
@@ -338,19 +338,19 @@ func (r *Runner) RunConversation(ctx context.Context, system string, history []o
 				}
 			}
 
-		if r.Progress != nil {
-			suf := roundUsageSuffix(res, r.Cfg.ContextWindowTokens)
-			fmt.Fprintf(r.Progress, "%sllm %s  ·  reply%s\n", progressNestedIndent, formatProgressDur(llmDur), suf)
-		}
-		replyContent := msg.Content
-		if replyContent == "" && toolCallSource != "" && !containsTextToolCalls(toolCallSource) {
-			replyContent = strings.TrimSpace(toolCallSource)
-		}
-		if replyContent != "" {
-			content := replyContent
-			if containsTextToolCalls(content) {
-				content = stripTextToolCallFragments(content)
+			if r.Progress != nil {
+				suf := roundUsageSuffix(res, r.Cfg.ContextWindowTokens)
+				fmt.Fprintf(r.Progress, "%sllm %s  ·  reply%s\n", progressNestedIndent, formatProgressDur(llmDur), suf)
 			}
+			replyContent := msg.Content
+			if replyContent == "" && toolCallSource != "" && !containsTextToolCalls(toolCallSource) {
+				replyContent = strings.TrimSpace(toolCallSource)
+			}
+			if replyContent != "" {
+				content := replyContent
+				if containsTextToolCalls(content) {
+					content = stripTextToolCallFragments(content)
+				}
 				if r.PostReplyCheck != nil {
 					if inject := r.PostReplyCheck(ctx, PostReplyCheckInfo{
 						Reply:     content,
@@ -402,7 +402,7 @@ func (r *Runner) RunConversation(ctx context.Context, system string, history []o
 				continue
 			}
 			fr := string(res.Choices[0].FinishReason)
-		return "", nil, false, fmt.Errorf("model returned no content and no tool calls (finish_reason=%s)", fr)
+			return "", nil, false, fmt.Errorf("model returned no content and no tool calls (finish_reason=%s)", fr)
 		}
 
 		intentEmitted := false
@@ -441,22 +441,22 @@ func (r *Runner) RunConversation(ctx context.Context, system string, history []o
 				thinkingPrinted = true
 			}
 		}
-	if len(calls) > 0 {
-		v0 := calls[0]
-		args0 := json.RawMessage(v0.Function.Arguments)
-		if !thinkingPrinted {
-			if r.Progress != nil {
-				if line := FormatSyntheticIntentThinkingLine(r.ProgressPlain, r.ProgressMode, v0.Function.Name, args0); line != "" {
-					fmt.Fprintf(r.Progress, "\n%s\n", line)
+		if len(calls) > 0 {
+			v0 := calls[0]
+			args0 := json.RawMessage(v0.Function.Arguments)
+			if !thinkingPrinted {
+				if r.Progress != nil {
+					if line := FormatSyntheticIntentThinkingLine(r.ProgressPlain, r.ProgressMode, v0.Function.Name, args0); line != "" {
+						fmt.Fprintf(r.Progress, "\n%s\n", line)
+					}
+				}
+			}
+			if r.OnIntent != nil && !intentEmitted {
+				if s := syntheticIntentSentence(v0.Function.Name, args0); s != "" {
+					r.OnIntent(s)
 				}
 			}
 		}
-		if r.OnIntent != nil && !intentEmitted {
-			if s := syntheticIntentSentence(v0.Function.Name, args0); s != "" {
-				r.OnIntent(s)
-			}
-		}
-	}
 
 		results := make([]toolResult, len(calls))
 		if r.Progress != nil {

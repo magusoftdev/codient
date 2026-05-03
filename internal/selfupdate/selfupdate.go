@@ -22,7 +22,7 @@ import (
 )
 
 const (
-	repo       = "vaughanb/codient"
+	repo       = "magusoftdev/codient"
 	binaryName = "codient"
 	apiTimeout = 4 * time.Second
 )
@@ -75,6 +75,38 @@ func IsNewer(current, latest string) bool {
 		return lv[1] > cv[1]
 	}
 	return lv[2] > cv[2]
+}
+
+// CompareSemver returns cmp=-1 if a<b, 0 if equal, 1 if a>b for strict major.minor.patch
+// (optional "v" prefix). ok is false if either operand does not parse.
+func CompareSemver(a, b string) (cmp int, ok bool) {
+	av, ok1 := parseSemver(a)
+	bv, ok2 := parseSemver(b)
+	if !ok1 || !ok2 {
+		return 0, false
+	}
+	for i := 0; i < 3; i++ {
+		if av[i] < bv[i] {
+			return -1, true
+		}
+		if av[i] > bv[i] {
+			return 1, true
+		}
+	}
+	return 0, true
+}
+
+// SemverAtLeast reports whether a>=b for strict semver strings (optional "v" prefix).
+// False if either string does not parse.
+func SemverAtLeast(a, b string) bool {
+	c, ok := CompareSemver(a, b)
+	return ok && c >= 0
+}
+
+// ValidSemver reports whether s parses as strict major.minor.patch (optional "v" prefix).
+func ValidSemver(s string) bool {
+	_, ok := parseSemver(s)
+	return ok
 }
 
 // parseSemver strips an optional "v" prefix and parses "major.minor.patch".

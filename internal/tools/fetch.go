@@ -5,10 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"os"
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -25,10 +25,10 @@ const (
 
 // FetchOptions configures the optional fetch_url tool (HTTPS GET with host allowlist).
 type FetchOptions struct {
-	AllowHosts  []string // Lowercase hostnames; subdomains match (e.g. api.example.com matches example.com).
-	MaxBytes    int      // Response body cap (default 1MiB, max 10MiB).
-	TimeoutSec  int      // Per-request timeout (default 30s).
-	Session     *SessionFetchAllow
+	AllowHosts []string // Lowercase hostnames; subdomains match (e.g. api.example.com matches example.com).
+	MaxBytes   int      // Response body cap (default 1MiB, max 10MiB).
+	TimeoutSec int      // Per-request timeout (default 30s).
+	Session    *SessionFetchAllow
 	// PromptUnknownHost is called when the URL host is not in AllowHosts or Session. If nil, unknown hosts are rejected.
 	PromptUnknownHost func(ctx context.Context, host, pageURL string) FetchHostChoice
 	// PersistFetchHost saves host to persistent config when the user chooses FetchHostAllowAlways. Optional.
@@ -154,11 +154,11 @@ func registerFetchURL(r *Registry, opts *FetchOptions) {
 					if sess != nil {
 						sess.Add(host)
 					}
-				if persist != nil {
-					if pErr := persist(host); pErr != nil {
-						fmt.Fprintf(os.Stderr, "codient: persist fetch host: %v\n", pErr)
+					if persist != nil {
+						if pErr := persist(host); pErr != nil {
+							fmt.Fprintf(os.Stderr, "codient: persist fetch host: %v\n", pErr)
+						}
 					}
-				}
 				default:
 					return "", fmt.Errorf("fetch denied for host %q", host)
 				}

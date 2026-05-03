@@ -38,9 +38,9 @@ type Index struct {
 	workspace string
 	model     string
 	embedder  Embedder
-	entries  []Entry
-	ready    chan struct{}
-	buildErr error
+	entries   []Entry
+	ready     chan struct{}
+	buildErr  error
 }
 
 // New creates an Index. Call BuildOrUpdate in a goroutine to populate it.

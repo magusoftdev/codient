@@ -55,9 +55,9 @@ func parseHookOutput(stdout, stderr []byte, exitCode int) (hookOutput, error) {
 	}
 	if err := json.Unmarshal([]byte(s), &wrap); err == nil && len(wrap.HookSpecificOutput) > 0 {
 		var nested struct {
-			AdditionalContext   string `json:"additionalContext"`
-			PermissionDecision  string `json:"permissionDecision"`
-			HookEventName       string `json:"hookEventName"`
+			AdditionalContext  string `json:"additionalContext"`
+			PermissionDecision string `json:"permissionDecision"`
+			HookEventName      string `json:"hookEventName"`
 		}
 		if err := json.Unmarshal(wrap.HookSpecificOutput, &nested); err == nil {
 			if out.AdditionalContext == "" && strings.TrimSpace(nested.AdditionalContext) != "" {

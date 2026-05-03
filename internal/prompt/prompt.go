@@ -14,20 +14,20 @@ const MaxRepoInstructionsBytes = 32 * 1024
 
 // Params configures system prompt assembly.
 type Params struct {
-	Cfg               *config.Config
-	Reg               *tools.Registry
-	Mode              Mode // zero / empty treated as ModeBuild
-	UserSystem        string
+	Cfg                    *config.Config
+	Reg                    *tools.Registry
+	Mode                   Mode // zero / empty treated as ModeBuild
+	UserSystem             string
 	RepoInstructions       string // optional, already truncated by caller
 	AutoCheckBuildResolved string // resolved build command (autocheck_cmd), empty when disabled
 	AutoCheckLintResolved  string // resolved lint command, empty when disabled
 	AutoCheckTestResolved  string // resolved test command, empty when disabled
 	ProjectContext         string // auto-detected project summary (language, framework, etc.)
 	RepoMap                string // structural overview (paths + symbols), optional
-	Memory            string // cross-session memory (global + workspace), already loaded and truncated
-	SkillsCatalog     string // optional "## Agent skills" markdown from ~/.codient/skills and .codient/skills
-	ReviewMode        bool   // when true, appends review/verification guidance
-	UnityACPEditor    bool   // when true, append Codient Unity / unity_* tool guidance (ACP + Unity-shaped workspace)
+	Memory                 string // cross-session memory (global + workspace), already loaded and truncated
+	SkillsCatalog          string // optional "## Agent skills" markdown from ~/.codient/skills and .codient/skills
+	ReviewMode             bool   // when true, appends review/verification guidance
+	UnityACPEditor         bool   // when true, append Codient Unity / unity_* tool guidance (ACP + Unity-shaped workspace)
 }
 
 // Build returns the full system message: persona/rules, dynamic tools, repo notes, user -system.

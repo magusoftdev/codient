@@ -39,6 +39,54 @@ func TestParseSemver(t *testing.T) {
 	}
 }
 
+func TestValidSemver(t *testing.T) {
+	if !ValidSemver("1.0.0") || !ValidSemver("v0.0.1") {
+		t.Fatal("expected valid semver")
+	}
+	if ValidSemver("1.0") || ValidSemver("x") {
+		t.Fatal("expected invalid semver")
+	}
+}
+
+func TestSemverAtLeast(t *testing.T) {
+	tests := []struct {
+		a, b string
+		want bool
+	}{
+		{"1.0.0", "1.0.0", true},
+		{"1.0.1", "1.0.0", true},
+		{"1.0.0", "1.0.1", false},
+		{"v2.0.0", "1.9.9", true},
+		{"0.10.0", "0.9.9", true},
+		{"bad", "1.0.0", false},
+		{"1.0.0", "bad", false},
+	}
+	for _, tt := range tests {
+		if got := SemverAtLeast(tt.a, tt.b); got != tt.want {
+			t.Errorf("SemverAtLeast(%q, %q) = %v; want %v", tt.a, tt.b, got, tt.want)
+		}
+	}
+}
+
+func TestCompareSemver(t *testing.T) {
+	cmp, ok := CompareSemver("1.2.3", "1.2.4")
+	if !ok || cmp != -1 {
+		t.Fatalf("CompareSemver 1.2.3 vs 1.2.4 = %d, %v", cmp, ok)
+	}
+	cmp, ok = CompareSemver("1.2.4", "1.2.3")
+	if !ok || cmp != 1 {
+		t.Fatalf("CompareSemver 1.2.4 vs 1.2.3 = %d, %v", cmp, ok)
+	}
+	cmp, ok = CompareSemver("v1.0.0", "1.0.0")
+	if !ok || cmp != 0 {
+		t.Fatalf("CompareSemver v1.0.0 vs 1.0.0 = %d, %v", cmp, ok)
+	}
+	_, ok = CompareSemver("1.0", "1.0.0")
+	if ok {
+		t.Fatal("expected CompareSemver to fail on 1.0")
+	}
+}
+
 func TestIsNewer(t *testing.T) {
 	tests := []struct {
 		current string

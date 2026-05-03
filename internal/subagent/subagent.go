@@ -34,7 +34,7 @@ type RunParams struct {
 	Cfg      *config.Config
 	Mode     prompt.Mode
 	Task     string
-	Context  string // optional extra context prepended to the task
+	Context  string       // optional extra context prepended to the task
 	RepoMap  *repomap.Map // optional shared structural map (parent session); nil disables repo_map tool in child
 	Log      *agentlog.Logger
 	Progress io.Writer // nested progress lines written here (already prefixed by caller)

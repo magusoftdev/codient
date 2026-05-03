@@ -1,7 +1,7 @@
 & {
     $ErrorActionPreference = 'Stop'
 
-    $Repo = 'vaughanb/codient'
+    $Repo = 'magusoftdev/codient'
     $InstallDir = if ($env:CODIENT_INSTALL_DIR) { $env:CODIENT_INSTALL_DIR } else {
         Join-Path $env:LOCALAPPDATA 'codient'
     }

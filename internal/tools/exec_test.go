@@ -65,7 +65,7 @@ func (f sandboxRunnerFunc) Exec(ctx context.Context, pol sandbox.Policy, workDir
 	return f(ctx, pol, workDir, argv, env, timeout, stdout, stderr)
 }
 func (f sandboxRunnerFunc) Available() bool { return true }
-func (f sandboxRunnerFunc) Name() string      { return "test" }
+func (f sandboxRunnerFunc) Name() string    { return "test" }
 
 func TestShellArgv(t *testing.T) {
 	argv, err := ShellArgv("  mkdir foo  ")

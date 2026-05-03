@@ -18,7 +18,7 @@ type Command struct {
 
 // Registry maps command names to implementations. Zero value is ready to use.
 type Registry struct {
-	order []string
+	order  []string
 	byName map[string]*Command
 }
 

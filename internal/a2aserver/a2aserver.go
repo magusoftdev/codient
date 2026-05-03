@@ -190,4 +190,3 @@ func resolveMode(meta map[string]any) prompt.Mode {
 	}
 	return m
 }
-

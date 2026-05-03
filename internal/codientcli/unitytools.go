@@ -151,7 +151,7 @@ func registerUnityACPReadTools(reg *tools.Registry, call func(context.Context, s
 	})
 
 	reg.Register(tools.Tool{
-		Name: "unity_list_loaded_scenes",
+		Name:        "unity_list_loaded_scenes",
 		Description: "List scenes currently loaded in the Unity Editor (name, path, build index, dirty flag, active).",
 		Parameters: shared.FunctionParameters{
 			"type":                 "object",
@@ -219,7 +219,7 @@ func registerUnityACPReadTools(reg *tools.Registry, call func(context.Context, s
 	})
 
 	reg.Register(tools.Tool{
-		Name: "unity_summarize_project_packages",
+		Name:        "unity_summarize_project_packages",
 		Description: "Summarize Packages/manifest.json dependencies and list .asmdef files under Assets (bounded).",
 		Parameters: shared.FunctionParameters{
 			"type":                 "object",

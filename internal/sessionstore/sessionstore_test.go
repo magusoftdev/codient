@@ -202,6 +202,43 @@ func TestDir(t *testing.T) {
 	}
 }
 
+func TestParseSessionFileID(t *testing.T) {
+	got, err := ParseSessionFileID("myproj_20260101_120000")
+	if err != nil || got != "myproj_20260101_120000" {
+		t.Fatalf("got %q %v", got, err)
+	}
+	got, err = ParseSessionFileID("myproj_20260101_120000.json")
+	if err != nil || got != "myproj_20260101_120000" {
+		t.Fatalf("suffix: got %q %v", got, err)
+	}
+	for _, bad := range []string{"", "../x", "a/b", "bad id"} {
+		if _, err := ParseSessionFileID(bad); err == nil {
+			t.Fatalf("expected error for %q", bad)
+		}
+	}
+}
+
+func TestLoadByWorkspaceAndID(t *testing.T) {
+	tmp := t.TempDir()
+	st := &SessionState{
+		ID:        "roundtrip_20260102_000000",
+		Workspace: tmp,
+		Mode:      "build",
+		Model:     "m",
+		Messages:  FromOpenAI([]openai.ChatCompletionMessageParamUnion{openai.UserMessage("u")}),
+	}
+	if err := Save(st); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadByWorkspaceAndID(tmp, st.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.ID != st.ID || len(loaded.Messages) != 1 {
+		t.Fatalf("loaded: %+v", loaded)
+	}
+}
+
 func TestResumeSummaryLine(t *testing.T) {
 	if g := ResumeSummaryLine("sess_1", nil); g != "" {
 		t.Fatalf("empty msgs: got %q", g)

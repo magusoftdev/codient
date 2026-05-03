@@ -70,6 +70,8 @@ func (p AutoApprovePolicy) allowsFetch() bool {
 // headlessJSONOut is the single JSON object written for -output-format json.
 type headlessJSONOut struct {
 	Reply         string          `json:"reply"`
+	SessionID     string          `json:"session_id,omitempty"`
+	Workspace     string          `json:"workspace,omitempty"`
 	ToolsUsed     []string        `json:"tools_used"`
 	FilesModified []string        `json:"files_modified,omitempty"`
 	Tokens        *headlessTokens `json:"tokens,omitempty"`
@@ -84,9 +86,11 @@ type headlessTokens struct {
 	Total      int64 `json:"total,omitempty"`
 }
 
-func writeHeadlessJSONResult(w io.Writer, reply string, tools, files []string, prompt, completion, total int64, cost *float64, err error) error {
+func writeHeadlessJSONResult(w io.Writer, sessionID, workspace, reply string, tools, files []string, prompt, completion, total int64, cost *float64, err error) error {
 	out := headlessJSONOut{
 		Reply:         reply,
+		SessionID:     strings.TrimSpace(sessionID),
+		Workspace:     strings.TrimSpace(workspace),
 		ToolsUsed:     tools,
 		FilesModified: files,
 		ExitReason:    "complete",
@@ -191,11 +195,17 @@ func addPathsFromToolJSON(toolName, argsJSON string, fileSet map[string]struct{}
 }
 
 // writeHeadlessStreamJSONFinal appends a single summary line after JSONL tool/llm events (stream-json mode).
-func writeHeadlessStreamJSONFinal(w io.Writer, reply string, tools, files []string, u tokentracker.Usage, cost *float64, err error) error {
+func writeHeadlessStreamJSONFinal(w io.Writer, sessionID, workspace, reply string, tools, files []string, u tokentracker.Usage, cost *float64, err error) error {
 	m := map[string]any{
 		"type":        "result",
 		"reply":       reply,
 		"exit_reason": exitReasonForError(err),
+	}
+	if sid := strings.TrimSpace(sessionID); sid != "" {
+		m["session_id"] = sid
+	}
+	if ws := strings.TrimSpace(workspace); ws != "" {
+		m["workspace"] = ws
 	}
 	if len(tools) > 0 {
 		m["tools_used"] = tools
@@ -235,14 +245,16 @@ func (s *session) finishHeadlessTurn(reply string, execErr error) int {
 		}
 	}
 	tools, files := summarizeToolsAndFilesFromHistory(s.history)
+	sid := strings.TrimSpace(s.sessionID)
+	wsOut := strings.TrimSpace(s.cfg.EffectiveWorkspace())
 	switch s.outputFormat {
 	case "json":
-		if err := writeHeadlessJSONResult(os.Stdout, reply, tools, files, u.PromptTokens, u.CompletionTokens, u.TotalTokens, costPtr, execErr); err != nil {
+		if err := writeHeadlessJSONResult(os.Stdout, sid, wsOut, reply, tools, files, u.PromptTokens, u.CompletionTokens, u.TotalTokens, costPtr, execErr); err != nil {
 			fmt.Fprintf(os.Stderr, "codient: write output: %v\n", err)
 			return 2
 		}
 	case "stream-json":
-		if err := writeHeadlessStreamJSONFinal(os.Stdout, reply, tools, files, u, costPtr, execErr); err != nil {
+		if err := writeHeadlessStreamJSONFinal(os.Stdout, sid, wsOut, reply, tools, files, u, costPtr, execErr); err != nil {
 			fmt.Fprintf(os.Stderr, "codient: write output: %v\n", err)
 			return 2
 		}

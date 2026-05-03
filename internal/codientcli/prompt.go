@@ -5,9 +5,9 @@ import (
 
 	"codient/internal/codeindex"
 	"codient/internal/config"
-	"codient/internal/sandbox"
 	"codient/internal/prompt"
 	"codient/internal/repomap"
+	"codient/internal/sandbox"
 	"codient/internal/skills"
 	"codient/internal/tools"
 )

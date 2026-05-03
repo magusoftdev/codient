@@ -28,6 +28,7 @@ import (
 	"codient/internal/projectinfo"
 	"codient/internal/prompt"
 	"codient/internal/repomap"
+	"codient/internal/selfupdate"
 	"codient/internal/skills"
 	"codient/internal/tokentracker"
 	"codient/internal/tools"
@@ -37,6 +38,9 @@ const (
 	acpProtocolVersion = 1
 	// acpSetModelWarmMax caps how long session/set_model may block on the warmup completion (beyond cfg.MaxCompletionSeconds).
 	acpSetModelWarmMax = 10 * time.Minute
+	// acpMinCodientUnityPackageSemver: initialize fails if the client sends codientUnityPackageVersion below this.
+	// Omitted field = older Codient Unity (allowed). Keep in sync with CodientUnityCompatibility.PackageVersion baseline.
+	acpMinCodientUnityPackageSemver = "1.0.0"
 )
 
 func validateACPFlags(printMode, repl, stream, ping, listModels, listTools, a2a, update, version bool, nImages int) error {
@@ -125,15 +129,15 @@ func runACPServer(ctx context.Context, cfg *config.Config, agentMode prompt.Mode
 
 	tracker := &tokentracker.Tracker{}
 	stub := &session{
-		cfg:            cfg,
-		client:         client,
-		progressOut:    progressOut,
-		mcpMgr:         mcpMgr,
-		repoMap:        rm,
-		agentLog:       agentLog,
-		tokenTracker:   tracker,
-		acpNoDelegate:  true,
-		skillsCatalog:  skillsCat,
+		cfg:           cfg,
+		client:        client,
+		progressOut:   progressOut,
+		mcpMgr:        mcpMgr,
+		repoMap:       rm,
+		agentLog:      agentLog,
+		tokenTracker:  tracker,
+		acpNoDelegate: true,
+		skillsCatalog: skillsCat,
 	}
 	if len(cfg.ExecAllowlist) > 0 {
 		stub.execAllow = tools.NewSessionExecAllow(cfg.ExecAllowlist)
@@ -390,16 +394,32 @@ func (s *acpServer) handleRequest(ctx context.Context, method string, params jso
 func (s *acpServer) handleInitialize(_ context.Context, params json.RawMessage, id int) {
 	var p struct {
 		ProtocolVersion int `json:"protocolVersion"`
+		ClientInfo      *struct {
+			CodientUnityPackageVersion string `json:"codientUnityPackageVersion"`
+		} `json:"clientInfo"`
 	}
 	_ = json.Unmarshal(params, &p)
 	if p.ProtocolVersion != acpProtocolVersion {
 		_ = s.tr.WriteError(id, -32602, fmt.Sprintf("unsupported protocol version %d (want %d)", p.ProtocolVersion, acpProtocolVersion))
 		return
 	}
+	if p.ClientInfo != nil {
+		pkg := strings.TrimSpace(p.ClientInfo.CodientUnityPackageVersion)
+		if pkg != "" {
+			if !selfupdate.ValidSemver(pkg) {
+				_ = s.tr.WriteError(id, -32602, fmt.Sprintf("invalid codientUnityPackageVersion %q (need major.minor.patch semver)", pkg))
+				return
+			}
+			if !selfupdate.SemverAtLeast(pkg, acpMinCodientUnityPackageSemver) {
+				_ = s.tr.WriteError(id, -32602, fmt.Sprintf("Codient Unity package %s is too old for this codient (need ≥ %s). Upgrade the Codient Unity package.", pkg, acpMinCodientUnityPackageSemver))
+				return
+			}
+		}
+	}
 	s.initialized = true
 	defaultModel := strings.TrimSpace(s.client.Model())
 	_ = s.tr.WriteResult(id, map[string]any{
-		"protocolVersion": acpProtocolVersion,
+		"protocolVersion":  acpProtocolVersion,
 		"defaultChatModel": defaultModel,
 		"agentCapabilities": map[string]any{
 			"loadSession": false,

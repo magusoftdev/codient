@@ -8,12 +8,12 @@ import (
 var (
 	reMarkdownQuestionHeading = regexp.MustCompile(`(?mi)^#{1,6}\s*question\b`)
 	rePlanPackedBoldOption    = regexp.MustCompile(`([^\n])\s+(\*\*[BCD]\)\*\*)`)
-	rePlanPackedPlainOption     = regexp.MustCompile(`([^\n])\s+([BCD]\))(\s)`)
-	rePlanLineOptionHeading     = regexp.MustCompile(`^(\s*)#{1,6}\s+([ABCD]\)\s.*)$`)
-	rePlanLinePlainOption       = regexp.MustCompile(`^(\s*)([ABCD]\)\s.*)$`)
-	rePlanLineBoldOption        = regexp.MustCompile(`^(\s*)(\*\*[ABCD]\)\*\*\s*.+)$`)
-	rePlanLineListedOption      = regexp.MustCompile(`^(\s*)[-*•]\s*((?:\*\*)?[ABCD]\)(?:\*\*)?\s.*)$`)
-	rePlanLineEmptyMarker       = regexp.MustCompile(`^\s*[-*•]\s*$`)
+	rePlanPackedPlainOption   = regexp.MustCompile(`([^\n])\s+([BCD]\))(\s)`)
+	rePlanLineOptionHeading   = regexp.MustCompile(`^(\s*)#{1,6}\s+([ABCD]\)\s.*)$`)
+	rePlanLinePlainOption     = regexp.MustCompile(`^(\s*)([ABCD]\)\s.*)$`)
+	rePlanLineBoldOption      = regexp.MustCompile(`^(\s*)(\*\*[ABCD]\)\*\*\s*.+)$`)
+	rePlanLineListedOption    = regexp.MustCompile(`^(\s*)[-*•]\s*((?:\*\*)?[ABCD]\)(?:\*\*)?\s.*)$`)
+	rePlanLineEmptyMarker     = regexp.MustCompile(`^\s*[-*•]\s*$`)
 )
 
 const (

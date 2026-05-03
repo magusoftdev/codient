@@ -1,7 +1,7 @@
 #!/bin/sh
 set -e
 
-REPO="vaughanb/codient"
+REPO="magusoftdev/codient"
 INSTALL_DIR="${CODIENT_INSTALL_DIR:-$HOME/.local/bin}"
 
 fail() { printf "\033[31merror:\033[0m %s\n" "$1" >&2; exit 1; }

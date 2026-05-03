@@ -185,14 +185,14 @@ func TestCallLLMOnce_StreamsWithToolsWhenOptIn(t *testing.T) {
 func TestCallLLMOnce_Timeout(t *testing.T) {
 	llm := &streamVsChatRecorder{model: "m"}
 	r := &Runner{LLM: llm, Cfg: &config.Config{StreamWithTools: true, MaxCompletionSeconds: 1}, Tools: tools.NewRegistry()}
-	
+
 	// Create a context that's already expired
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Millisecond)
 	defer cancel()
-	
+
 	// Wait for context to expire
 	<-ctx.Done()
-	
+
 	params := openai.ChatCompletionNewParams{}
 	_, _, err := r.callLLMOnce(ctx, params, io.Discard)
 	if !strings.Contains(err.Error(), "timeout") && !errors.Is(err, context.DeadlineExceeded) {

@@ -135,9 +135,9 @@ func (m *Manager) RunUserPromptSubmit(ctx context.Context, prompt string) (UserP
 
 // PreToolResult is the outcome of PreToolUse hooks.
 type PreToolResult struct {
-	Allow            bool
-	BlockReason      string
-	SystemMessage    string
+	Allow             bool
+	BlockReason       string
+	SystemMessage     string
 	AdditionalContext string // rarely used before tool
 }
 
@@ -224,8 +224,8 @@ func (m *Manager) RunPostToolUse(ctx context.Context, toolName string, args json
 type StopResult struct {
 	Continue           bool   // false => finish turn and return reply
 	ContinuationPrompt string // when Continue true, inject as user message
-	Reason               string
-	SystemMessage        string
+	Reason             string
+	SystemMessage      string
 }
 
 // RunStop runs when the model produced a text reply with no tool calls.

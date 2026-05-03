@@ -45,7 +45,7 @@ type Entry struct {
 	// ReadPath is the path to pass to read_file: workspace-relative for workspace skills,
 	// or path relative to the user skills library root for user skills (read_file resolves
 	// workspace first, then the user skills directory).
-	ReadPath string
+	ReadPath               string
 	DisableModelInvocation bool
 }
 

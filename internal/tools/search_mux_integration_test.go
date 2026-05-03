@@ -105,4 +105,3 @@ func TestIntegration_SearchMux_EmptyQuery(t *testing.T) {
 		t.Errorf("unexpected error: %v", err)
 	}
 }
-

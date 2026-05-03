@@ -49,11 +49,13 @@ The TUI uses the alternate screen buffer; when you exit, the terminal returns to
 
 Use **`-print`** (alias **`-p`**) for a **single non-interactive turn**: no REPL, no welcome banner, suitable for scripts and CI. This forces the same path as piping a prompt on stdin, but makes automation explicit. Combine with **`-prompt`** or stdin.
 
+**Session persistence (same files as the REPL):** after each single-shot or **`-print`** turn, codient writes **`<workspace>/.codient/sessions/<id>.json`**. On the next invocation from the **same workspace**, if you do **not** pass **`-new-session`**, codient **loads the latest** saved session and continues the conversation before applying your new prompt. Use **`-session-id <id>`** to attach to a specific session file (the id is the filename stem; optional **`.json`** suffix is accepted). IDs must be a single path segment (letters, digits, `_`, `-`, `.` only). **`-new-session`** starts fresh and ignores **`-session-id`** (a warning is printed if both were set). If **`-session-id`** is set and the file is missing, codient exits with code **2**.
+
 | Flag | Meaning |
 |------|---------|
 | **`-output-format text`** (default) | Assistant reply on stdout; errors on stderr |
-| **`-output-format json`** | One JSON object on stdout with `reply`, `tools_used`, `files_modified`, optional `tokens` / `cost_usd`, `exit_reason`, and `error` on failure |
-| **`-output-format stream-json`** | JSONL on stdout: same event shapes as **`-log`** (`llm`, `tool_start`, `tool_end`), plus a final `{"type":"result",...}` line |
+| **`-output-format json`** | One JSON object on stdout with `reply`, `session_id`, `workspace`, `tools_used`, `files_modified`, optional `tokens` / `cost_usd`, `exit_reason`, and `error` on failure |
+| **`-output-format stream-json`** | JSONL on stdout: same event shapes as **`-log`** (`llm`, `tool_start`, `tool_end`), plus a final `{"type":"result",...}` line (includes `session_id` and `workspace` when set) |
 | **`-auto-approve off`** (default) | Same as today: non-interactive sessions deny exec/fetch prompts unless allowlisted |
 | **`-auto-approve exec`** | Allow **run_command** / **run_shell** when not on the allowlist (no prompt) |
 | **`-auto-approve fetch`** | Allow **fetch_url** to hosts not on the allowlist (no prompt) |
@@ -73,7 +75,26 @@ codient -print -mode build -auto-approve all -output-format json -prompt "Run fm
 echo "Fix the typo in README" | codient -print -output-format json
 ```
 
+Chaining two CI steps on the same checkout (second run resumes the first):
+
+```bash
+codient -print -workspace "$REPO" -output-format json -auto-approve exec -prompt "Say hello" > out1.json
+SID=$(jq -r .session_id < out1.json)
+codient -print -workspace "$REPO" -session-id "$SID" -output-format json -auto-approve exec -prompt "Say goodbye"
+```
+
 For long-running HTTP integration, see **`-a2a`** below.
+
+## Bring-your-own remote and background runs
+
+Codient does not provide hosted infrastructure. You can still run it **in the cloud or in the background** on machines you control:
+
+- **Detach on a server:** run the normal REPL inside **tmux**, **screen**, or a **systemd** user service so the process survives SSH disconnects.
+- **CI / automation:** use **`-print`** (or a piped single-shot prompt) with **`-workspace`**, **`-auto-approve`**, and **`-output-format json`**; persist API keys via environment or CI secrets. Use **`-session-id`** or default resume to split work across jobs on the same workspace checkout.
+- **Container:** run the binary in Docker or Podman with the repo mounted as a volume; set **`sandbox_mode`** to **`container`** if you want tool subprocesses isolated inside the container runtime.
+- **Editor over SSH:** spawn **`codient -acp`** on the remote host and forward stdio (same NDJSON protocol as local Codient Unity or other ACP clients).
+
+To back up session files to object storage, use **[lifecycle hooks](context-and-integrations.md#lifecycle-hooks)** (e.g. **`SessionEnd`**) to run `rclone` or `aws s3 sync` on **`<workspace>/.codient/sessions/`** after a run.
 
 ## Images and vision
 
@@ -88,7 +109,8 @@ Use `-help` for all flags. Notable options:
 - **`-mode`** — `build` (default), `ask`, or `plan`
 - **`-workspace`** — workspace root (overrides config and cwd)
 - **`-sandbox`** — subprocess isolation mode (`off`, `native`, `container`, `auto`; overrides config); see [Subprocess sandboxing](configuration.md#subprocess-sandboxing)
-- **`-new-session`** — start fresh instead of resuming the latest session
+- **`-new-session`** — start fresh instead of resuming the latest session (REPL or single-shot / **`-print`**)
+- **`-session-id`** — resume a specific persisted session under the workspace (single-shot / **`-print`**; see [Headless / CI mode](#headless--ci-mode--print))
 - **`-update`** — check for a newer release and install it (see [Auto-update](context-and-integrations.md#auto-update))
 - **`-repl`** — explicit REPL (default when stdin is a TTY)
 - **`-system`** — optional extra system prompt merged into the default tool prompt

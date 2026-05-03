@@ -37,10 +37,10 @@ func (ic *inputCloser) Close() {
 
 // TUI message types.
 type (
-	tuiOutputMsg     string // new text for the viewport
-	tuiQuitMsg       struct{ exitCode int }
-	tuiModeMsg       string // mode changed
-	tuiWorkingMsg    bool   // true = agent working, false = idle
+	tuiOutputMsg      string // new text for the viewport
+	tuiQuitMsg        struct{ exitCode int }
+	tuiModeMsg        string // mode changed
+	tuiWorkingMsg     bool   // true = agent working, false = idle
 	tuiSpinnerTickMsg time.Time
 )
 
@@ -292,14 +292,14 @@ func (w *tuiWriter) Write(p []byte) (int, error) {
 
 // tuiSetup holds all state needed to run the Bubble Tea TUI session.
 type tuiSetup struct {
-	prog    *tea.Program
-	input   *inputCloser
-	origOut *os.File
-	origErr *os.File
-	stdoutR *os.File
-	stdoutW *os.File
-	stderrR *os.File
-	stderrW *os.File
+	prog     *tea.Program
+	input    *inputCloser
+	origOut  *os.File
+	origErr  *os.File
+	stdoutR  *os.File
+	stdoutW  *os.File
+	stderrR  *os.File
+	stderrW  *os.File
 	exitCode int
 	done     chan struct{} // closed when the session goroutine exits
 }

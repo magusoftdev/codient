@@ -10,6 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **`/create-rule`** REPL slash command: interactive wizard that writes a Cursor-compatible **`.mdc`** rule under **`<workspace>/.cursor/rules/`** (`description`, optional **`globs`**, **`alwaysApply`**). See [docs/usage.md](docs/usage.md#slash-commands).
+- **Single-shot / `-print` session resume:** non-REPL runs save to **`<workspace>/.codient/sessions/`** after each turn and, unless **`-new-session`**, load the latest session (or **`-session-id <id>`**). JSON / `stream-json` output includes **`session_id`** and **`workspace`**. See [docs/usage.md](docs/usage.md#headless--ci-mode--print) and [Bring-your-own remote runs](docs/usage.md#bring-your-own-remote-and-background-runs).
+
+### Changed
+
+- **OpenAI client in agent turns** now uses **per-mode** connection settings (**`NewForMode`**) for each runner, matching the mode selected for the session (including after resume).
 
 ## [0.10.0] - 2026-04-29
 
@@ -109,17 +114,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release: OpenAI-compatible CLI agent with REPL, ask/plan/build modes, workspace tools (read, grep, patch, shell with allowlist), optional HTTPS fetch, web search, semantic search via embeddings, A2A server mode, session persistence, and project instructions (`AGENTS.md`, `.codient/instructions.md`).
 
-[Unreleased]: https://github.com/vaughanb/codient/compare/v0.10.0...HEAD
-[0.10.0]: https://github.com/vaughanb/codient/compare/v0.9.0...v0.10.0
-[0.9.0]: https://github.com/vaughanb/codient/compare/v0.8.0...v0.9.0
-[0.8.0]: https://github.com/vaughanb/codient/compare/v0.7.0...v0.8.0
-[0.7.0]: https://github.com/vaughanb/codient/compare/v0.6.0...v0.7.0
-[0.6.0]: https://github.com/vaughanb/codient/compare/v0.5.0...v0.6.0
-[0.5.0]: https://github.com/vaughanb/codient/compare/v0.4.0...v0.5.0
-[0.4.0]: https://github.com/vaughanb/codient/compare/v0.3.0...v0.4.0
-[0.3.0]: https://github.com/vaughanb/codient/compare/v0.2.0...v0.3.0
-[0.2.0]: https://github.com/vaughanb/codient/compare/v0.1.0...v0.2.0
-[0.1.3]: https://github.com/vaughanb/codient/compare/v0.1.2...v0.1.3
-[0.1.2]: https://github.com/vaughanb/codient/compare/v0.1.1...v0.1.2
-[0.1.1]: https://github.com/vaughanb/codient/compare/v0.1.0...v0.1.1
-[0.1.0]: https://github.com/vaughanb/codient/releases/tag/v0.1.0
+[Unreleased]: https://github.com/magusoftdev/codient/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/magusoftdev/codient/compare/v0.9.0...v0.10.0
+[0.9.0]: https://github.com/magusoftdev/codient/compare/v0.8.0...v0.9.0
+[0.8.0]: https://github.com/magusoftdev/codient/compare/v0.7.0...v0.8.0
+[0.7.0]: https://github.com/magusoftdev/codient/compare/v0.6.0...v0.7.0
+[0.6.0]: https://github.com/magusoftdev/codient/compare/v0.5.0...v0.6.0
+[0.5.0]: https://github.com/magusoftdev/codient/compare/v0.4.0...v0.5.0
+[0.4.0]: https://github.com/magusoftdev/codient/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/magusoftdev/codient/compare/v0.2.0...v0.3.0
+[0.2.0]: https://github.com/magusoftdev/codient/compare/v0.1.0...v0.2.0
+[0.1.3]: https://github.com/magusoftdev/codient/compare/v0.1.2...v0.1.3
+[0.1.2]: https://github.com/magusoftdev/codient/compare/v0.1.1...v0.1.2
+[0.1.1]: https://github.com/magusoftdev/codient/compare/v0.1.0...v0.1.1
+[0.1.0]: https://github.com/magusoftdev/codient/releases/tag/v0.1.0

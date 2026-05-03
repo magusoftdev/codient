@@ -49,7 +49,8 @@ func Run() int {
 		goal          = flag.String("goal", "", "optional high-level objective; merged into task directive on first turn only")
 		taskFile      = flag.String("task-file", "", "optional path to a task description file (capped at 32KiB); merged into task directive on first turn only")
 		repl          = flag.Bool("repl", false, "multi-turn REPL (default when stdin is a TTY; kept for backward compatibility)")
-		newSession    = flag.Bool("new-session", false, "start a fresh session instead of resuming the latest")
+		newSession    = flag.Bool("new-session", false, "start a fresh session instead of resuming the latest (REPL or single-shot/-print)")
+		sessionIDFlag = flag.String("session-id", "", "resume a persisted session by id under the workspace (single-shot/-print; default: latest when -new-session is false)")
 		logPath       = flag.String("log", "", "append JSONL agent events to this file")
 		progress      = flag.Bool("progress", false, "print agent progress to stderr")
 		modeFlag      = flag.String("mode", "", "build|ask|plan: tool + prompt policy (default: last REPL mode, else config, else build)")
@@ -308,28 +309,30 @@ func Run() int {
 		execAllow = tools.NewSessionExecAllow(cfg.ExecAllowlist)
 	}
 	s := &session{
-		cfg:              cfg,
-		agentLog:         agentLog,
-		progressOut:      progressOut,
-		mode:             agentMode,
-		richOutput:       assistantOutputRich(cfg.Plain),
-		streamReply:      cfg.StreamReply,
-		designSaveDir:    cfg.DesignSaveDir,
-		goal:             *goal,
-		taskFile:         *taskFile,
-		userSystem:       *system,
-		repoInstructions: repoInstr,
-		projectContext:   projectCtx,
-		memory:           mem,
-		skillsCatalog:    skillsCat,
-		memOpts:          memOpts,
-		execAllow:        execAllow,
-		tokenTracker:     &tokentracker.Tracker{},
-		printMode:        printMode,
-		outputFormat:     outFmt,
-		autoApprove:      autoPol,
-		maxTurns:         *maxTurns,
-		maxCostUSD:       *maxCostUSD,
+		cfg:                         cfg,
+		agentLog:                    agentLog,
+		progressOut:                 progressOut,
+		mode:                        agentMode,
+		richOutput:                  assistantOutputRich(cfg.Plain),
+		streamReply:                 cfg.StreamReply,
+		designSaveDir:               cfg.DesignSaveDir,
+		goal:                        *goal,
+		taskFile:                    *taskFile,
+		userSystem:                  *system,
+		repoInstructions:            repoInstr,
+		projectContext:              projectCtx,
+		memory:                      mem,
+		skillsCatalog:               skillsCat,
+		memOpts:                     memOpts,
+		execAllow:                   execAllow,
+		tokenTracker:                &tokentracker.Tracker{},
+		printMode:                   printMode,
+		outputFormat:                outFmt,
+		autoApprove:                 autoPol,
+		maxTurns:                    *maxTurns,
+		maxCostUSD:                  *maxCostUSD,
+		singleTurnForceNew:          *newSession,
+		singleTurnExplicitSessionID: strings.TrimSpace(*sessionIDFlag),
 	}
 	if len(cfg.MCPServers) > 0 {
 		mgr := mcpclient.NewManager(Version)

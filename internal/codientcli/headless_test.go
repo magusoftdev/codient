@@ -101,10 +101,14 @@ func TestAddPathsFromToolJSON(t *testing.T) {
 func TestWriteHeadlessJSONResult(t *testing.T) {
 	var b strings.Builder
 	c := 0.01
-	if err := writeHeadlessJSONResult(&b, "hi", []string{"echo"}, nil, 1, 2, 3, &c, nil); err != nil {
+	if err := writeHeadlessJSONResult(&b, "sess1", "/tmp/ws", "hi", []string{"echo"}, nil, 1, 2, 3, &c, nil); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(b.String(), `"reply":"hi"`) || !strings.Contains(b.String(), `"exit_reason":"complete"`) {
-		t.Fatalf("%s", b.String())
+	s := b.String()
+	if !strings.Contains(s, `"reply":"hi"`) || !strings.Contains(s, `"exit_reason":"complete"`) {
+		t.Fatalf("%s", s)
+	}
+	if !strings.Contains(s, `"session_id":"sess1"`) || !strings.Contains(s, `"workspace":"/tmp/ws"`) {
+		t.Fatalf("want session_id and workspace: %s", s)
 	}
 }
