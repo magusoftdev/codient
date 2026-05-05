@@ -20,9 +20,30 @@ type slashPicker struct {
 
 // pickerStyles holds the styling for the slash picker dropdown.
 var pickerStyles = struct {
-	selected lipgloss.Style
-	regular  lipgloss.Style
+	box       lipgloss.Style
+	header    lipgloss.Style
+	selected  lipgloss.Style
+	regular   lipgloss.Style
 }{
+	box: lipgloss.NewStyle().
+		Background(lipgloss.AdaptiveColor{Light: "#F0F0F0", Dark: "#2A2A2A"}).
+		Border(lipgloss.Border{
+			Top:         "─",
+			Bottom:      "─",
+			Left:        "│",
+			Right:       "│",
+			TopLeft:     "┌",
+			TopRight:    "┐",
+			BottomLeft:  "└",
+			BottomRight: "┘",
+		}).
+		BorderForeground(lipgloss.AdaptiveColor{Light: "#CCCCCC", Dark: "#555555"}).
+		PaddingTop(1).
+		PaddingBottom(1).
+		MarginTop(1),
+	header: lipgloss.NewStyle().
+		Foreground(lipgloss.AdaptiveColor{Light: "#666666", Dark: "#888888"}).
+		Italic(true),
 	selected: lipgloss.NewStyle().
 		Foreground(lipgloss.AdaptiveColor{Light: "#000000", Dark: "#FFFFFF"}).
 		Background(lipgloss.AdaptiveColor{Light: "#CCCCCC", Dark: "#444444"}).
@@ -121,6 +142,7 @@ func (p slashPicker) View() string {
 	}
 
 	var lines []string
+	lines = append(lines, pickerStyles.header.Render("  slash commands"))
 
 	// Items (limit to 5 to save screen space, using offset for scrolling).
 	for i := 0; i < 5; i++ {
@@ -132,7 +154,8 @@ func (p slashPicker) View() string {
 		lines = append(lines, line)
 	}
 
-	return strings.Join(lines, "\n")
+	// Wrap in a box with background and border.
+	return pickerStyles.box.Render(strings.Join(lines, "\n"))
 }
 
 func (p slashPicker) renderItem(cmd slashcmd.CommandMatch, selected bool) string {
