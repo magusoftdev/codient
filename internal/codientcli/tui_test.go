@@ -4,7 +4,9 @@ import (
 	"strings"
 	"testing"
 
+	"codient/internal/agent"
 	"codient/internal/slashcmd"
+	"codient/internal/tools"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -29,11 +31,44 @@ func TestTUIModel_OutputAppendsToViewport(t *testing.T) {
 	}
 }
 
+func TestTUIModel_TranscriptThinkingBlock(t *testing.T) {
+	ic := newInputCloser()
+	m := newTUIModel(ic, "build", true)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(tuiModel)
+	updated, _ = m.Update(tuiTranscriptMsg{ev: agent.TranscriptEvent{
+		Kind:           agent.TranscriptAssistantPreface,
+		AssistantProse: "Short plan.",
+		ThinkingFull:   "Short plan.",
+	}})
+	m = updated.(tuiModel)
+	if !strings.Contains(m.content.String(), "Thinking:") || !strings.Contains(m.content.String(), "Short plan") {
+		t.Fatalf("expected thinking block, got %q", m.content.String())
+	}
+}
+
+func TestTUIModel_TodoSidebarNarrowsViewport(t *testing.T) {
+	ic := newInputCloser()
+	m := newTUIModel(ic, "build", true)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
+	m = updated.(tuiModel)
+	updated, _ = m.Update(tuiTodosMsg{items: []tools.TodoItem{{Content: "A", Status: "pending"}}})
+	m = updated.(tuiModel)
+	if m.todoSidebarWidth() == 0 {
+		t.Fatal("expected sidebar width with todos on wide terminal")
+	}
+	if m.viewport.Width >= 100 {
+		t.Fatalf("viewport should be narrower than full width, got %d", m.viewport.Width)
+	}
+}
+
 func TestTUIModel_ModeChange(t *testing.T) {
 	ic := newInputCloser()
 	m := newTUIModel(ic, "ask", true)
 
-	updated, _ := m.Update(tuiModeMsg("build"))
+	updated, _ := m.Update(tuiChromeMsg{
+		Mode: "build", Model: "m", BackendLabel: "local", ContextWindow: 128000, LastPromptTokens: 0,
+	})
 	m = updated.(tuiModel)
 
 	if m.mode != "build" {
@@ -41,6 +76,41 @@ func TestTUIModel_ModeChange(t *testing.T) {
 	}
 	if !strings.Contains(m.input.Prompt, "build") {
 		t.Fatalf("prompt should contain build, got %q", m.input.Prompt)
+	}
+}
+
+func TestTUIModel_ChromeFooterShowsModelAndContext(t *testing.T) {
+	ic := newInputCloser()
+	m := newTUIModel(ic, "build", false)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
+	m = updated.(tuiModel)
+	updated, _ = m.Update(tuiChromeMsg{
+		Mode: "build", Model: "test-model-x", BackendLabel: "local",
+		ContextWindow: 100000, LastPromptTokens: 169800,
+	})
+	m = updated.(tuiModel)
+	view := m.View()
+	if !strings.Contains(view, "build") {
+		t.Fatalf("view should include mode before prompt, got:\n%s", view)
+	}
+	if !strings.Contains(view, "test-model-x") {
+		t.Fatalf("view should list model, got:\n%s", view)
+	}
+	if !strings.Contains(view, "169") {
+		t.Fatalf("view should list prompt token hint, got:\n%s", view)
+	}
+
+	updated, _ = m.Update(tuiChromeMsg{
+		Mode: "build", Model: "m", BackendLabel: "local",
+		ContextWindow: 100000, LastPromptTokens: 5000, ContextEstimated: true,
+	})
+	m = updated.(tuiModel)
+	view = m.View()
+	if !strings.Contains(view, "~") {
+		t.Fatalf("view should mark estimated context with ~, got:\n%s", view)
+	}
+	if !strings.Contains(view, "type / for commands") {
+		t.Fatalf("view should list slash hint, got:\n%s", view)
 	}
 }
 
@@ -320,6 +390,33 @@ func TestSlashPicker_View(t *testing.T) {
 	}
 	if !strings.Contains(view, "build") {
 		t.Fatalf("view should contain 'build', got:\n%s", view)
+	}
+}
+
+func TestSlashPicker_OffsetUnchangedOnRepeatShow(t *testing.T) {
+	cmds := &slashcmd.Registry{}
+	for _, name := range []string{"a0", "a1", "a2", "a3", "a4", "a5", "a6", "a7", "a8", "a9"} {
+		cmds.Register(slashcmd.Command{Name: name, Description: "x"})
+	}
+	p := newPicker()
+	p.show(cmds, "", 80)
+	for i := 0; i < 8; i++ {
+		p.selectDown()
+	}
+	wantOff, wantSel := p.offset, p.selected
+	if wantSel < 5 {
+		t.Fatalf("setup: want selected>=5 after scrolling, got %d", wantSel)
+	}
+	if wantOff == 0 {
+		t.Fatalf("setup: want non-zero scroll offset, got 0 (selected=%d)", wantSel)
+	}
+	// Same as a cursor-blink tick: show() again with an unchanged filter prefix.
+	p.show(cmds, "", 80)
+	if p.offset != wantOff {
+		t.Fatalf("repeat show reset offset: was %d, now %d", wantOff, p.offset)
+	}
+	if p.selected != wantSel {
+		t.Fatalf("repeat show changed selection: was %d, now %d", wantSel, p.selected)
 	}
 }
 

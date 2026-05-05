@@ -18,6 +18,7 @@ import (
 	"codient/internal/agentlog"
 	"codient/internal/config"
 	"codient/internal/hooks"
+	"codient/internal/openaiclient"
 	"codient/internal/tokenest"
 	"codient/internal/tokentracker"
 	"codient/internal/tools"
@@ -34,7 +35,7 @@ type ChatClient interface {
 
 // streamChatClient is implemented by *openaiclient.Client for token streaming during agent turns.
 type streamChatClient interface {
-	ChatCompletionStream(ctx context.Context, params openai.ChatCompletionNewParams, w io.Writer) (*openai.ChatCompletion, error)
+	ChatCompletionStream(ctx context.Context, params openai.ChatCompletionNewParams, w io.Writer, opts ...openaiclient.StreamOption) (*openai.ChatCompletion, error)
 }
 
 // AutoCheckOutcome is returned by Runner.AutoCheck after file-mutating tools succeed.
@@ -102,6 +103,9 @@ type Runner struct {
 	OnToolAfter func(ctx context.Context, toolCallID, name string, args json.RawMessage, display string, err error)
 	// OnIntent is invoked when the model emits an intent/thinking preface before tool calls.
 	OnIntent func(text string)
+	// OnTranscriptEvent surfaces structured progress for rich UIs (e.g. Bubble Tea).
+	// Legacy Progress lines are still emitted when Progress is non-nil.
+	OnTranscriptEvent func(TranscriptEvent)
 	// StopHookActive is true when the next assistant text follows a Stop-hook continuation in this RunConversation.
 	StopHookActive bool
 	toolUseSeq     atomic.Uint64
@@ -199,9 +203,11 @@ func (r *Runner) RunConversation(ctx context.Context, system string, history []o
 			r.Log.LLM(llmRound, r.LLM.Model(), llmDur, err, n, logU)
 		}
 		if err != nil {
-			if r.Progress != nil {
-				fmt.Fprintf(r.Progress, "  ✗ model %s  %s\n", formatProgressDur(llmDur), progressErrShort(err))
-			}
+			r.emitProgress(&TranscriptEvent{
+				Kind:         TranscriptModelError,
+				Text:         progressErrShort(err),
+				RoundLLMDur:  llmDur,
+			})
 			return "", nil, false, err
 		}
 		if len(res.Choices) == 0 {
@@ -237,17 +243,23 @@ func (r *Runner) RunConversation(ctx context.Context, system string, history []o
 					}
 
 					thinkingPrinted := false
-					if r.Progress != nil {
-						if line := FormatThinkingProgressLine(r.ProgressPlain, r.ProgressMode, toolCallSource); line != "" {
-							fmt.Fprintf(r.Progress, "\n%s\n", line)
-							thinkingPrinted = true
-						}
+					if line := FormatThinkingProgressLine(r.ProgressPlain, r.ProgressMode, toolCallSource); line != "" {
+						r.emitProgress(&TranscriptEvent{
+							Kind:           TranscriptAssistantPreface,
+							AssistantProse: toolCallSource,
+							ThinkingFull:   FormatFullThinkingProse(toolCallSource),
+						})
+						thinkingPrinted = true
 					}
-					if r.Progress != nil && !thinkingPrinted && len(parsed) > 0 {
+					if !thinkingPrinted && len(parsed) > 0 {
 						tc0 := parsed[0]
 						args0 := textToolCallArgsJSON(tc0.Args)
 						if line := FormatSyntheticIntentThinkingLine(r.ProgressPlain, r.ProgressMode, tc0.Name, args0); line != "" {
-							fmt.Fprintf(r.Progress, "\n%s\n", line)
+							r.emitProgress(&TranscriptEvent{
+								Kind:     TranscriptAssistantPreface,
+								ToolName: tc0.Name,
+								ToolArgs: args0,
+							})
 						}
 					}
 
@@ -257,11 +269,9 @@ func (r *Runner) RunConversation(ctx context.Context, system string, history []o
 						progress string
 					}
 					results := make([]toolResult, len(parsed))
-					if r.Progress != nil {
-						for _, tc := range parsed {
-							args := textToolCallArgsJSON(tc.Args)
-							fmt.Fprintf(r.Progress, "%s\n", FormatToolIntentProgressLine(tc.Name, args))
-						}
+					for _, tc := range parsed {
+						args := textToolCallArgsJSON(tc.Args)
+						r.emitProgress(&TranscriptEvent{Kind: TranscriptToolIntent, ToolName: tc.Name, ToolArgs: args})
 					}
 					var wg sync.WaitGroup
 					for i, tc := range parsed {
@@ -318,30 +328,47 @@ func (r *Runner) RunConversation(ctx context.Context, system string, history []o
 					if inject != "" {
 						fmt.Fprintf(&resultBuf, "\n%s\n", inject)
 					}
-					if prog != "" && r.Progress != nil {
-						fmt.Fprintf(r.Progress, "%s%s\n", progressNestedIndent, prog)
+					if prog != "" {
+						r.emitProgress(&TranscriptEvent{Kind: TranscriptAutoCheck, Text: prog})
 					}
 					msgs = append(msgs, openai.UserMessage(resultBuf.String()))
+					for _, res := range results {
+						r.emitProgress(&TranscriptEvent{
+							Kind: TranscriptToolResult,
+							Text: ProgressNestedIndent + res.progress,
+						})
+					}
 					if allFailed {
 						consecutiveToolFails++
 					} else {
 						consecutiveToolFails = 0
 					}
-					if r.Progress != nil && len(toolParts) > 0 {
+					if len(toolParts) > 0 {
 						suf := roundUsageSuffix(res, r.Cfg.ContextWindowTokens)
-						fmt.Fprintf(r.Progress, "%sllm %s  ·  %s%s\n", progressNestedIndent, formatProgressDur(llmDur), strings.Join(toolParts, " · "), suf)
+						r.emitProgress(&TranscriptEvent{
+							Kind:           TranscriptRoundSummary,
+							RoundLLMDur:    llmDur,
+							RoundToolParts: append([]string(nil), toolParts...),
+							RoundUsageSuf:  suf,
+						})
 					}
-					if consecutiveToolFails >= maxConsecutiveToolFails && r.Progress != nil {
-						fmt.Fprintf(r.Progress, "  ⚠ %d consecutive tool failures — requesting text reply\n", consecutiveToolFails)
+					if consecutiveToolFails >= maxConsecutiveToolFails {
+						r.emitProgress(&TranscriptEvent{
+							Kind: TranscriptWarning,
+							Text: fmt.Sprintf("%d consecutive tool failures — requesting text reply", consecutiveToolFails),
+						})
 					}
 					continue
 				}
 			}
 
-			if r.Progress != nil {
-				suf := roundUsageSuffix(res, r.Cfg.ContextWindowTokens)
-				fmt.Fprintf(r.Progress, "%sllm %s  ·  reply%s\n", progressNestedIndent, formatProgressDur(llmDur), suf)
-			}
+			suf := roundUsageSuffix(res, r.Cfg.ContextWindowTokens)
+			r.emitProgress(&TranscriptEvent{
+				Kind:           TranscriptRoundSummary,
+				RoundLLMDur:    llmDur,
+				RoundToolParts: nil,
+				RoundUsageSuf:  suf,
+			})
 			replyContent := msg.Content
 			if replyContent == "" && toolCallSource != "" && !containsTextToolCalls(toolCallSource) {
 				replyContent = strings.TrimSpace(toolCallSource)
@@ -360,11 +387,7 @@ func (r *Runner) RunConversation(ctx context.Context, system string, history []o
 						r.PostReplyCheck = nil
 						msgs = append(msgs, openai.AssistantMessage(content))
 						msgs = append(msgs, openai.UserMessage(inject))
-						if r.Progress != nil {
-							if line := FormatStatusProgressLine(r.ProgressPlain, r.ProgressMode, "verifying suggestions…"); line != "" {
-								fmt.Fprintf(r.Progress, "%s\n", line)
-							}
-						}
+						r.emitProgress(&TranscriptEvent{Kind: TranscriptStatus, Text: "verifying suggestions…"})
 						continue
 					}
 				}
@@ -373,8 +396,8 @@ func (r *Runner) RunConversation(ctx context.Context, system string, history []o
 					if err != nil {
 						return "", nil, false, err
 					}
-					if strings.TrimSpace(sr.SystemMessage) != "" && r.Progress != nil {
-						fmt.Fprintf(r.Progress, "%s\n", sr.SystemMessage)
+					if strings.TrimSpace(sr.SystemMessage) != "" {
+						r.emitProgress(&TranscriptEvent{Kind: TranscriptPlain, Text: sr.SystemMessage})
 					}
 					if sr.Continue {
 						msgs = append(msgs, openai.AssistantMessage(content))
@@ -394,11 +417,7 @@ func (r *Runner) RunConversation(ctx context.Context, system string, history []o
 			if !finalReplyNudgeSent {
 				finalReplyNudgeSent = true
 				msgs = append(msgs, openai.UserMessage("Please provide a brief final response to the user now. Do not call tools."))
-				if r.Progress != nil {
-					if line := FormatStatusProgressLine(r.ProgressPlain, r.ProgressMode, "requesting final response text…"); line != "" {
-						fmt.Fprintf(r.Progress, "%s\n", line)
-					}
-				}
+				r.emitProgress(&TranscriptEvent{Kind: TranscriptStatus, Text: "requesting final response text…"})
 				continue
 			}
 			fr := string(res.Choices[0].FinishReason)
@@ -435,9 +454,13 @@ func (r *Runner) RunConversation(ctx context.Context, system string, history []o
 		}
 
 		thinkingPrinted := false
-		if r.Progress != nil && strings.TrimSpace(msg.Content) != "" {
+		if strings.TrimSpace(msg.Content) != "" {
 			if line := FormatThinkingProgressLine(r.ProgressPlain, r.ProgressMode, msg.Content); line != "" {
-				fmt.Fprintf(r.Progress, "\n%s\n", line)
+				r.emitProgress(&TranscriptEvent{
+					Kind:           TranscriptAssistantPreface,
+					AssistantProse: msg.Content,
+					ThinkingFull:   FormatFullThinkingProse(msg.Content),
+				})
 				thinkingPrinted = true
 			}
 		}
@@ -445,10 +468,12 @@ func (r *Runner) RunConversation(ctx context.Context, system string, history []o
 			v0 := calls[0]
 			args0 := json.RawMessage(v0.Function.Arguments)
 			if !thinkingPrinted {
-				if r.Progress != nil {
-					if line := FormatSyntheticIntentThinkingLine(r.ProgressPlain, r.ProgressMode, v0.Function.Name, args0); line != "" {
-						fmt.Fprintf(r.Progress, "\n%s\n", line)
-					}
+				if line := FormatSyntheticIntentThinkingLine(r.ProgressPlain, r.ProgressMode, v0.Function.Name, args0); line != "" {
+					r.emitProgress(&TranscriptEvent{
+						Kind:     TranscriptAssistantPreface,
+						ToolName: v0.Function.Name,
+						ToolArgs: args0,
+					})
 				}
 			}
 			if r.OnIntent != nil && !intentEmitted {
@@ -459,11 +484,9 @@ func (r *Runner) RunConversation(ctx context.Context, system string, history []o
 		}
 
 		results := make([]toolResult, len(calls))
-		if r.Progress != nil {
-			for _, v := range calls {
-				args := json.RawMessage(v.Function.Arguments)
-				fmt.Fprintf(r.Progress, "%s\n", FormatToolIntentProgressLine(v.Function.Name, args))
-			}
+		for _, v := range calls {
+			args := json.RawMessage(v.Function.Arguments)
+			r.emitProgress(&TranscriptEvent{Kind: TranscriptToolIntent, ToolName: v.Function.Name, ToolArgs: args})
 		}
 		var wg sync.WaitGroup
 		for i, v := range calls {
@@ -533,20 +556,34 @@ func (r *Runner) RunConversation(ctx context.Context, system string, history []o
 		if inject != "" {
 			msgs = append(msgs, openai.UserMessage(inject))
 		}
-		if prog != "" && r.Progress != nil {
-			fmt.Fprintf(r.Progress, "%s%s\n", progressNestedIndent, prog)
+		if prog != "" {
+			r.emitProgress(&TranscriptEvent{Kind: TranscriptAutoCheck, Text: prog})
+		}
+		for _, res := range results {
+			r.emitProgress(&TranscriptEvent{
+				Kind: TranscriptToolResult,
+				Text: ProgressNestedIndent + res.progress,
+			})
 		}
 		if allFailed {
 			consecutiveToolFails++
 		} else {
 			consecutiveToolFails = 0
 		}
-		if r.Progress != nil && len(toolParts) > 0 {
+		if len(toolParts) > 0 {
 			suf := roundUsageSuffix(res, r.Cfg.ContextWindowTokens)
-			fmt.Fprintf(r.Progress, "%sllm %s  ·  %s%s\n", progressNestedIndent, formatProgressDur(llmDur), strings.Join(toolParts, " · "), suf)
+			r.emitProgress(&TranscriptEvent{
+				Kind:           TranscriptRoundSummary,
+				RoundLLMDur:    llmDur,
+				RoundToolParts: append([]string(nil), toolParts...),
+				RoundUsageSuf:  suf,
+			})
 		}
-		if consecutiveToolFails >= maxConsecutiveToolFails && r.Progress != nil {
-			fmt.Fprintf(r.Progress, "  ⚠ %d consecutive tool failures — requesting text reply\n", consecutiveToolFails)
+		if consecutiveToolFails >= maxConsecutiveToolFails {
+			r.emitProgress(&TranscriptEvent{
+				Kind: TranscriptWarning,
+				Text: fmt.Sprintf("%d consecutive tool failures — requesting text reply", consecutiveToolFails),
+			})
 		}
 	}
 }
@@ -591,13 +628,13 @@ func (r *Runner) runOneTool(ctx context.Context, name string, args json.RawMessa
 			return fmt.Sprintf("error: hook: %v", herr), nil
 		}
 		if !pre.Allow {
-			if strings.TrimSpace(pre.SystemMessage) != "" && r.Progress != nil {
-				fmt.Fprintf(r.Progress, "%s\n", pre.SystemMessage)
+			if strings.TrimSpace(pre.SystemMessage) != "" {
+				r.emitProgress(&TranscriptEvent{Kind: TranscriptPlain, Text: pre.SystemMessage})
 			}
 			return fmt.Sprintf("error: blocked by hook: %s", pre.BlockReason), nil
 		}
-		if strings.TrimSpace(pre.SystemMessage) != "" && r.Progress != nil {
-			fmt.Fprintf(r.Progress, "%s\n", pre.SystemMessage)
+		if strings.TrimSpace(pre.SystemMessage) != "" {
+			r.emitProgress(&TranscriptEvent{Kind: TranscriptPlain, Text: pre.SystemMessage})
 		}
 	}
 	out, toolErr := r.Tools.Run(ctx, name, args)
@@ -609,8 +646,8 @@ func (r *Runner) runOneTool(ctx context.Context, name string, args json.RawMessa
 	if r.Hooks != nil {
 		post, herr := r.Hooks.RunPostToolUse(ctx, name, args, toolUseID, out, toolErr)
 		if herr == nil {
-			if strings.TrimSpace(post.SystemMessage) != "" && r.Progress != nil {
-				fmt.Fprintf(r.Progress, "%s\n", post.SystemMessage)
+			if strings.TrimSpace(post.SystemMessage) != "" {
+				r.emitProgress(&TranscriptEvent{Kind: TranscriptPlain, Text: post.SystemMessage})
 			}
 			if strings.TrimSpace(post.AdditionalContext) != "" {
 				display = display + "\n\n[hook context]\n" + post.AdditionalContext

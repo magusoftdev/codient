@@ -66,6 +66,23 @@ func TestFormatLine(t *testing.T) {
 	}
 }
 
+func TestFormatPromptContextHint(t *testing.T) {
+	if s := FormatPromptContextHint(0, 10000); s != "—" {
+		t.Fatalf("zero tokens: %q", s)
+	}
+	s := FormatPromptContextHint(169800, 260000)
+	if !strings.Contains(s, "169") || !strings.Contains(s, "%") {
+		t.Fatalf("expected size and percent: %q", s)
+	}
+	s2 := FormatPromptContextHint(5000, 0)
+	if strings.Contains(s2, "%") {
+		t.Fatalf("no percent without context window: %q", s2)
+	}
+	if !strings.Contains(s2, "5") {
+		t.Fatalf("expected formatted count: %q", s2)
+	}
+}
+
 func TestFormatLineCtx(t *testing.T) {
 	u := Usage{PromptTokens: 50000, CompletionTokens: 2000}
 

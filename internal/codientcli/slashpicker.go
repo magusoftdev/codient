@@ -66,6 +66,7 @@ func (p *slashPicker) show(cmds *slashcmd.Registry, inputValue string, width int
 	if idx := strings.LastIndex(inputValue, "/"); idx >= 0 {
 		prefix = inputValue[idx+1:]
 	}
+	prevPrefix := p.inputValue
 	p.inputValue = prefix
 	p.commands = cmds.Lookup(prefix)
 	if len(p.commands) == 0 {
@@ -73,11 +74,17 @@ func (p *slashPicker) show(cmds *slashcmd.Registry, inputValue string, width int
 		return
 	}
 	p.visible = true
+	// Only reset scroll when the filter changes. show() runs on every model
+	// tick (e.g. cursor blink); resetting offset each time snapped the list
+	// back to the top while selection stayed elsewhere.
+	if prefix != prevPrefix {
+		p.offset = 0
+	}
 	// Clamp selection to the new result set.
 	if p.selected >= len(p.commands) {
 		p.selected = len(p.commands) - 1
 	}
-	p.offset = 0
+	p.clampOffset()
 }
 
 // hide hides the picker.
@@ -86,6 +93,7 @@ func (p *slashPicker) hide() {
 	p.commands = nil
 	p.selected = 0
 	p.offset = 0
+	p.inputValue = ""
 }
 
 // selectUp moves selection up by one.

@@ -32,6 +32,16 @@ type SessionState struct {
 	// Checkpoint / branching (REPL): last known position in the checkpoint tree.
 	CurrentCheckpointID string `json:"current_checkpoint_id,omitempty"`
 	CurrentBranch       string `json:"current_branch,omitempty"`
+
+	// Todos are session-scoped task rows updated via the todo_write tool.
+	Todos []TodoItem `json:"todos,omitempty"`
+}
+
+// TodoItem is persisted session task state (mirrors tools.TodoItem JSON).
+type TodoItem struct {
+	Content  string `json:"content"`
+	Status   string `json:"status"`
+	Priority string `json:"priority,omitempty"`
 }
 
 // SessionSummary is returned by List for UI purposes.

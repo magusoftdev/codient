@@ -150,6 +150,10 @@ type session struct {
 	// All stdout/stderr writes go through pipes into the TUI viewport,
 	// and user input arrives through tui.inputCh instead of os.Stdin.
 	tui *tuiSetup
+
+	// todos are session-scoped rows updated via todo_write (see sessionstore persistence).
+	todos   []tools.TodoItem
+	todosMu sync.Mutex
 }
 
 type undoEntry struct {
@@ -163,9 +167,40 @@ type undoEntry struct {
 // All mode assignments should go through this method to keep the TUI in sync.
 func (s *session) setMode(m prompt.Mode) {
 	s.mode = m
-	if s.tui != nil {
-		s.tui.prog.Send(tuiModeMsg(string(m)))
+	s.sendTUIChrome()
+}
+
+// sendTUIChrome pushes model, backend, and context usage into the TUI footer.
+func (s *session) sendTUIChrome() {
+	if s.tui == nil || s.tui.prog == nil {
+		return
 	}
+	base, _, model := s.cfg.ConnectionForMode(string(s.mode))
+	tok, est := s.promptTokensForTUIChrome()
+	msg := tuiChromeMsg{
+		Mode:             string(s.mode),
+		Model:            model,
+		BackendLabel:     formatTUIBackendLabel(base),
+		ContextWindow:    s.cfg.ContextWindowTokens,
+		LastPromptTokens: tok,
+		ContextEstimated: est,
+	}
+	s.tui.prog.Send(msg)
+}
+
+// promptTokensForTUIChrome returns tokens for the context footer: API usage from the last
+// completion when present, otherwise a heuristic estimate of the next request (system +
+// tools + history) so local servers that omit usage still show context pressure.
+func (s *session) promptTokensForTUIChrome() (tok int64, estimated bool) {
+	if s.tokenTracker != nil {
+		if t := s.tokenTracker.Last().PromptTokens; t > 0 {
+			return t, false
+		}
+	}
+	if s.registry == nil {
+		return 0, true
+	}
+	return int64(s.estimateFullContextUsage()), true
 }
 
 func (s *session) loadSkillsCatalog() {
@@ -205,6 +240,12 @@ func (s *session) newRunner() *agent.Runner {
 		Tracker:       s.tokenTracker,
 		Hooks:         s.hooksMgr,
 	}
+	if s.tui != nil {
+		r.OnTranscriptEvent = func(ev agent.TranscriptEvent) {
+			s.tui.prog.Send(tuiTranscriptMsg{ev: ev})
+		}
+		r.Progress = nil
+	}
 	if s.printMode {
 		if s.maxTurns > 0 {
 			r.MaxTurns = s.maxTurns
@@ -233,9 +274,17 @@ func (s *session) delegateTaskFn() tools.DelegateRunner {
 		if err != nil {
 			return "", err
 		}
-		progress := s.progressOut
-		if progress != nil {
-			progress = newPrefixWriter([]byte("  │ "), progress)
+		var progress io.Writer
+		var onTranscript func(agent.TranscriptEvent)
+		if s.tui != nil {
+			onTranscript = func(ev agent.TranscriptEvent) {
+				s.tui.prog.Send(tuiTranscriptMsg{ev: ev, delegate: true})
+			}
+		} else {
+			progress = s.progressOut
+			if progress != nil {
+				progress = newPrefixWriter([]byte("  │ "), progress)
+			}
 		}
 		cfg := s.cfg
 		repoMap := s.repoMap
@@ -270,14 +319,15 @@ func (s *session) delegateTaskFn() tools.DelegateRunner {
 			repoMap = nil
 		}
 		res, err := subagent.Run(ctx, subagent.RunParams{
-			Cfg:      cfg,
-			Mode:     mode,
-			Task:     task,
-			Context:  extraContext,
-			RepoMap:  repoMap,
-			Log:      s.agentLog,
-			Progress: progress,
-			Tracker:  s.tokenTracker,
+			Cfg:               cfg,
+			Mode:              mode,
+			Task:              task,
+			Context:           extraContext,
+			RepoMap:           repoMap,
+			Log:               s.agentLog,
+			Progress:          progress,
+			OnTranscriptEvent: onTranscript,
+			Tracker:           s.tokenTracker,
 		})
 		if err != nil {
 			return "", err
@@ -373,6 +423,7 @@ func (s *session) executeTurn(ctx context.Context, runner *agent.Runner, user op
 		return "", fmt.Errorf("write: %w", err)
 	}
 	s.printTurnTokenSummary()
+	s.sendTUIChrome()
 	return reply, nil
 }
 
@@ -697,9 +748,56 @@ func (s *session) applyStoredSessionState(existing *sessionstore.SessionState) e
 	}
 	s.loadPlanFromDisk()
 	s.loadSkillsCatalog()
+	s.todos = sessionTodosToTools(existing.Todos)
 	s.registry = buildRegistry(s.cfg, s.mode, s, s.memOpts)
 	s.rebuildSystemPrompt()
+	s.syncTodosToTUI()
 	return nil
+}
+
+func sessionTodosToTools(in []sessionstore.TodoItem) []tools.TodoItem {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]tools.TodoItem, len(in))
+	for i := range in {
+		out[i] = tools.TodoItem{Content: in[i].Content, Status: in[i].Status, Priority: in[i].Priority}
+	}
+	return out
+}
+
+func toolsTodosToSession(in []tools.TodoItem) []sessionstore.TodoItem {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]sessionstore.TodoItem, len(in))
+	for i := range in {
+		out[i] = sessionstore.TodoItem{Content: in[i].Content, Status: in[i].Status, Priority: in[i].Priority}
+	}
+	return out
+}
+
+func (s *session) applyTodoWrite(items []tools.TodoItem) error {
+	s.todosMu.Lock()
+	s.todos = append([]tools.TodoItem(nil), items...)
+	s.todosMu.Unlock()
+	s.syncTodosToTUI()
+	s.autoSave()
+	return nil
+}
+
+func (s *session) snapshotTodos() []tools.TodoItem {
+	s.todosMu.Lock()
+	defer s.todosMu.Unlock()
+	return append([]tools.TodoItem(nil), s.todos...)
+}
+
+func (s *session) syncTodosToTUI() {
+	if s.tui == nil {
+		return
+	}
+	items := s.snapshotTodos()
+	s.tui.prog.Send(tuiTodosMsg{items: items})
 }
 
 func (s *session) runSingleTurn(ctx context.Context, user string, extra []imageutil.ImageAttachment) int {
@@ -988,6 +1086,7 @@ func (s *session) runSession(ctx context.Context, initialPrompt string, newSessi
 	// Send slash commands to TUI for autocomplete.
 	if s.tui != nil && s.tui.prog != nil {
 		s.tui.prog.Send(slashCmdsMsg(cmds))
+		s.sendTUIChrome()
 	}
 
 	runner := s.newRunner()
@@ -1262,6 +1361,7 @@ func (s *session) autoSave() {
 		Mode:      string(s.mode),
 		Model:     s.cfg.Model,
 		Messages:  sessionstore.FromOpenAI(s.history),
+		Todos:     toolsTodosToSession(s.snapshotTodos()),
 	}
 	if s.currentCheckpointID != "" {
 		state.CurrentCheckpointID = s.currentCheckpointID
@@ -1436,6 +1536,11 @@ func (s *session) buildSlashCommands(ctx context.Context, sc *bufio.Scanner) *sl
 			if s.tokenTracker != nil {
 				s.tokenTracker.Reset()
 			}
+			s.todosMu.Lock()
+			s.todos = nil
+			s.todosMu.Unlock()
+			s.syncTodosToTUI()
+			s.sendTUIChrome()
 			fmt.Fprintf(os.Stderr, "codient: history cleared\n")
 			s.autoSave()
 			return nil
@@ -1461,6 +1566,10 @@ func (s *session) buildSlashCommands(ctx context.Context, sc *bufio.Scanner) *sl
 			if s.tokenTracker != nil {
 				s.tokenTracker.Reset()
 			}
+			s.todosMu.Lock()
+			s.todos = nil
+			s.todosMu.Unlock()
+			s.syncTodosToTUI()
 			if len(s.cfg.ExecAllowlist) > 0 {
 				s.execAllow = tools.NewSessionExecAllow(s.cfg.ExecAllowlist)
 				s.registry = buildRegistry(s.cfg, s.mode, s, s.memOpts)
@@ -1470,6 +1579,7 @@ func (s *session) buildSlashCommands(ctx context.Context, sc *bufio.Scanner) *sl
 			s.captureGitSessionState(s.cfg.EffectiveWorkspace())
 			fmt.Fprintf(os.Stderr, "codient: new session %s\n", s.sessionID)
 			fmt.Fprintf(os.Stderr, "%s\n", assistout.ModeHint(s.cfg.Plain, string(s.mode)))
+			s.sendTUIChrome()
 			s.autoSave()
 			return nil
 		},
@@ -1959,6 +2069,7 @@ func (s *session) handleConfig(ctx context.Context, args string) error {
 		s.client = openaiclient.NewForMode(s.cfg, mode)
 		s.rebuildSystemPrompt()
 	}
+	s.sendTUIChrome()
 	return nil
 }
 

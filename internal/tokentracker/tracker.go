@@ -121,6 +121,21 @@ func FormatLineCtx(u Usage, contextWindow int) string {
 	return s
 }
 
+// FormatPromptContextHint returns a short footer hint such as "169K (65%)" from the last
+// completion's prompt token count, or "—" when unknown. Percentage is included only when
+// contextWindow > 0 and promptTokens > 0.
+func FormatPromptContextHint(promptTokens int64, contextWindow int) string {
+	if promptTokens <= 0 {
+		return "—"
+	}
+	s := formatTokenCount(promptTokens)
+	if contextWindow > 0 {
+		pct := float64(promptTokens) / float64(contextWindow) * 100
+		s += fmt.Sprintf(" (%d%%)", int(pct))
+	}
+	return s
+}
+
 // FormatTurnSummary formats a turn footer line including optional estimated cost.
 // When turn is 0, omits the turn label (non-REPL single-shot mode).
 func FormatTurnSummary(turn int, u Usage, estCost float64, hasPrice bool) string {

@@ -14,6 +14,7 @@ import (
 	"github.com/openai/openai-go/v3"
 
 	"codient/internal/config"
+	"codient/internal/openaiclient"
 	"codient/internal/tools"
 )
 
@@ -130,7 +131,7 @@ func (m *streamVsChatRecorder) ChatCompletion(ctx context.Context, params openai
 	}, nil
 }
 
-func (m *streamVsChatRecorder) ChatCompletionStream(ctx context.Context, params openai.ChatCompletionNewParams, w io.Writer) (*openai.ChatCompletion, error) {
+func (m *streamVsChatRecorder) ChatCompletionStream(ctx context.Context, params openai.ChatCompletionNewParams, w io.Writer, _ ...openaiclient.StreamOption) (*openai.ChatCompletion, error) {
 	m.streamCalls++
 	return &openai.ChatCompletion{
 		Choices: []openai.ChatCompletionChoice{{

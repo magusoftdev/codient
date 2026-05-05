@@ -153,14 +153,36 @@ func (c *Client) StreamChatCompletion(ctx context.Context, params openai.ChatCom
 	return &out, nil
 }
 
+// StreamOption configures ChatCompletionStream.
+type StreamOption func(*streamConfig)
+
+type streamConfig struct {
+	onReasoningDelta func(string)
+}
+
+// WithStreamReasoningDelta invokes f for each non-empty reasoning fragment in SSE deltas
+// (provider-specific fields such as reasoning_content).
+func WithStreamReasoningDelta(f func(string)) StreamOption {
+	return func(c *streamConfig) {
+		c.onReasoningDelta = f
+	}
+}
+
 // ChatCompletionStream streams a completion (with or without tools), writes assistant
 // content deltas to w, and returns the accumulated completion (same shape as non-streaming).
 // Used by the agent so long replies show tokens as they arrive while tool rounds still work.
-func (c *Client) ChatCompletionStream(ctx context.Context, params openai.ChatCompletionNewParams, w io.Writer) (*openai.ChatCompletion, error) {
+func (c *Client) ChatCompletionStream(ctx context.Context, params openai.ChatCompletionNewParams, w io.Writer, opts ...StreamOption) (*openai.ChatCompletion, error) {
 	if err := c.llmSem.acquire(ctx); err != nil {
 		return nil, err
 	}
 	defer c.llmSem.release()
+
+	var cfg streamConfig
+	for _, o := range opts {
+		if o != nil {
+			o(&cfg)
+		}
+	}
 
 	params.StreamOptions = openai.ChatCompletionStreamOptionsParam{
 		IncludeUsage: openai.Bool(true),
@@ -173,6 +195,11 @@ func (c *Client) ChatCompletionStream(ctx context.Context, params openai.ChatCom
 			return nil, fmt.Errorf("chat stream: chunk accumulation failed")
 		}
 		for _, ch := range chunk.Choices {
+			if cfg.onReasoningDelta != nil {
+				if frag := reasoningFragmentFromDelta(ch.Delta); frag != "" {
+					cfg.onReasoningDelta(frag)
+				}
+			}
 			if ch.Delta.Content != "" {
 				if _, err := io.WriteString(w, ch.Delta.Content); err != nil {
 					return nil, err
@@ -185,6 +212,44 @@ func (c *Client) ChatCompletionStream(ctx context.Context, params openai.ChatCom
 	}
 	out := acc.ChatCompletion
 	return &out, nil
+}
+
+func reasoningFragmentFromDelta(delta openai.ChatCompletionChunkChoiceDelta) string {
+	raw := delta.RawJSON()
+	if raw == "" {
+		return ""
+	}
+	var m map[string]json.RawMessage
+	if json.Unmarshal([]byte(raw), &m) != nil {
+		return ""
+	}
+	for _, key := range []string{"reasoning_content", "reasoning"} {
+		v, ok := m[key]
+		if !ok {
+			continue
+		}
+		var s string
+		if json.Unmarshal(v, &s) == nil && s != "" {
+			return s
+		}
+		var obj struct {
+			Text    string `json:"text"`
+			Content string `json:"content"`
+			Summary string `json:"summary"`
+		}
+		if json.Unmarshal(v, &obj) == nil {
+			if obj.Text != "" {
+				return obj.Text
+			}
+			if obj.Content != "" {
+				return obj.Content
+			}
+			if obj.Summary != "" {
+				return obj.Summary
+			}
+		}
+	}
+	return ""
 }
 
 // ProbeContextWindow tries to discover the loaded model's context window in tokens.

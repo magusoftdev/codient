@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/openai/openai-go/v3"
+
+	"codient/internal/openaiclient"
 )
 
 // callLLMWithRetry wraps the LLM call with retry logic for transient errors.
@@ -27,12 +29,8 @@ func (r *Runner) callLLMWithRetry(ctx context.Context, params openai.ChatComplet
 			if backoff > 8*time.Second {
 				backoff = 8 * time.Second
 			}
-			if r.Progress != nil {
-				status := fmt.Sprintf("retry %d/%d after %s", attempt, r.Cfg.MaxLLMRetries, backoff)
-				if line := FormatStatusProgressLine(r.ProgressPlain, r.ProgressMode, status); line != "" {
-					fmt.Fprintf(r.Progress, "%s\n", line)
-				}
-			}
+			status := fmt.Sprintf("retry %d/%d after %s", attempt, r.Cfg.MaxLLMRetries, backoff)
+			r.emitProgress(&TranscriptEvent{Kind: TranscriptStatus, Text: status})
 			select {
 			case <-time.After(backoff):
 			case <-ctx.Done():
@@ -82,7 +80,16 @@ func (r *Runner) callLLMWithoutTimeout(ctx context.Context, params openai.ChatCo
 	}
 	if useStream {
 		if sc, ok := r.LLM.(streamChatClient); ok {
-			res, err := sc.ChatCompletionStream(ctx, params, streamTo)
+			var opts []openaiclient.StreamOption
+			if r.OnTranscriptEvent != nil {
+				opts = append(opts, openaiclient.WithStreamReasoningDelta(func(s string) {
+					if strings.TrimSpace(s) == "" {
+						return
+					}
+					r.emitProgress(&TranscriptEvent{Kind: TranscriptReasoningDelta, Text: s})
+				}))
+			}
+			res, err := sc.ChatCompletionStream(ctx, params, streamTo, opts...)
 			return res, true, err
 		}
 	}

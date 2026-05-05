@@ -113,6 +113,9 @@ func buildRegistry(cfg *config.Config, mode prompt.Mode, s *session, memOpts *to
 	if s != nil && s.acpCallClient != nil {
 		registerUnityACPToolsForMode(reg, mode, s.acpCallClient)
 	}
+	if s != nil {
+		tools.RegisterTodoWrite(reg, s.applyTodoWrite)
+	}
 	return reg
 }
 

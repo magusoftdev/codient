@@ -33,13 +33,18 @@ codient -image a.png,b.png -prompt "Compare these mockups"
 
 ## Split-screen TUI
 
-When stdin is a TTY and `-plain` is **not** set, codient launches a Bubble Tea split-screen interface: a scrollable output viewport on top and a fixed input line at the bottom. This keeps the user's typing completely separate from agent output — background events like the semantic index completion will never corrupt the input line.
+When stdin is a TTY and `-plain` is **not** set, codient launches a Bubble Tea split-screen interface: a scrollable output viewport on top and a fixed **input panel** at the bottom. This keeps the user's typing completely separate from agent output — background events like the semantic index completion will never corrupt the input line.
 
 | Area | Behaviour |
 |------|-----------|
-| **Viewport** (top) | Shows the full session: welcome banner, agent replies, tool progress, status messages. |
+| **Viewport** (top) | Shows the full session: welcome banner, streamed assistant replies, and structured agent activity (chain-of-thought blocks, tool intents, per-tool results, round summaries). |
+| **Todo column** (right) | When the model uses **todo_write**, a narrow **Todo** panel lists tasks and statuses (hidden if the terminal is very narrow). Todos are saved in the session JSON and restored on resume. |
 | **Status bar** | Displays "Agent is working…" during turns; a plain separator otherwise. |
-| **Input line** (bottom) | Styled `[mode] > ` prompt. Type freely while the agent is streaming. Press **Enter** to submit, **Ctrl+C** to quit. |
+| **Input panel** (bottom) | Mode-colored accent strip, **`build > `**-style prompt (lowercase mode before `>`), a line with **model · backend**, then a right-aligned hint: **exact** prompt tokens and **context %** when the API returns `usage` and **`context_window`** is set; if the server omits usage, an **estimated** total (**`~`…**) from system + tools + history (same heuristic as `/compact`). **`—`** only when nothing can be computed. Press **Enter** to submit, **Ctrl+C** to quit. |
+
+**Chain-of-thought:** the TUI renders **Thinking:** blocks with the model’s full pre-tool prose (not just the short one-line summary used on plain stderr). Streaming APIs that send **reasoning** / **reasoning_content** deltas show a **Thinking (stream):** section as tokens arrive.
+
+**Shortcuts:** **Ctrl+T** toggles a shorter display for large Thinking blocks (compact vs full wrap).
 
 **Scrolling:** **Up/Down** arrows scroll one line, **Alt+Up/Down** scroll three lines, **Page Up/Down** scroll half a page, and **Home/End** jump to the top or bottom.
 

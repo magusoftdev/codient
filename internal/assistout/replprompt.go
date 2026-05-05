@@ -9,8 +9,8 @@ import (
 )
 
 var modeColors = map[string]lipgloss.AdaptiveColor{
-	"build": {Light: "#C2410C", Dark: "#FB923C"}, // orange
-	"plan":  {Light: "#0369A1", Dark: "#7DD3FC"}, // blue
+	"build": {Light: "#0369A1", Dark: "#7DD3FC"}, // blue
+	"plan":  {Light: "#C2410C", Dark: "#FB923C"}, // orange
 	"ask":   {Light: "#15803D", Dark: "#4ADE80"}, // green
 }
 
@@ -39,6 +39,11 @@ func modeForeground(mode string) lipgloss.AdaptiveColor {
 		return modeColors["build"]
 	}
 	return c
+}
+
+// ModeAccentColor returns the standard mode accent (same foreground as the REPL mode label and progress bullets).
+func ModeAccentColor(mode string) lipgloss.AdaptiveColor {
+	return modeForeground(mode)
 }
 
 // ProgressIntentBulletPrefix is the leading indent and bullet for assistant thinking / intent

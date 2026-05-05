@@ -283,8 +283,8 @@ func (w acpLLMWithModel) ChatCompletion(ctx context.Context, params openai.ChatC
 	return w.inner.ChatCompletion(ctx, params)
 }
 
-func (w acpLLMWithModel) ChatCompletionStream(ctx context.Context, params openai.ChatCompletionNewParams, streamTo io.Writer) (*openai.ChatCompletion, error) {
-	return w.inner.ChatCompletionStream(ctx, params, streamTo)
+func (w acpLLMWithModel) ChatCompletionStream(ctx context.Context, params openai.ChatCompletionNewParams, streamTo io.Writer, opts ...openaiclient.StreamOption) (*openai.ChatCompletion, error) {
+	return w.inner.ChatCompletionStream(ctx, params, streamTo, opts...)
 }
 
 func newSessionID() string {

@@ -3,6 +3,7 @@ package openaiclient
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -471,5 +472,22 @@ func TestTryOllamaUnloadModel_SkipsCloudHost(t *testing.T) {
 	c := New(testConfig("https://api.openai.com/v1", "gpt-4o-mini"))
 	if err := c.TryOllamaUnloadModel(context.Background(), "gpt-4o-mini"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestReasoningFragmentFromDelta_JSON(t *testing.T) {
+	var d openai.ChatCompletionChunkChoiceDelta
+	if err := json.Unmarshal([]byte(`{"reasoning_content":"step 1"}`), &d); err != nil {
+		t.Fatal(err)
+	}
+	if got := reasoningFragmentFromDelta(d); got != "step 1" {
+		t.Fatalf("got %q", got)
+	}
+	var d2 openai.ChatCompletionChunkChoiceDelta
+	if err := json.Unmarshal([]byte(`{"reasoning":{"text":"nested"}}`), &d2); err != nil {
+		t.Fatal(err)
+	}
+	if got := reasoningFragmentFromDelta(d2); got != "nested" {
+		t.Fatalf("got %q", got)
 	}
 }

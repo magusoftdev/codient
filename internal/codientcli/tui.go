@@ -3,15 +3,20 @@ package codientcli
 import (
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"regexp"
 	"runtime"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
+	"codient/internal/agent"
 	"codient/internal/assistout"
 	"codient/internal/slashcmd"
+	"codient/internal/tokentracker"
+	"codient/internal/tools"
 
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/textinput"
@@ -38,12 +43,26 @@ func (ic *inputCloser) Close() {
 
 // TUI message types.
 type (
-	tuiOutputMsg      string // new text for the viewport
-	tuiQuitMsg        struct{ exitCode int }
-	tuiModeMsg        string // mode changed
-	tuiWorkingMsg     bool   // true = agent working, false = idle
+	tuiOutputMsg string // new text for the viewport
+	tuiQuitMsg   struct{ exitCode int }
+	tuiChromeMsg struct {
+		Mode             string
+		Model            string
+		BackendLabel     string
+		ContextWindow    int
+		LastPromptTokens int64
+		ContextEstimated bool // true when LastPromptTokens is heuristic (API omitted usage)
+	}
+	tuiWorkingMsg     bool // true = agent working, false = idle
 	tuiSpinnerTickMsg time.Time
 	slashCmdsMsg      *slashcmd.Registry
+	tuiTranscriptMsg  struct {
+		ev       agent.TranscriptEvent
+		delegate bool
+	}
+	tuiTodosMsg struct {
+		items []tools.TodoItem
+	}
 )
 
 var tuiSpinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
@@ -66,27 +85,191 @@ type tuiModel struct {
 	height       int
 	picker       slashPicker
 	slashCmds    *slashcmd.Registry
+
+	todos             []tools.TodoItem
+	inReasoningStream bool
+	thinkingCompact   bool // toggled with ctrl+t: shorter Thinking blocks
+
+	chromeModel            string
+	chromeBackendLabel     string
+	chromeContextWindow    int
+	chromeLastPromptTok    int64
+	chromeContextEstimated bool
 }
 
-const tuiFooterHeight = 3 // separator + input + safety margin
+// Footer below the viewport: separator, input panel (when not plain), context hint, safety line.
+const (
+	tuiAccentColWidth     = 1
+	tuiInputInnerPadH     = 1
+	tuiFooterSepLines     = 1
+	tuiFooterPanelLines   = 3 // input + spacer + meta
+	tuiFooterContextLines = 1
+	tuiFooterSafetyLines  = 1
+	tuiFooterHeight       = tuiFooterSepLines + tuiFooterPanelLines + tuiFooterContextLines + tuiFooterSafetyLines
+)
 
 func newTUIModel(ic *inputCloser, mode string, plain bool) tuiModel {
 	ti := textinput.New()
-	ti.Prompt = modePrompt(mode, plain)
 	ti.Focus()
 	ti.CharLimit = 0 // unlimited
 
-	return tuiModel{
+	m := tuiModel{
 		input:       ti,
 		inputCloser: ic,
 		content:     &strings.Builder{},
 		mode:        mode,
 		plain:       plain,
 	}
+	m.applyInputPrompt()
+	return m
 }
 
-func modePrompt(mode string, plain bool) string {
-	return assistout.SessionPrompt(plain, mode)
+func (m *tuiModel) applyInputPrompt() {
+	if m.plain {
+		m.input.Prompt = assistout.SessionPrompt(true, m.mode)
+		return
+	}
+	mode := strings.ToLower(strings.TrimSpace(m.mode))
+	if mode == "" {
+		mode = "build"
+	}
+	accent := assistout.ModeAccentColor(m.mode)
+	dim := lipgloss.AdaptiveColor{Light: "#525252", Dark: "#A3A3A3"}
+	m.input.Prompt = lipgloss.JoinHorizontal(lipgloss.Top,
+		lipgloss.NewStyle().Foreground(accent).Bold(true).Render(mode),
+		lipgloss.NewStyle().Foreground(dim).Render(" > "),
+	)
+}
+
+func (m *tuiModel) applyInputChromeLayout() {
+	if m.plain || !m.ready {
+		m.input.Width = 0
+		return
+	}
+	contentW := m.width - tuiAccentColWidth
+	if contentW < 8 {
+		contentW = m.width
+	}
+	inner := contentW - 2*tuiInputInnerPadH
+	if inner < 10 {
+		inner = max(10, contentW-1)
+	}
+	m.input.Width = inner
+}
+
+func formatTUIBackendLabel(baseURL string) string {
+	baseURL = strings.TrimSpace(baseURL)
+	if baseURL == "" {
+		return "—"
+	}
+	u, err := url.Parse(baseURL)
+	if err != nil || u.Host == "" {
+		return truncateRunes(baseURL, 28)
+	}
+	host := u.Hostname()
+	if host == "127.0.0.1" || host == "localhost" || host == "::1" {
+		return "local"
+	}
+	return truncateRunes(host, 28)
+}
+
+func truncateRunes(s string, max int) string {
+	if max < 1 {
+		return ""
+	}
+	if utf8.RuneCountInString(s) <= max {
+		return s
+	}
+	runes := []rune(s)
+	if max <= 1 {
+		return "…"
+	}
+	return string(runes[:max-1]) + "…"
+}
+
+func (m *tuiModel) metaLineStyled(innerW int) string {
+	dim := lipgloss.AdaptiveColor{Light: "#737373", Dark: "#A3A3A3"}
+	modelFg := lipgloss.AdaptiveColor{Light: "#262626", Dark: "#FAFAFA"}
+
+	model := strings.TrimSpace(m.chromeModel)
+	if model == "" {
+		model = "—"
+	}
+	backend := strings.TrimSpace(m.chromeBackendLabel)
+	if backend == "" {
+		backend = "—"
+	}
+
+	sep := lipgloss.NewStyle().Foreground(dim).Render(" · ")
+	modelSt := lipgloss.NewStyle().Foreground(modelFg).Render(truncateRunes(model, 56))
+	backSt := lipgloss.NewStyle().Foreground(dim).Render(truncateRunes(backend, 28))
+
+	line := lipgloss.JoinHorizontal(lipgloss.Top, modelSt, sep, backSt)
+	return lipgloss.NewStyle().MaxWidth(innerW).Render(line)
+}
+
+func (m *tuiModel) inputFooterView() string {
+	if m.plain {
+		return m.input.View()
+	}
+
+	panelBg := lipgloss.AdaptiveColor{Light: "#EEEEEE", Dark: "#1A1A1A"}
+	contentW := m.width - tuiAccentColWidth
+	if contentW < 8 {
+		contentW = m.width
+	}
+	innerW := contentW - 2*tuiInputInnerPadH
+	if innerW < 4 {
+		innerW = max(4, contentW-1)
+	}
+
+	inputLine := lipgloss.NewStyle().
+		Width(contentW).
+		Padding(0, tuiInputInnerPadH).
+		Background(panelBg).
+		Render(m.input.View())
+
+	spacer := lipgloss.NewStyle().
+		Width(contentW).
+		Height(1).
+		Background(panelBg).
+		Render(" ")
+
+	metaLine := lipgloss.NewStyle().
+		Width(contentW).
+		Padding(0, tuiInputInnerPadH).
+		Background(panelBg).
+		Render(m.metaLineStyled(innerW))
+
+	innerCol := lipgloss.JoinVertical(lipgloss.Left, inputLine, spacer, metaLine)
+	h := max(1, lipgloss.Height(innerCol))
+	accentColor := assistout.ModeAccentColor(m.mode)
+	accentCell := lipgloss.NewStyle().
+		Background(accentColor).
+		Foreground(accentColor).
+		Width(tuiAccentColWidth).
+		Render(" ")
+	var accentCol string
+	for i := 0; i < h; i++ {
+		if i > 0 {
+			accentCol += "\n"
+		}
+		accentCol += accentCell
+	}
+
+	panel := lipgloss.JoinHorizontal(lipgloss.Top, accentCol, innerCol)
+
+	ctxHint := tokentracker.FormatPromptContextHint(m.chromeLastPromptTok, m.chromeContextWindow)
+	if m.chromeContextEstimated && ctxHint != "—" {
+		ctxHint = "~" + ctxHint
+	}
+	ctxLine := lipgloss.NewStyle().
+		Width(m.width).
+		Align(lipgloss.Right).
+		Foreground(lipgloss.AdaptiveColor{Light: "#737373", Dark: "#888888"}).
+		Render(ctxHint + "  ·  type / for commands")
+
+	return panel + "\n" + ctxLine
 }
 
 func (m tuiModel) Init() tea.Cmd {
@@ -159,6 +342,9 @@ func (m tuiModel) Update(msg tea.Msg) (_ tea.Model, _ tea.Cmd) {
 				m.inputCloser.ch <- text
 			}
 			return m, nil
+		case tea.KeyCtrlT:
+			m.thinkingCompact = !m.thinkingCompact
+			return m, nil
 		case tea.KeyCtrlC:
 			if m.inputCloser != nil {
 				m.inputCloser.Close()
@@ -224,15 +410,18 @@ func (m tuiModel) Update(msg tea.Msg) (_ tea.Model, _ tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		vpHeight := max(1, msg.Height-tuiFooterHeight)
+		mainW := m.mainViewportWidth()
 		if !m.ready {
-			m.viewport = viewport.New(msg.Width, vpHeight)
+			m.viewport = viewport.New(mainW, vpHeight)
 			m.viewport.KeyMap = disabledViewportKeyMap()
 			m.viewport.SetContent(m.content.String())
 			m.ready = true
 		} else {
-			m.viewport.Width = msg.Width
+			m.viewport.Width = mainW
 			m.viewport.Height = vpHeight
+			m.syncViewport()
 		}
+		m.applyInputChromeLayout()
 
 	case tuiOutputMsg:
 		m.content.WriteString(string(msg))
@@ -240,9 +429,15 @@ func (m tuiModel) Update(msg tea.Msg) (_ tea.Model, _ tea.Cmd) {
 			m.syncViewport()
 		}
 
-	case tuiModeMsg:
-		m.mode = string(msg)
-		m.input.Prompt = modePrompt(m.mode, m.plain)
+	case tuiChromeMsg:
+		m.mode = msg.Mode
+		m.chromeModel = msg.Model
+		m.chromeBackendLabel = msg.BackendLabel
+		m.chromeContextWindow = msg.ContextWindow
+		m.chromeLastPromptTok = msg.LastPromptTokens
+		m.chromeContextEstimated = msg.ContextEstimated
+		m.applyInputPrompt()
+		m.applyInputChromeLayout()
 
 	case tuiWorkingMsg:
 		m.working = bool(msg)
@@ -267,6 +462,16 @@ func (m tuiModel) Update(msg tea.Msg) (_ tea.Model, _ tea.Cmd) {
 
 	case slashCmdsMsg:
 		m.slashCmds = msg
+
+	case tuiTranscriptMsg:
+		m.appendTranscriptEvent(msg.ev, msg.delegate)
+		if m.ready {
+			m.syncViewport()
+		}
+
+	case tuiTodosMsg:
+		m.todos = append([]tools.TodoItem(nil), msg.items...)
+		m.applyViewportLayout()
 
 	case tuiQuitMsg:
 		m.quitting = true
@@ -358,10 +563,11 @@ func (m tuiModel) View() (_ string) {
 		// Render the picker as an overlay on the viewport, not below it.
 		pickerView := m.picker.View()
 		if pickerView != "" {
-			return m.viewportContentWithOverlay(m.viewport.View(), pickerView) + "\n" + sep + "\n" + m.input.View()
+			overlay := m.viewportContentWithOverlay(m.viewport.View(), pickerView)
+			return m.composeMainRow(overlay) + "\n" + sep + "\n" + m.inputFooterView()
 		}
 	}
-	return m.viewport.View() + "\n" + sep + "\n" + m.input.View()
+	return m.composeMainRow(m.viewport.View()) + "\n" + sep + "\n" + m.inputFooterView()
 }
 
 // viewportContentWithOverlay renders the viewport content with the picker

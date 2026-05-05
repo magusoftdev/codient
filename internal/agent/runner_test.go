@@ -13,6 +13,7 @@ import (
 	"github.com/openai/openai-go/v3/shared"
 
 	"codient/internal/config"
+	"codient/internal/openaiclient"
 	"codient/internal/tokentracker"
 	"codient/internal/tools"
 )
@@ -65,7 +66,7 @@ func (m *assertStreamUnusedLLM) ChatCompletion(ctx context.Context, params opena
 	return &out, nil
 }
 
-func (m *assertStreamUnusedLLM) ChatCompletionStream(ctx context.Context, params openai.ChatCompletionNewParams, w io.Writer) (*openai.ChatCompletion, error) {
+func (m *assertStreamUnusedLLM) ChatCompletionStream(ctx context.Context, params openai.ChatCompletionNewParams, w io.Writer, _ ...openaiclient.StreamOption) (*openai.ChatCompletion, error) {
 	m.streamCalls++
 	m.t.Fatalf("ChatCompletionStream should not run for tool requests when StreamWithTools is false (would drop tool_calls on many local servers)")
 	return nil, context.Canceled

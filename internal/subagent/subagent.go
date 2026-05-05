@@ -31,14 +31,15 @@ type Result struct {
 
 // RunParams configures a sub-agent invocation.
 type RunParams struct {
-	Cfg      *config.Config
-	Mode     prompt.Mode
-	Task     string
-	Context  string       // optional extra context prepended to the task
-	RepoMap  *repomap.Map // optional shared structural map (parent session); nil disables repo_map tool in child
-	Log      *agentlog.Logger
-	Progress io.Writer // nested progress lines written here (already prefixed by caller)
-	Tracker  *tokentracker.Tracker
+	Cfg               *config.Config
+	Mode              prompt.Mode
+	Task              string
+	Context           string       // optional extra context prepended to the task
+	RepoMap           *repomap.Map // optional shared structural map (parent session); nil disables repo_map tool in child
+	Log               *agentlog.Logger
+	Progress          io.Writer // nested progress lines written here (already prefixed by caller); nil when using OnTranscriptEvent only
+	OnTranscriptEvent func(agent.TranscriptEvent)
+	Tracker           *tokentracker.Tracker
 }
 
 // Run executes a single sub-agent turn: builds a mode-specific Runner with per-mode
@@ -53,14 +54,15 @@ func Run(ctx context.Context, p RunParams) (Result, error) {
 	log := p.Log.WithSubAgent(string(p.Mode), client.Model())
 
 	runner := &agent.Runner{
-		LLM:           client,
-		Cfg:           p.Cfg,
-		Tools:         reg,
-		Log:           log,
-		Progress:      p.Progress,
-		ProgressPlain: p.Cfg.Plain,
-		ProgressMode:  string(p.Mode),
-		Tracker:       p.Tracker,
+		LLM:               client,
+		Cfg:               p.Cfg,
+		Tools:             reg,
+		Log:               log,
+		Progress:          p.Progress,
+		OnTranscriptEvent: p.OnTranscriptEvent,
+		ProgressPlain:     p.Cfg.Plain,
+		ProgressMode:      string(p.Mode),
+		Tracker:           p.Tracker,
 	}
 
 	userMsg := strings.TrimSpace(p.Task)

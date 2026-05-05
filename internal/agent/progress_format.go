@@ -216,8 +216,8 @@ func progressToolActionPhrase(toolName string, argsJSON []byte, sum map[string]a
 	}
 }
 
-// progressNestedIndent spaces lines nested under the mode-colored thinking line.
-const progressNestedIndent = "    "
+// ProgressNestedIndent spaces lines nested under the mode-colored thinking line.
+const ProgressNestedIndent = "    "
 
 // progressToolPreludeMark prefixes tool-intent lines (no mode-colored bullet — those are for thinking only).
 const progressToolPreludeMark = "▸"
@@ -315,7 +315,39 @@ func FormatStatusProgressLine(plain bool, mode string, status string) string {
 func FormatToolIntentProgressLine(toolName string, argsJSON []byte) string {
 	sum := agentlog.SummarizeArgs(toolName, argsJSON)
 	phrase := progressToolActionPhrase(toolName, argsJSON, sum)
-	return progressNestedIndent + progressToolPreludeMark + " " + phrase + "…"
+	return ProgressNestedIndent + progressToolPreludeMark + " " + phrase + "…"
+}
+
+// FormatProgressRoundLineForTranscript renders the post-round summary line (tool batch or reply).
+func FormatProgressRoundLineForTranscript(llmDur time.Duration, mid, usageSuf string) string {
+	d := formatProgressDur(llmDur)
+	return fmt.Sprintf("%sllm %s  ·  %s%s", ProgressNestedIndent, d, mid, usageSuf)
+}
+
+// FormatModelErrorProgressLine renders the stderr line for a failed LLM request.
+func FormatModelErrorProgressLine(plain bool, llmDur time.Duration, errMsg string) string {
+	_ = plain
+	return fmt.Sprintf("  ✗ model %s  %s", formatProgressDur(llmDur), strings.TrimSpace(errMsg))
+}
+
+// stripThinkingToolMarkup removes XML-style tool-call markup from model prose.
+func stripThinkingToolMarkup(content string) string {
+	s := strings.TrimSpace(content)
+	if s == "" {
+		return ""
+	}
+	if strings.Contains(s, "<function=") {
+		s = reToolCallMarkup.ReplaceAllString(s, "")
+		s = strings.TrimSpace(s)
+	}
+	return s
+}
+
+// FormatFullThinkingProse returns assistant chain-of-thought text for rich UIs
+// (no length cap). JSON/XML tool fragments are stripped when present.
+func FormatFullThinkingProse(content string) string {
+	s := strings.TrimSpace(stripTextToolCallFragments(stripThinkingToolMarkup(content)))
+	return s
 }
 
 // formatThinkingLine extracts a short reasoning summary from assistant content
@@ -323,15 +355,7 @@ func FormatToolIntentProgressLine(toolName string, argsJSON []byte) string {
 // they're about to do alongside tool_calls; this surfaces it on the progress
 // writer so the user can follow along.
 func formatThinkingLine(content string) string {
-	s := strings.TrimSpace(content)
-	if s == "" {
-		return ""
-	}
-	// For XML-style tool calls, strip the tool markup to get just the prose.
-	if strings.Contains(s, "<function=") {
-		s = reToolCallMarkup.ReplaceAllString(s, "")
-		s = strings.TrimSpace(s)
-	}
+	s := stripThinkingToolMarkup(content)
 	if s == "" {
 		return ""
 	}

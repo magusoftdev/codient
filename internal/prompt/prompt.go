@@ -68,6 +68,10 @@ func Build(p Params) string {
 		b.WriteString("\n\n")
 		b.WriteString(sectionDelegation(mode))
 	}
+	if hasTodoWrite(p.Reg) {
+		b.WriteString("\n\n")
+		b.WriteString(sectionTaskManagement())
+	}
 	if p.UnityACPEditor {
 		b.WriteString("\n\n")
 		b.WriteString(sectionUnityACPEditor(mode))
@@ -259,6 +263,23 @@ func hasDelegateTask(reg *tools.Registry) bool {
 		}
 	}
 	return false
+}
+
+func hasTodoWrite(reg *tools.Registry) bool {
+	for _, n := range reg.Names() {
+		if n == "todo_write" {
+			return true
+		}
+	}
+	return false
+}
+
+func sectionTaskManagement() string {
+	return `## Task management
+
+You have **todo_write** to maintain a visible task list for the user. Use it for multi-step work: write the full list early, set exactly one item to **in_progress** at a time, and mark items **completed** as soon as you finish them (do not batch completions). Status values: **pending**, **in_progress**, **completed**, **cancelled**. Priority is optional: **high**, **medium**, **low**.
+
+Reasoning and planning may be shown in the terminal UI; keep sensitive secrets out of long thinking text.`
 }
 
 func sectionUnityACPEditor(mode Mode) string {
