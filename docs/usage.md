@@ -43,6 +43,8 @@ When stdin is a TTY and `-plain` is **not** set, codient launches a Bubble Tea s
 
 **Scrolling:** **Up/Down** arrows scroll one line, **Alt+Up/Down** scroll three lines, **Page Up/Down** scroll half a page, and **Home/End** jump to the top or bottom.
 
+**Slash command autocomplete:** type **`/`** at the start of a line to open a dropdown of available commands. Navigate with **Up/Down** arrows, press **Enter** to select (inserts the command name followed by a space), or **Escape** to dismiss. The list filters as you type.
+
 The TUI uses the alternate screen buffer; when you exit, the terminal returns to its previous state. Pass **`-plain`** or pipe stdin to fall back to the classic inline REPL.
 
 ## Headless / CI mode (`-print`)

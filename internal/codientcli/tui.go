@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"codient/internal/assistout"
+	"codient/internal/slashcmd"
 
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/textinput"
@@ -42,6 +43,7 @@ type (
 	tuiModeMsg        string // mode changed
 	tuiWorkingMsg     bool   // true = agent working, false = idle
 	tuiSpinnerTickMsg time.Time
+	slashCmdsMsg      *slashcmd.Registry
 )
 
 var tuiSpinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
@@ -62,9 +64,11 @@ type tuiModel struct {
 	spinnerFrame int
 	width        int
 	height       int
+	picker       slashPicker
+	slashCmds    *slashcmd.Registry
 }
 
-const tuiFooterHeight = 3 // separator + input + safety margin
+const tuiFooterHeight = 8 // separator + input + picker (max ~5 items) + safety margin
 
 func newTUIModel(ic *inputCloser, mode string, plain bool) tuiModel {
 	ti := textinput.New()
@@ -115,6 +119,19 @@ func (m tuiModel) Update(msg tea.Msg) (_ tea.Model, _ tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.Type {
 		case tea.KeyEnter:
+			// If picker is visible and has selection, insert selected command.
+			if m.picker.visible && m.picker.SelectedName() != "" {
+				selected := m.picker.SelectedName()
+				current := m.input.Value()
+				// Find where the command prefix starts (after the /)
+				slashIdx := strings.LastIndex(current, "/")
+				if slashIdx >= 0 {
+					newValue := current[:slashIdx+1] + selected + " "
+					m.input.SetValue(newValue)
+				}
+				m.picker.hide()
+				return m, nil
+			}
 			text := m.input.Value()
 			m.input.Reset()
 			if m.inputCloser != nil {
@@ -139,6 +156,10 @@ func (m tuiModel) Update(msg tea.Msg) (_ tea.Model, _ tea.Cmd) {
 			}
 			return m, nil
 		case tea.KeyUp:
+			if m.picker.visible {
+				m.picker.selectUp()
+				return m, nil
+			}
 			if m.ready {
 				n := 3
 				if !msg.Alt {
@@ -148,6 +169,10 @@ func (m tuiModel) Update(msg tea.Msg) (_ tea.Model, _ tea.Cmd) {
 			}
 			return m, nil
 		case tea.KeyDown:
+			if m.picker.visible {
+				m.picker.selectDown()
+				return m, nil
+			}
 			if m.ready {
 				n := 3
 				if !msg.Alt {
@@ -166,6 +191,12 @@ func (m tuiModel) Update(msg tea.Msg) (_ tea.Model, _ tea.Cmd) {
 				m.viewport.GotoBottom()
 			}
 			return m, nil
+		case tea.KeyEscape:
+			if m.picker.visible {
+				m.picker.hide()
+				return m, nil
+			}
+
 		}
 
 	case tea.WindowSizeMsg:
@@ -213,6 +244,9 @@ func (m tuiModel) Update(msg tea.Msg) (_ tea.Model, _ tea.Cmd) {
 			cmds = append(cmds, m.spinnerTick())
 		}
 
+	case slashCmdsMsg:
+		m.slashCmds = msg
+
 	case tuiQuitMsg:
 		m.quitting = true
 		return m, tea.Quit
@@ -221,6 +255,34 @@ func (m tuiModel) Update(msg tea.Msg) (_ tea.Model, _ tea.Cmd) {
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
 	cmds = append(cmds, cmd)
+
+	// Check for slash command prefix and show picker.
+	if m.slashCmds != nil {
+		val := m.input.Value()
+		prefix := ""
+		// Only trigger on / at the start of the line or after whitespace.
+		if strings.HasPrefix(val, "/") {
+			prefix = val[1:]
+		} else {
+			lastSlash := strings.LastIndex(val, "/")
+			if lastSlash >= 0 {
+				// Check if preceded by whitespace or newline.
+				if lastSlash == 0 || val[lastSlash-1] == ' ' || val[lastSlash-1] == '\t' || val[lastSlash-1] == '\n' {
+					prefix = val[lastSlash+1:]
+				}
+			}
+		}
+		if prefix != "" {
+			m.picker.show(m.slashCmds, prefix, m.width)
+		} else if val == "/" {
+			// Bare / triggers picker with empty prefix.
+			m.picker.show(m.slashCmds, "", m.width)
+		} else if m.picker.visible {
+			m.picker.hide()
+		}
+	} else if m.picker.visible {
+		m.picker.hide()
+	}
 
 	// Only forward non-key messages to the viewport (window size, mouse scroll).
 	// Key events go exclusively to the textinput to avoid the viewport's
@@ -271,6 +333,10 @@ func (m tuiModel) View() (_ string) {
 		return "Initializing..."
 	}
 	sep := statusBarStyle.Render(strings.Repeat("─", m.width))
+	pickerView := m.picker.View()
+	if pickerView != "" {
+		return m.viewport.View() + "\n" + sep + "\n" + pickerView + "\n" + m.input.View()
+	}
 	return m.viewport.View() + "\n" + sep + "\n" + m.input.View()
 }
 

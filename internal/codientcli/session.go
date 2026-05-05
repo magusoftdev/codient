@@ -985,6 +985,11 @@ func (s *session) runSession(ctx context.Context, initialPrompt string, newSessi
 	// Register slash commands.
 	cmds := s.buildSlashCommands(ctx, sc)
 
+	// Send slash commands to TUI for autocomplete.
+	if s.tui != nil && s.tui.prog != nil {
+		s.tui.prog.Send(slashCmdsMsg(cmds))
+	}
+
 	runner := s.newRunner()
 
 	// Execute initial prompt if provided.

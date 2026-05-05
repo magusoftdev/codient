@@ -64,6 +64,85 @@ func (r *Registry) Parse(line string) (cmd *Command, args string, ok bool) {
 	return nil, trimmed, true
 }
 
+// CommandMatch is a single command returned by Lookup.
+type CommandMatch struct {
+	Name        string
+	Aliases     []string
+	Description string
+	Usage       string
+}
+
+// Lookup returns commands whose name or aliases start with prefix.
+// Results are sorted by registration order. Exact prefix matches are
+// listed before partial prefix matches. Each command appears at most once.
+func (r *Registry) Lookup(prefix string) []CommandMatch {
+	if len(r.order) == 0 {
+		return nil
+	}
+	prefixLower := strings.ToLower(prefix)
+	var exact []CommandMatch
+	seen := make(map[string]bool)
+	for _, key := range r.order {
+		c := r.byName[key]
+		if strings.HasPrefix(key, prefixLower) {
+			exact = append(exact, CommandMatch{
+				Name:        c.Name,
+				Aliases:     c.Aliases,
+				Description: c.Description,
+				Usage:       c.Usage,
+			})
+			seen[key] = true
+			continue
+		}
+		for _, alias := range c.Aliases {
+			if strings.HasPrefix(strings.ToLower(alias), prefixLower) {
+				if !seen[key] {
+					exact = append(exact, CommandMatch{
+						Name:        c.Name,
+						Aliases:     c.Aliases,
+						Description: c.Description,
+						Usage:       c.Usage,
+					})
+					seen[key] = true
+				}
+				break
+			}
+		}
+	}
+	var partial []CommandMatch
+	for _, key := range r.order {
+		if seen[key] {
+			continue
+		}
+		c := r.byName[key]
+		if strings.Contains(key, prefixLower) {
+			partial = append(partial, CommandMatch{
+				Name:        c.Name,
+				Aliases:     c.Aliases,
+				Description: c.Description,
+				Usage:       c.Usage,
+			})
+			seen[key] = true
+			continue
+		}
+		for _, alias := range c.Aliases {
+			if strings.Contains(strings.ToLower(alias), prefixLower) {
+				if !seen[key] {
+					partial = append(partial, CommandMatch{
+						Name:        c.Name,
+						Aliases:     c.Aliases,
+						Description: c.Description,
+						Usage:       c.Usage,
+					})
+					seen[key] = true
+				}
+				break
+			}
+		}
+	}
+	return append(exact, partial...)
+}
+
 // Help returns a formatted help string listing all registered commands.
 func (r *Registry) Help() string {
 	if len(r.order) == 0 {
