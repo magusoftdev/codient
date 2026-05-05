@@ -68,7 +68,7 @@ type tuiModel struct {
 	slashCmds    *slashcmd.Registry
 }
 
-const tuiFooterHeight = 8 // separator + input + picker (max ~5 items) + safety margin
+const tuiFooterHeight = 3 // separator + input + safety margin
 
 func newTUIModel(ic *inputCloser, mode string, plain bool) tuiModel {
 	ti := textinput.New()
@@ -333,11 +333,29 @@ func (m tuiModel) View() (_ string) {
 		return "Initializing..."
 	}
 	sep := statusBarStyle.Render(strings.Repeat("─", m.width))
-	pickerView := m.picker.View()
-	if pickerView != "" {
-		return m.viewport.View() + "\n" + sep + "\n" + pickerView + "\n" + m.input.View()
+	if m.picker.visible {
+		// Render the picker as an overlay on the viewport, not below it.
+		pickerView := m.picker.View()
+		if pickerView != "" {
+			return m.viewportContentWithOverlay(m.viewport.View(), pickerView) + "\n" + sep + "\n" + m.input.View()
+		}
 	}
 	return m.viewport.View() + "\n" + sep + "\n" + m.input.View()
+}
+
+// viewportContentWithOverlay renders the viewport content with the picker
+// overlaid on the bottom, replacing the last N lines.
+func (m tuiModel) viewportContentWithOverlay(vpContent, overlay string) string {
+	vpLines := strings.Split(vpContent, "\n")
+	pickerLines := strings.Split(overlay, "\n")
+	if len(pickerLines) == 0 {
+		return vpContent
+	}
+	// Replace the last len(pickerLines) lines of the viewport with the overlay.
+	if len(vpLines) <= len(pickerLines) {
+		return overlay
+	}
+	return strings.Join(append(vpLines[:len(vpLines)-len(pickerLines)], pickerLines...), "\n")
 }
 
 // tuiWriter is an io.Writer that sends each Write to the Bubble Tea program
