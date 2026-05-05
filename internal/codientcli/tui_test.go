@@ -336,23 +336,29 @@ func TestTUIModel_SlashPickerEnterSelects(t *testing.T) {
 	cmds.Register(slashcmd.Command{Name: "plan", Description: "switch to plan mode"})
 	m.slashCmds = cmds
 
-	// Type / to trigger picker (via textinput update)
+	// Type /b to trigger picker
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
 	m = updated.(tuiModel)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'b'}})
+	m = updated.(tuiModel)
 
-	// Picker should be visible after typing /
+	// Picker should be visible after typing /b
 	if !m.picker.visible {
-		t.Fatal("picker should be visible after typing /")
+		t.Fatal("picker should be visible after typing /b")
 	}
 
-	// Press Enter to select
+	// Press Enter to complete and submit
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = updated.(tuiModel)
 
-	// Input should have the selected command
-	val := m.input.Value()
-	if !strings.HasPrefix(val, "/build ") {
-		t.Fatalf("input should be '/build ...', got %q", val)
+	// The command should have been submitted to the channel.
+	select {
+	case got := <-ic.ch:
+		if !strings.HasPrefix(got, "/build ") {
+			t.Fatalf("channel should have '/build ...', got %q", got)
+		}
+	default:
+		t.Fatal("expected input on channel")
 	}
 }
 

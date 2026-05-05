@@ -119,15 +119,36 @@ func (m tuiModel) Update(msg tea.Msg) (_ tea.Model, _ tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.Type {
 		case tea.KeyEnter:
-			// If picker is visible and has selection, insert selected command.
+			// If picker is visible and has selection, check if the typed text
+			// already exactly matches a command. If so, just append a space
+			// and submit. Otherwise, use the picker to replace/complete.
 			if m.picker.visible && m.picker.SelectedName() != "" {
-				selected := m.picker.SelectedName()
 				current := m.input.Value()
-				// Find where the command prefix starts (after the /)
 				slashIdx := strings.LastIndex(current, "/")
 				if slashIdx >= 0 {
-					newValue := current[:slashIdx+1] + selected + " "
-					m.input.SetValue(newValue)
+					typed := current[slashIdx+1:]
+					selected := m.picker.SelectedName()
+					// If typed exactly matches the selected command, submit directly.
+					if typed == selected {
+						newValue := current[:slashIdx+1] + selected + " "
+						m.input.SetValue(newValue)
+						m.input.Reset()
+						if m.inputCloser != nil {
+							m.inputCloser.ch <- newValue
+						}
+						return m, nil
+					}
+					// Partial match: complete the command and submit it.
+					if typed != "" {
+						newValue := current[:slashIdx+1] + selected + " "
+						m.input.SetValue(newValue)
+						text := m.input.Value()
+						m.input.Reset()
+						if m.inputCloser != nil {
+							m.inputCloser.ch <- text
+						}
+						return m, nil
+					}
 				}
 				m.picker.hide()
 				return m, nil
