@@ -182,12 +182,13 @@ func sliceBalancedDecl(lines []string, startIdx, maxLines int) string {
 func countIndent(line string) int {
 	n := 0
 	for _, r := range line {
-		if r == ' ' {
+		switch r {
+		case ' ':
 			n++
-		} else if r == '\t' {
+		case '\t':
 			n += 4
-		} else {
-			break
+		default:
+			return n
 		}
 	}
 	return n
