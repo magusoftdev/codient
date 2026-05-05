@@ -20,6 +20,36 @@ func TestEcho(t *testing.T) {
 	}
 }
 
+func TestReadFileOutline(t *testing.T) {
+	dir := t.TempDir()
+	goSrc := `package main
+
+func Secret() {
+	println("do-not-leak")
+}
+
+type Box struct { N int }
+`
+	p := filepath.Join(dir, "x.go")
+	if err := os.WriteFile(p, []byte(goSrc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r := DefaultReadOnly(dir, "", nil, nil, "", nil, nil)
+	out, err := r.Run(context.Background(), "read_file", json.RawMessage(`{"path":"x.go","view":"outline"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "func Secret()") {
+		t.Fatalf("expected signature: %s", out)
+	}
+	if strings.Contains(out, "do-not-leak") {
+		t.Fatalf("body should not appear: %s", out)
+	}
+	if !strings.Contains(out, "type Box struct") {
+		t.Fatalf("expected type: %s", out)
+	}
+}
+
 func TestReadFileWorkspace(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "a.txt")

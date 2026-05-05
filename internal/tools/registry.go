@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"codient/internal/codeextract"
 	"codient/internal/codeindex"
 	"codient/internal/repomap"
 
@@ -191,7 +192,8 @@ func registerWorkspaceReadTools(r *Registry, root string, userSkillsReadLib stri
 		Name: "read_file",
 		Description: "Reads a UTF-8 text file under the configured workspace root. " +
 			"If the path is not found under the workspace, read_file also checks the codient user skills library when configured (paths from the Agent skills section). " +
-			"Optional max_bytes (default 262144) and 1-based start_line/end_line to return a slice of lines.",
+			"Optional max_bytes (default 262144) and 1-based start_line/end_line to return a slice of lines (full view only). " +
+			"Optional view \"outline\" returns a dense structural summary (signatures, types) instead of raw text; outline uses the whole file and ignores start_line/end_line.",
 		Parameters: shared.FunctionParameters{
 			"type": "object",
 			"properties": map[string]any{
@@ -199,17 +201,22 @@ func registerWorkspaceReadTools(r *Registry, root string, userSkillsReadLib stri
 					"type":        "string",
 					"description": "Path relative to workspace root, or a path under the user skills library as listed in Agent skills.",
 				},
+				"view": map[string]any{
+					"type":        "string",
+					"description": "Optional. \"full\" (default): raw file contents. \"outline\": declarations only (Go: real AST; other supported languages: heuristic blocks) for smaller context.",
+					"enum":        []any{"full", "outline"},
+				},
 				"max_bytes": map[string]any{
 					"type":        "integer",
-					"description": "Maximum bytes to read (default 262144). Longer files are truncated.",
+					"description": "Maximum bytes to read (default 262144). Longer files are truncated. For view outline, if the file exceeds this size, outline fails—raise max_bytes or use full view.",
 				},
 				"start_line": map[string]any{
 					"type":        "integer",
-					"description": "1-based start line (optional). Use with end_line for a range.",
+					"description": "1-based start line (optional). Use with end_line for a range. Ignored when view is outline.",
 				},
 				"end_line": map[string]any{
 					"type":        "integer",
-					"description": "1-based end line inclusive (optional).",
+					"description": "1-based end line inclusive (optional). Ignored when view is outline.",
 				},
 			},
 			"required":             []string{"path"},
@@ -218,6 +225,7 @@ func registerWorkspaceReadTools(r *Registry, root string, userSkillsReadLib stri
 		Run: func(_ context.Context, args json.RawMessage) (string, error) {
 			var p struct {
 				Path      string `json:"path"`
+				View      string `json:"view"`
 				MaxBytes  *int64 `json:"max_bytes"`
 				StartLine int    `json:"start_line"`
 				EndLine   int    `json:"end_line"`
@@ -228,6 +236,28 @@ func registerWorkspaceReadTools(r *Registry, root string, userSkillsReadLib stri
 			mb := int64(defaultReadMaxBytes)
 			if p.MaxBytes != nil && *p.MaxBytes > 0 {
 				mb = *p.MaxBytes
+			}
+			view := strings.ToLower(strings.TrimSpace(p.View))
+			if view == "" {
+				view = "full"
+			}
+			if view == "outline" {
+				var data []byte
+				var trunc bool
+				var err error
+				if userLib != "" {
+					data, trunc, err = readFileBytesWorkspaceOrUserSkillsForOutline(root, userLib, p.Path, mb)
+				} else {
+					data, trunc, err = readFileBytesWorkspaceForOutline(root, p.Path, mb)
+				}
+				if err != nil {
+					return "", err
+				}
+				lang := repomap.LanguageFromPath(p.Path)
+				return codeextract.Outline(p.Path, lang, data, trunc)
+			}
+			if view != "full" {
+				return "", fmt.Errorf("invalid view %q: use \"full\" or \"outline\"", strings.TrimSpace(p.View))
 			}
 			if userLib != "" {
 				return readFileWorkspaceOrUserSkills(root, userLib, p.Path, mb, p.StartLine, p.EndLine)

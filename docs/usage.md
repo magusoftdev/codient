@@ -263,7 +263,7 @@ These are read-only from the agent's perspective (capped at 32 KiB total) and co
 
 If the same **`name`** appears in both places, the **workspace** skill wins. The catalog is capped in size; very large lists may show `[truncated]`.
 
-**`read_file`:** Paths under the workspace work as usual. Paths for **user** skills (shown in the catalog) are resolved under `<state-dir>/skills/` when the file is not found under the workspace—so global skills remain readable without widening access to arbitrary files outside the workspace.
+**`read_file`:** Paths under the workspace work as usual. Paths for **user** skills (shown in the catalog) are resolved under `<state-dir>/skills/` when the file is not found under the workspace—so global skills remain readable without widening access to arbitrary files outside the workspace. Optional tool argument **`view`**: set to **`"outline"`** to get declaration-only text (Go: AST-backed signatures and types; other common languages: a lightweight heuristic) instead of the full file—useful when context is tight; **`"full"`** is the default. Outline reads the whole file up to **`max_bytes`** and ignores line ranges.
 
 **REPL:** **`/create-skill`** walks you through scope, folder id, description, and optional `disable-model-invocation`, then writes **`SKILL.md`**. **`/skills`** prints what codient discovered on disk. Starting a new session with **`/new`** reloads the skill catalog from disk (as does restarting codient). Editing skills manually without **`/new`** takes effect after restart unless you run **`/create-skill`** again or use **`/new`** (which reloads skills).
 

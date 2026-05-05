@@ -354,7 +354,7 @@ func sectionPerToolNotes(p Params) string {
 	var b strings.Builder
 	b.WriteString("## Tool-specific notes\n")
 	if _, ok := set["read_file"]; ok {
-		b.WriteString("\n- **read_file**: Path relative to workspace. Optional `max_bytes` (default 256KiB). Optional 1-based `start_line` / `end_line` for a slice. Prefer ranges over whole large files.\n")
+		b.WriteString("\n- **read_file**: Path relative to workspace. Optional `max_bytes` (default 256KiB). Optional 1-based `start_line` / `end_line` for a slice (full view only). Optional `view`: `\"full\"` (default) for raw text, or `\"outline\"` for dense declarations only (Go: real AST signatures and types; other supported languages: heuristic blocks)—saves context on large files; outline ignores line ranges and needs the file within `max_bytes`.\n")
 	}
 	if _, ok := set["list_dir"]; ok {
 		b.WriteString("- **list_dir**: Path relative to workspace; `max_depth` 0 = no recursion. Use for discovery before deep reads.\n")

@@ -3,6 +3,7 @@ package tools
 import (
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -164,6 +165,56 @@ func readFileWorkspaceOrUserSkills(workspaceRoot, userSkillsLib, rel string, max
 		return "", err
 	}
 	return readFileAt(abs, maxBytes, startLine, endLine)
+}
+
+// readFileBytesForOutline reads up to maxBytes of UTF-8 from abs for AST/heuristic outline.
+// truncated is true when the file is larger than maxBytes (caller should not parse as complete).
+func readFileBytesForOutline(abs string, maxBytes int64) (data []byte, truncated bool, err error) {
+	if maxBytes <= 0 {
+		maxBytes = defaultReadMaxBytes
+	}
+	info, err := os.Stat(abs)
+	if err != nil {
+		return nil, false, err
+	}
+	if info.IsDir() {
+		return nil, false, fmt.Errorf("path is a directory")
+	}
+	f, err := os.Open(abs)
+	if err != nil {
+		return nil, false, err
+	}
+	defer f.Close()
+	// Read one byte past maxBytes to detect truncation without loading the whole file.
+	lim := io.LimitReader(f, maxBytes+1)
+	data, err = io.ReadAll(lim)
+	if err != nil {
+		return nil, false, err
+	}
+	if int64(len(data)) > maxBytes {
+		truncated = true
+		data = data[:maxBytes]
+	}
+	if !utf8.Valid(data) {
+		return nil, false, fmt.Errorf("file is not valid UTF-8")
+	}
+	return data, truncated, nil
+}
+
+func readFileBytesWorkspaceForOutline(root, rel string, maxBytes int64) ([]byte, bool, error) {
+	abs, err := absUnderRoot(root, rel)
+	if err != nil {
+		return nil, false, err
+	}
+	return readFileBytesForOutline(abs, maxBytes)
+}
+
+func readFileBytesWorkspaceOrUserSkillsForOutline(workspaceRoot, userSkillsLib, rel string, maxBytes int64) ([]byte, bool, error) {
+	abs, err := resolveReadableAbs(workspaceRoot, userSkillsLib, rel)
+	if err != nil {
+		return nil, false, err
+	}
+	return readFileBytesForOutline(abs, maxBytes)
 }
 
 func listDirWorkspace(root, rel string, maxDepth, maxEntries int) (string, error) {
