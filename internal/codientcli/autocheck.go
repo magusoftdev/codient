@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -114,7 +115,49 @@ func detectAutoCheckCmd(workspaceRoot string) string {
 	if fileExists(filepath.Join(root, "pyproject.toml")) || fileExists(filepath.Join(root, "setup.cfg")) {
 		return "python -m compileall -q ."
 	}
+	if u := detectUnityAutoCheckCmd(root); u != "" {
+		return u
+	}
 	return ""
+}
+
+// detectUnityAutoCheckCmd returns a dotnet build line for Unity layouts with a root .sln, or "".
+func detectUnityAutoCheckCmd(root string) string {
+	if !fileExists(filepath.Join(root, "ProjectSettings", "ProjectVersion.txt")) {
+		return ""
+	}
+	if !dirExists(filepath.Join(root, "Assets")) {
+		return ""
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return ""
+	}
+	var slns []string
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if strings.HasSuffix(strings.ToLower(name), ".sln") {
+			slns = append(slns, name)
+		}
+	}
+	if len(slns) == 0 {
+		return ""
+	}
+	sort.Strings(slns)
+	chosen := slns[0]
+	if len(slns) > 1 {
+		prefer := filepath.Base(root) + ".sln"
+		for _, name := range slns {
+			if name == prefer {
+				chosen = name
+				break
+			}
+		}
+	}
+	return fmt.Sprintf(`dotnet build "%s" -v minimal`, chosen)
 }
 
 // detectLintCmd returns a lint command for the workspace, or "" if unknown / unavailable.

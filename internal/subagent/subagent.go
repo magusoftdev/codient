@@ -20,6 +20,7 @@ import (
 	"codient/internal/prompt"
 	"codient/internal/repomap"
 	"codient/internal/tokentracker"
+	"codient/internal/tools"
 )
 
 // Result is returned after a sub-agent completes.
@@ -40,6 +41,27 @@ type RunParams struct {
 	Progress          io.Writer // nested progress lines written here (already prefixed by caller); nil when using OnTranscriptEvent only
 	OnTranscriptEvent func(agent.TranscriptEvent)
 	Tracker           *tokentracker.Tracker
+	// AutoCheck runs after successful mutating tools in this sub-agent (build mode only; nil skips).
+	AutoCheck func(context.Context) agent.AutoCheckOutcome
+}
+
+// newRunnerFromParams builds the agent.Runner used by Run.
+func newRunnerFromParams(llm agent.ChatClient, p RunParams, reg *tools.Registry, log *agentlog.Logger) *agent.Runner {
+	r := &agent.Runner{
+		LLM:               llm,
+		Cfg:               p.Cfg,
+		Tools:             reg,
+		Log:               log,
+		Progress:          p.Progress,
+		OnTranscriptEvent: p.OnTranscriptEvent,
+		ProgressPlain:     p.Cfg.Plain,
+		ProgressMode:      string(p.Mode),
+		Tracker:           p.Tracker,
+	}
+	if p.AutoCheck != nil {
+		r.AutoCheck = p.AutoCheck
+	}
+	return r
 }
 
 // Run executes a single sub-agent turn: builds a mode-specific Runner with per-mode
@@ -53,17 +75,7 @@ func Run(ctx context.Context, p RunParams) (Result, error) {
 
 	log := p.Log.WithSubAgent(string(p.Mode), client.Model())
 
-	runner := &agent.Runner{
-		LLM:               client,
-		Cfg:               p.Cfg,
-		Tools:             reg,
-		Log:               log,
-		Progress:          p.Progress,
-		OnTranscriptEvent: p.OnTranscriptEvent,
-		ProgressPlain:     p.Cfg.Plain,
-		ProgressMode:      string(p.Mode),
-		Tracker:           p.Tracker,
-	}
+	runner := newRunnerFromParams(client, p, reg, log)
 
 	userMsg := strings.TrimSpace(p.Task)
 	if c := strings.TrimSpace(p.Context); c != "" {

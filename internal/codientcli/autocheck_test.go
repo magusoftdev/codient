@@ -233,3 +233,86 @@ func TestMakeAutoCheckSequence_TwoStepsPass(t *testing.T) {
 		t.Fatalf("want both progress lines: %q", out.Progress)
 	}
 }
+
+func TestDetectAutoCheckCmd_Unity_NoSln(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "ProjectSettings"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "ProjectSettings", "ProjectVersion.txt"), []byte("m_EditorVersion: 6000.1.0f1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "Assets"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := detectAutoCheckCmd(root); got != "" {
+		t.Fatalf("unity without .sln: want empty, got %q", got)
+	}
+}
+
+func TestDetectAutoCheckCmd_Unity_SingleSln(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "ProjectSettings"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "ProjectSettings", "ProjectVersion.txt"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "Assets"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "Game.sln"), []byte("Microsoft Visual Studio Solution File\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	want := `dotnet build "Game.sln" -v minimal`
+	if got := detectAutoCheckCmd(root); got != want {
+		t.Fatalf("got %q want %q", got, want)
+	}
+}
+
+func TestDetectAutoCheckCmd_Unity_MultiSlnLexFirst(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "ProjectSettings"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "ProjectSettings", "ProjectVersion.txt"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "Assets"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "Zed.sln"), []byte(""), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "Alpha.sln"), []byte(""), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	want := `dotnet build "Alpha.sln" -v minimal`
+	if got := detectAutoCheckCmd(root); got != want {
+		t.Fatalf("got %q want %q", got, want)
+	}
+}
+
+func TestDetectAutoCheckCmd_Unity_MultiSlnPrefersDirBase(t *testing.T) {
+	parent := t.TempDir()
+	root := filepath.Join(parent, "MyGame")
+	if err := os.MkdirAll(filepath.Join(root, "ProjectSettings"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "ProjectSettings", "ProjectVersion.txt"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "Assets"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "Other.sln"), []byte(""), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "MyGame.sln"), []byte(""), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	want := `dotnet build "MyGame.sln" -v minimal`
+	if got := detectAutoCheckCmd(root); got != want {
+		t.Fatalf("got %q want %q", got, want)
+	}
+}

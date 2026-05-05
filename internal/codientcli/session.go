@@ -318,7 +318,7 @@ func (s *session) delegateTaskFn() tools.DelegateRunner {
 			cfg = &c2
 			repoMap = nil
 		}
-		res, err := subagent.Run(ctx, subagent.RunParams{
+		rp := subagent.RunParams{
 			Cfg:               cfg,
 			Mode:              mode,
 			Task:              task,
@@ -328,7 +328,15 @@ func (s *session) delegateTaskFn() tools.DelegateRunner {
 			Progress:          progress,
 			OnTranscriptEvent: onTranscript,
 			Tracker:           s.tokenTracker,
-		})
+		}
+		if mode == prompt.ModeBuild {
+			steps := buildAutoCheckSteps(cfg)
+			if len(steps) > 0 {
+				sec := autoCheckTimeoutSec(cfg)
+				rp.AutoCheck = makeAutoCheckSequence(cfg.EffectiveWorkspace(), steps, time.Duration(sec)*time.Second, cfg.ExecMaxOutputBytes, progress)
+			}
+		}
+		res, err := subagent.Run(ctx, rp)
 		if err != nil {
 			return "", err
 		}

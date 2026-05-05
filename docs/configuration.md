@@ -154,6 +154,23 @@ Use **`-sandbox <mode>`** on the CLI to override `sandbox_mode` for that process
 
 In **build** mode, after successful mutating tools (`write_file`, `str_replace`, etc.), codient runs **build → lint → test** using the resolved `autocheck_cmd`, `lint_cmd`, and `test_cmd` settings. Order is **fail-fast** (if build fails, lint and test are skipped). Each step uses the same timeout cap as the legacy single-command auto-check (bounded by `exec_timeout_sec`, max 60s per step). **Auto-detection** examples: **build** — same as before (`go build ./...`, `cargo check`, `npx tsc --noEmit`, …). **Lint** — `golangci-lint run ./...` when `go.mod` exists and `golangci-lint` is on `PATH`; `cargo clippy -- -D warnings` for Rust; `npm run lint` when `package.json` has a `lint` script; Python: `ruff check .` or `flake8` if that binary is on `PATH`. **Test** — `go test ./...`, `cargo test`, `npm test` when a `test` script exists, or `python -m pytest` when pytest markers are present. Plan-mode **verification** at the end of a plan uses the same resolved build, lint, and test commands.
 
+On failure, combined stdout and stderr from the failing step are injected as a user message so the model can fix issues before finishing the turn. Output is truncated by **`exec_max_output_bytes`**.
+
+### Unity projects (ACP / C#)
+
+For [Codient Unity](https://github.com/magusoftdev/codient-unity), set the agent **workspace** to the **Unity project root** (the folder that contains `Assets` and `ProjectSettings`), same as the Unity package uses for `codient -acp`.
+
+- **Auto-detect:** If `ProjectSettings/ProjectVersion.txt` and an `Assets` directory exist and there is at least one `*.sln` in the project root, the default build step is `dotnet build "<name>.sln" -v minimal`. If several `.sln` files exist, codient prefers `<folderName>.sln` when it matches the project directory name; otherwise it picks the lexicographically first file. **`dotnet`** must be on `PATH`. Unity usually creates the solution after you open the project in the Editor once (or via your normal project setup).
+- **No `.sln` yet:** Auto-detect leaves `autocheck_cmd` empty—set **`autocheck_cmd`** yourself (for example after generating the solution), or use a **batchmode** compile entry point your team already uses:
+
+```json
+{
+  "autocheck_cmd": "\"/path/to/Unity\" -batchmode -nographics -quit -projectPath \"/path/to/MyGame\" -logFile -"
+}
+```
+
+Adjust flags and add **`-executeMethod`** (or similar) if your project compiles via a custom Editor script. Keep commands within the **60s per step** budget or raise **`exec_timeout_sec`** (still capped at 60s for auto-check steps).
+
 ## Token usage and cost estimates
 
 Codient records **API-reported** token counts from chat completions when the server includes a `usage` object (OpenAI-compatible). Many local inference stacks omit this; cloud APIs usually populate it. Totals are **per REPL session** and include agent turns, `/compact`, the ask-mode verification gate, and **`delegate_task`** sub-agents.
