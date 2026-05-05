@@ -15,6 +15,7 @@ type slashPicker struct {
 	selected   int
 	inputValue string
 	width      int
+	offset     int // scroll offset into the command list
 }
 
 // pickerStyles holds the styling for the slash picker dropdown.
@@ -55,6 +56,7 @@ func (p *slashPicker) show(cmds *slashcmd.Registry, inputValue string, width int
 	if p.selected >= len(p.commands) {
 		p.selected = len(p.commands) - 1
 	}
+	p.offset = 0
 }
 
 // hide hides the picker.
@@ -62,6 +64,7 @@ func (p *slashPicker) hide() {
 	p.visible = false
 	p.commands = nil
 	p.selected = 0
+	p.offset = 0
 }
 
 // selectUp moves selection up by one.
@@ -73,6 +76,7 @@ func (p *slashPicker) selectUp() {
 	if p.selected < 0 {
 		p.selected = len(p.commands) - 1
 	}
+	p.clampOffset()
 }
 
 // selectDown moves selection down by one.
@@ -84,6 +88,7 @@ func (p *slashPicker) selectDown() {
 	if p.selected >= len(p.commands) {
 		p.selected = 0
 	}
+	p.clampOffset()
 }
 
 // SelectedName returns the name of the currently selected command, or empty.
@@ -94,6 +99,21 @@ func (p slashPicker) SelectedName() string {
 	return p.commands[p.selected].Name
 }
 
+// clampOffset keeps the scroll offset valid for the current selection.
+func (p *slashPicker) clampOffset() {
+	maxOffset := max(0, len(p.commands)-5)
+	if p.offset > maxOffset {
+		p.offset = maxOffset
+	}
+	// Keep selected item in view when possible.
+	if p.selected < p.offset {
+		p.offset = p.selected
+	}
+	if p.selected >= p.offset+5 {
+		p.offset = p.selected - 4
+	}
+}
+
 // View renders the picker dropdown.
 func (p slashPicker) View() string {
 	if !p.visible || len(p.commands) == 0 {
@@ -102,13 +122,13 @@ func (p slashPicker) View() string {
 
 	var lines []string
 
-	// Items (limit to 5 to save screen space).
-	for i, cmd := range p.commands {
-		if i >= 5 {
-			lines = append(lines, "  ...")
+	// Items (limit to 5 to save screen space, using offset for scrolling).
+	for i := 0; i < 5; i++ {
+		idx := p.offset + i
+		if idx >= len(p.commands) {
 			break
 		}
-		line := p.renderItem(cmd, i == p.selected)
+		line := p.renderItem(p.commands[idx], idx == p.selected)
 		lines = append(lines, line)
 	}
 
