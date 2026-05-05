@@ -119,6 +119,8 @@ type Config struct {
 	DesignSaveDir string
 	// DesignSave controls whether plan-mode plans are saved to disk (default true).
 	DesignSave bool
+	// PlanTot enables parallel Tree-of-Thoughts plan generation on selected plan-mode turns (default true).
+	PlanTot bool
 	// ProjectContext opt-out: "off" to disable auto-detected project hints.
 	ProjectContext string
 	// AstGrep is the resolved ast-grep binary path, empty if unavailable, or "off" to disable.
@@ -305,6 +307,10 @@ func Load() (*Config, error) {
 	if pc.AcpPreloadModelOnSetModel != nil {
 		acpPreloadModelOnSetModel = *pc.AcpPreloadModelOnSetModel
 	}
+	planTot := true
+	if pc.PlanTot != nil {
+		planTot = *pc.PlanTot
+	}
 	protectedBranches := ParseGitProtectedBranches(pc.GitProtectedBranches)
 	if len(protectedBranches) == 0 {
 		protectedBranches = []string{"main", "master", "develop"}
@@ -367,6 +373,7 @@ func Load() (*Config, error) {
 		AcpPreloadModelOnSetModel: acpPreloadModelOnSetModel,
 		DesignSaveDir:             strings.TrimSpace(pc.DesignSaveDir),
 		DesignSave:                designSave,
+		PlanTot:                   planTot,
 		ProjectContext:            strings.TrimSpace(pc.ProjectContext),
 		AstGrep:                   strings.TrimSpace(pc.AstGrep),
 		EmbeddingModel:            strings.TrimSpace(pc.EmbeddingModel),

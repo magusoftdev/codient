@@ -58,6 +58,9 @@ func TestLoad_Defaults(t *testing.T) {
 	if !c.DesignSave {
 		t.Fatal("expected DesignSave true by default")
 	}
+	if !c.PlanTot {
+		t.Fatal("expected PlanTot true by default")
+	}
 	if c.AutoCompactPct != defaultAutoCompactPct {
 		t.Fatalf("AutoCompactPct: got %d", c.AutoCompactPct)
 	}
@@ -478,6 +481,24 @@ func TestLoad_DesignSaveExplicitFalse(t *testing.T) {
 	}
 }
 
+func TestLoad_PlanTotExplicitFalse(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CODIENT_STATE_DIR", dir)
+
+	f := false
+	pc := &PersistentConfig{PlanTot: &f}
+	if err := SavePersistentConfig(pc); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.PlanTot {
+		t.Fatal("expected PlanTot false when explicitly set")
+	}
+}
+
 func TestLoad_AcpPreloadModelOnSetModelExplicitFalse(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("CODIENT_STATE_DIR", dir)
@@ -515,6 +536,7 @@ func TestConfigToPersistent_RoundTrip(t *testing.T) {
 		FetchPreapproved:          false,
 		StreamReply:               false,
 		DesignSave:                false,
+		PlanTot:                   false,
 		AcpPreloadModelOnSetModel: false,
 		FetchWebRatePerSec:        8,
 		FetchWebRateBurst:         3,
@@ -531,8 +553,8 @@ func TestConfigToPersistent_RoundTrip(t *testing.T) {
 	if c.BaseURL != "http://test/v1" || c.Model != "m" || c.MaxConcurrent != 5 {
 		t.Fatalf("round-trip failed: %+v", c)
 	}
-	if c.FetchPreapproved || c.StreamReply || c.DesignSave || c.AcpPreloadModelOnSetModel {
-		t.Fatalf("*bool round-trip failed: fetch=%v stream=%v design=%v acpPreload=%v", c.FetchPreapproved, c.StreamReply, c.DesignSave, c.AcpPreloadModelOnSetModel)
+	if c.FetchPreapproved || c.StreamReply || c.DesignSave || c.PlanTot || c.AcpPreloadModelOnSetModel {
+		t.Fatalf("*bool round-trip failed: fetch=%v stream=%v design=%v planTot=%v acpPreload=%v", c.FetchPreapproved, c.StreamReply, c.DesignSave, c.PlanTot, c.AcpPreloadModelOnSetModel)
 	}
 	if c.FetchWebRatePerSec != 8 || c.FetchWebRateBurst != 3 {
 		t.Fatalf("fetch web rate round-trip: got %d/%d", c.FetchWebRatePerSec, c.FetchWebRateBurst)

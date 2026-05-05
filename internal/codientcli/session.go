@@ -410,7 +410,25 @@ func (s *session) executeTurn(ctx context.Context, runner *agent.Runner, user op
 		streamTo = &spinStopWriter{w: streamTo, stop: stopSpinFn}
 	}
 
-	reply, newHist, streamed, runErr := runner.RunConversation(ctx, s.systemPrompt, s.history, user, streamTo)
+	var newHist []openai.ChatCompletionMessageParamUnion
+	var streamed bool
+	var runErr error
+
+	usePlanTot := s.mode == prompt.ModePlan && s.cfg.PlanTot &&
+		agent.PlanTotHeuristicMet(s.turn, s.lastReply)
+	if usePlanTot {
+		totClient := agent.NewPlanTotOpenAIClient(s.cfg)
+		var used bool
+		reply, newHist, streamed, used, runErr = agent.RunPlanModeTot(ctx, runner, totClient, s.systemPrompt, s.history, user, streamTo)
+		if runErr != nil {
+			return "", runErr
+		}
+		if !used {
+			reply, newHist, streamed, runErr = runner.RunConversation(ctx, s.systemPrompt, s.history, user, streamTo)
+		}
+	} else {
+		reply, newHist, streamed, runErr = runner.RunConversation(ctx, s.systemPrompt, s.history, user, streamTo)
+	}
 	if runErr != nil {
 		return "", runErr
 	}
@@ -2131,6 +2149,7 @@ func (s *session) printAllConfig() {
 	fmt.Fprintf(w, "\n  -- Plan --\n")
 	fmt.Fprintf(w, "  design_save_dir:       %s\n", s.cfg.DesignSaveDir)
 	fmt.Fprintf(w, "  design_save:           %v\n", s.cfg.DesignSave)
+	fmt.Fprintf(w, "  plan_tot:              %v\n", s.cfg.PlanTot)
 	fmt.Fprintf(w, "\n  -- Project --\n")
 	fmt.Fprintf(w, "  project_context:       %s\n", s.cfg.ProjectContext)
 	fmt.Fprintf(w, "\n  -- Tools --\n")
@@ -2266,6 +2285,8 @@ func (s *session) getConfigValue(key string) (string, bool) {
 		return s.cfg.DesignSaveDir, true
 	case "design_save":
 		return strconv.FormatBool(s.cfg.DesignSave), true
+	case "plan_tot":
+		return strconv.FormatBool(s.cfg.PlanTot), true
 	case "project_context":
 		return s.cfg.ProjectContext, true
 	case "ast_grep":
@@ -2485,6 +2506,12 @@ func (s *session) setConfig(key, value string) error {
 			return fmt.Errorf("design_save must be true or false")
 		}
 		s.cfg.DesignSave = b
+	case "plan_tot":
+		b, err := parseBool(value)
+		if err != nil {
+			return fmt.Errorf("plan_tot must be true or false")
+		}
+		s.cfg.PlanTot = b
 	case "project_context":
 		s.cfg.ProjectContext = value
 	case "ast_grep":

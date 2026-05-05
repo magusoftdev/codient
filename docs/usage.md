@@ -275,6 +275,13 @@ If the same **`name`** appears in both places, the **workspace** skill wins. The
 
 In **plan** mode, when the assistant's reply includes a **Ready to implement** section, codient saves the markdown under the workspace (by default `.codient/plans/<sessionID>/`). Plans are scoped to the session that created them. Filenames are `{task-slug}_{date-time}_{nanoseconds}.md` so runs never collide. The task slug comes from `-goal`, else `-task-file` basename, else the first line of your first message.
 
+### Parallel plan generation (Tree of Thoughts)
+
+On selected plan-mode turns, codient runs **three** full read-only agent passes in parallel, each with a small extra system emphasis (performance, readability/maintainability, idiomatic Go architecture), then a **Senior Principal Engineer**–style evaluator completion picks the best draft and returns that text (plus a two-sentence justification). The heuristic matches the **first** plan-mode user message in a session and the first user message **after** a blocking plan **Question** (a reply that ends with **Waiting for your answer**). Further back-and-forth in plan mode uses the usual single agent path. If any branch or the evaluator fails, codient **falls back** to one normal plan-mode turn.
+
+- Set **`plan_tot`** to **`false`** in `~/.codient/config.json` (or run **`/config plan_tot false`** in the REPL) to disable this pipeline entirely.
+- Your global **`max_concurrent`** still applies to normal turns; the ToT fan-out uses a dedicated client with at least **four** concurrent in-flight requests so three branches can overlap with the evaluator. Raising **`max_concurrent`** in `~/.codient/config.json` is still recommended if you run other parallel work against the same server.
+
 ## Sub-agents (task delegation)
 
 The agent has a **`delegate_task`** tool that spawns an isolated sub-agent to handle a self-contained task. This is always available — the model decides when delegation is useful (e.g. parallelizing codebase exploration across multiple areas).

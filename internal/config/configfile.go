@@ -88,6 +88,8 @@ type PersistentConfig struct {
 	// Plan save
 	DesignSaveDir string `json:"design_save_dir,omitempty"`
 	DesignSave    *bool  `json:"design_save,omitempty"`
+	// PlanTot: when false, disables parallel Tree-of-Thoughts plan generation (default true when omitted).
+	PlanTot *bool `json:"plan_tot,omitempty"`
 
 	// Project
 	ProjectContext string `json:"project_context,omitempty"`
@@ -298,6 +300,10 @@ func ConfigToPersistent(cfg *Config) *PersistentConfig {
 	if !cfg.AcpPreloadModelOnSetModel {
 		f := false
 		pc.AcpPreloadModelOnSetModel = &f
+	}
+	if !cfg.PlanTot {
+		f := false
+		pc.PlanTot = &f
 	}
 	pc.CostPerMTok = cfg.CostPerMTok
 	pc.HooksEnabled = cfg.HooksEnabled

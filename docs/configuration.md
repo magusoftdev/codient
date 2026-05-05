@@ -120,6 +120,7 @@ Run `/config` with no arguments to see all current values. `/config <key>` shows
 | **Plan** | | |
 | `design_save_dir` | Override directory for saved plans | `<workspace>/.codient/plans` |
 | `design_save` | Save plan-mode plans to disk | `true` |
+| `plan_tot` | Parallel Tree-of-Thoughts plan generation on selected plan-mode turns (see [usage](usage.md#parallel-plan-generation-tree-of-thoughts)) | `true` |
 | **Project** | | |
 | `project_context` | `off` to skip auto-injected project hints | *(empty)* |
 | **Tools** | | |

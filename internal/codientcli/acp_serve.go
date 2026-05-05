@@ -22,6 +22,7 @@ import (
 	"codient/internal/acpserver"
 	"codient/internal/agent"
 	"codient/internal/agentlog"
+	"codient/internal/assistout"
 	"codient/internal/config"
 	"codient/internal/mcpclient"
 	"codient/internal/openaiclient"
@@ -265,6 +266,7 @@ type acpChatSession struct {
 	systemPrompt  string
 	workspaceRoot string
 	modelID       string
+	lastPlanReply string // last assistant text in plan mode (for ToT heuristic)
 	cancelMu      sync.Mutex
 	cancelTurn    context.CancelFunc
 	// setModelMu serializes session/set_model (including preload) per session.
@@ -685,8 +687,27 @@ func (s *acpServer) handleSessionPrompt(ctx context.Context, params json.RawMess
 	r := s.newACPRunnerLocked(sess)
 
 	userMsg := openai.UserMessage(userText)
-	reply, newHist, _, runErr := r.RunConversation(promptCtx, sess.systemPrompt, sess.history, userMsg, cw)
+
+	var reply string
+	var newHist []openai.ChatCompletionMessageParamUnion
+	var runErr error
+
+	usePlanTot := s.mode == prompt.ModePlan && s.cfg.PlanTot &&
+		(len(sess.history) == 0 || assistout.ReplySignalsPlanWait(sess.lastPlanReply))
+	if usePlanTot {
+		totClient := agent.NewPlanTotOpenAIClient(s.cfg)
+		var used bool
+		reply, newHist, _, used, runErr = agent.RunPlanModeTot(promptCtx, r, totClient, sess.systemPrompt, sess.history, userMsg, cw)
+		if runErr == nil && !used {
+			reply, newHist, _, runErr = r.RunConversation(promptCtx, sess.systemPrompt, sess.history, userMsg, cw)
+		}
+	} else {
+		reply, newHist, _, runErr = r.RunConversation(promptCtx, sess.systemPrompt, sess.history, userMsg, cw)
+	}
 	sess.history = newHist
+	if s.mode == prompt.ModePlan && runErr == nil {
+		sess.lastPlanReply = assistout.PrepareAssistantText(reply, true)
+	}
 
 	if errors.Is(runErr, context.Canceled) {
 		_ = s.tr.WriteResult(id, map[string]any{"stopReason": "cancelled"})
