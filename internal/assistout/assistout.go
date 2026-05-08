@@ -115,8 +115,7 @@ func glamourStyle() []glamour.TermRendererOption {
 	}
 }
 
-func uintPtr(v uint) *uint    { return &v }
-func stringPtr(v string) *string { return &v }
+func uintPtr(v uint) *uint { return &v }
 
 // compactStyle returns a glamour StyleConfig based on the standard dark or
 // light theme but with spacing tightened for a chat viewport:

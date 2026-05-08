@@ -153,10 +153,6 @@ func (m *tuiModel) appendTranscriptEvent(ev agent.TranscriptEvent, delegate bool
 	if delegate {
 		prefix = "│ "
 	}
-	pw := max(16, m.mainViewportWidth()-2)
-	if pw < 16 {
-		pw = 16
-	}
 
 	flushStream := func() {
 		if m.inReasoningStream {
