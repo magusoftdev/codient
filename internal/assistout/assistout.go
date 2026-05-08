@@ -9,7 +9,10 @@ import (
 	"sync/atomic"
 
 	"github.com/charmbracelet/glamour"
+	"github.com/charmbracelet/glamour/ansi"
+	styles "github.com/charmbracelet/glamour/styles"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 	"golang.org/x/term"
 )
 
@@ -92,9 +95,56 @@ func PrepareAssistantText(text string, planMode bool) string {
 	return text
 }
 
+// glamourStyle returns glamour options for the correct theme. It avoids
+// glamour.WithAutoStyle which queries the terminal through the current file
+// descriptors — that breaks in TUI mode where stdout/stderr are pipes. Instead
+// we use the cached IsDarkBackground() / StdoutIsInteractive() which were
+// captured before the TUI redirect.
+//
+// Interactive sessions use a compact variant of the dark/light style: zero
+// document margin, tighter vertical spacing, and no code-block indent so the
+// rendered markdown fits a chat viewport without wasting horizontal space.
+func glamourStyle() []glamour.TermRendererOption {
+	if StdoutIsInteractive() {
+		style := compactStyle(IsDarkBackground())
+		return []glamour.TermRendererOption{glamour.WithStyles(style)}
+	}
+	return []glamour.TermRendererOption{
+		glamour.WithStandardStyle(styles.NoTTYStyle),
+		glamour.WithColorProfile(termenv.Ascii),
+	}
+}
+
+func uintPtr(v uint) *uint    { return &v }
+func stringPtr(v string) *string { return &v }
+
+// compactStyle returns a glamour StyleConfig based on the standard dark or
+// light theme but with spacing tightened for a chat viewport:
+//   - Document margin 0 (no side indent)
+//   - No extra blank lines wrapping the document
+//   - Code-block margin 0
+//   - Horizontal rule without extra blank lines
+func compactStyle(dark bool) ansi.StyleConfig {
+	var base ansi.StyleConfig
+	if dark {
+		base = styles.DarkStyleConfig
+	} else {
+		base = styles.LightStyleConfig
+	}
+
+	base.Document.Margin = uintPtr(0)
+	base.Document.BlockPrefix = ""
+	base.Document.BlockSuffix = "\n"
+	base.CodeBlock.Margin = uintPtr(0)
+	base.HorizontalRule.Format = "--------\n"
+
+	return base
+}
+
 // WriteAssistant writes the assistant reply. When useMarkdown is true, renders
-// GitHub-flavored markdown with colors and syntax-highlighted code blocks; otherwise
-// prints plain text (for pipes, logs, or when -plain / config plain is set).
+// GitHub-flavored markdown (glamour): ANSI-colored output on interactive terminals
+// and the TUI viewport; structured ASCII text when stdout is a pipe/redirect.
+// When useMarkdown is false, prints raw assistant text (for -plain / config plain).
 // When planMode is true, ensures a "## Question" heading before the wait line when missing
 // so terminals show a styled Question section (see InsertPlanQuestionHeading).
 func WriteAssistant(w io.Writer, text string, useMarkdown, planMode bool) error {
@@ -103,11 +153,12 @@ func WriteAssistant(w io.Writer, text string, useMarkdown, planMode bool) error 
 		_, err := fmt.Fprintln(w, text)
 		return err
 	}
-	r, err := glamour.NewTermRenderer(
-		glamour.WithAutoStyle(),
+	opts := glamourStyle()
+	opts = append(opts,
 		glamour.WithWordWrap(terminalWordWrap()),
 		glamour.WithEmoji(),
 	)
+	r, err := glamour.NewTermRenderer(opts...)
 	if err != nil {
 		_, err2 := fmt.Fprintln(w, text)
 		return err2

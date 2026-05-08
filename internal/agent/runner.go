@@ -148,6 +148,7 @@ func (r *Runner) RunConversation(ctx context.Context, system string, history []o
 	streamedFinal := false
 	consecutiveToolFails := 0
 	finalReplyNudgeSent := false
+	toolIntentNudgeSent := false
 	const maxConsecutiveToolFails = 3
 	var turnTools []string
 
@@ -222,18 +223,12 @@ func (r *Runner) RunConversation(ctx context.Context, system string, history []o
 			// is stuck and parsing more text tool calls will loop forever.
 			if toolCallSource != "" && consecutiveToolFails < maxConsecutiveToolFails && containsTextToolCalls(toolCallSource) {
 				if parsed := parseTextToolCalls(toolCallSource); len(parsed) > 0 {
-					if r.OnIntent != nil {
-						intent := strings.TrimSpace(stripTextToolCallFragments(toolCallSource))
-						if intent != "" {
-							r.OnIntent(intent)
-						} else if len(parsed) > 0 {
-							tc0 := parsed[0]
-							args0 := textToolCallArgsJSON(tc0.Args)
-							if s := syntheticIntentSentence(tc0.Name, args0); s != "" {
-								r.OnIntent(s)
-							}
-						}
+				if r.OnIntent != nil {
+					intent := strings.TrimSpace(stripTextToolCallFragments(toolCallSource))
+					if intent != "" {
+						r.OnIntent(intent)
 					}
+				}
 					assistantHistoryText := strings.TrimSpace(msg.Content)
 					if assistantHistoryText == "" {
 						assistantHistoryText = strings.TrimSpace(stripTextToolCallFragments(toolCallSource))
@@ -242,26 +237,13 @@ func (r *Runner) RunConversation(ctx context.Context, system string, history []o
 						msgs = append(msgs, openai.AssistantMessage(assistantHistoryText))
 					}
 
-					thinkingPrinted := false
-					if line := FormatThinkingProgressLine(r.ProgressPlain, r.ProgressMode, toolCallSource); line != "" {
-						r.emitProgress(&TranscriptEvent{
-							Kind:           TranscriptAssistantPreface,
-							AssistantProse: toolCallSource,
-							ThinkingFull:   FormatFullThinkingProse(toolCallSource),
-						})
-						thinkingPrinted = true
-					}
-					if !thinkingPrinted && len(parsed) > 0 {
-						tc0 := parsed[0]
-						args0 := textToolCallArgsJSON(tc0.Args)
-						if line := FormatSyntheticIntentThinkingLine(r.ProgressPlain, r.ProgressMode, tc0.Name, args0); line != "" {
-							r.emitProgress(&TranscriptEvent{
-								Kind:     TranscriptAssistantPreface,
-								ToolName: tc0.Name,
-								ToolArgs: args0,
-							})
-						}
-					}
+				if line := FormatThinkingProgressLine(r.ProgressPlain, r.ProgressMode, toolCallSource); line != "" {
+					r.emitProgress(&TranscriptEvent{
+						Kind:           TranscriptAssistantPreface,
+						AssistantProse: toolCallSource,
+						ThinkingFull:   FormatFullThinkingProse(toolCallSource),
+					})
+				}
 
 					type toolResult struct {
 						name     string
@@ -378,6 +360,16 @@ func (r *Runner) RunConversation(ctx context.Context, system string, history []o
 				if containsTextToolCalls(content) {
 					content = stripTextToolCallFragments(content)
 				}
+				// Local models sometimes emit planning prose with finish_reason=stop and no tool_calls.
+				// Nudge once so the next completion can emit native tool_calls (and/or XML tools).
+				if len(apiTools) > 0 && !toolsDisabled && len(turnTools) == 0 && !toolIntentNudgeSent &&
+					shouldNudgeIncompleteToolIntent(content) {
+					toolIntentNudgeSent = true
+					msgs = append(msgs, openai.AssistantMessage(content))
+					msgs = append(msgs, openai.UserMessage(toolIntentContinueMessage))
+					r.emitProgress(&TranscriptEvent{Kind: TranscriptStatus, Text: "requesting tool calls…"})
+					continue
+				}
 				if r.PostReplyCheck != nil {
 					if inject := r.PostReplyCheck(ctx, PostReplyCheckInfo{
 						Reply:     content,
@@ -424,7 +416,6 @@ func (r *Runner) RunConversation(ctx context.Context, system string, history []o
 			return "", nil, false, fmt.Errorf("model returned no content and no tool calls (finish_reason=%s)", fr)
 		}
 
-		intentEmitted := false
 		if r.OnIntent != nil {
 			intent := strings.TrimSpace(msg.Content)
 			if intent == "" {
@@ -433,7 +424,6 @@ func (r *Runner) RunConversation(ctx context.Context, system string, history []o
 			}
 			if intent != "" {
 				r.OnIntent(intent)
-				intentEmitted = true
 			}
 		}
 		msgs = append(msgs, msg.ToParam())
@@ -453,7 +443,6 @@ func (r *Runner) RunConversation(ctx context.Context, system string, history []o
 			calls = append(calls, v)
 		}
 
-		thinkingPrinted := false
 		if strings.TrimSpace(msg.Content) != "" {
 			if line := FormatThinkingProgressLine(r.ProgressPlain, r.ProgressMode, msg.Content); line != "" {
 				r.emitProgress(&TranscriptEvent{
@@ -461,25 +450,6 @@ func (r *Runner) RunConversation(ctx context.Context, system string, history []o
 					AssistantProse: msg.Content,
 					ThinkingFull:   FormatFullThinkingProse(msg.Content),
 				})
-				thinkingPrinted = true
-			}
-		}
-		if len(calls) > 0 {
-			v0 := calls[0]
-			args0 := json.RawMessage(v0.Function.Arguments)
-			if !thinkingPrinted {
-				if line := FormatSyntheticIntentThinkingLine(r.ProgressPlain, r.ProgressMode, v0.Function.Name, args0); line != "" {
-					r.emitProgress(&TranscriptEvent{
-						Kind:     TranscriptAssistantPreface,
-						ToolName: v0.Function.Name,
-						ToolArgs: args0,
-					})
-				}
-			}
-			if r.OnIntent != nil && !intentEmitted {
-				if s := syntheticIntentSentence(v0.Function.Name, args0); s != "" {
-					r.OnIntent(s)
-				}
 			}
 		}
 

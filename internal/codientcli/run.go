@@ -382,12 +382,25 @@ func Run() int {
 			tuiCtx, tuiCancel := context.WithCancel(context.Background())
 			defer tuiCancel()
 
-			ts, err := initTUI(string(agentMode), cfg.Plain)
+			ts, err := initTUI(string(agentMode), cfg.Plain, s.interruptTurn)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "tui: %v\n", err)
-				replCtx, replCancel := signal.NotifyContext(context.Background(), os.Interrupt)
-				defer replCancel()
-				return s.runSession(replCtx, *promptFlag, *newSession)
+				fbCtx, fbCancel := context.WithCancel(context.Background())
+				defer fbCancel()
+				fbSig := make(chan os.Signal, 1)
+				signal.Notify(fbSig, os.Interrupt)
+				defer signal.Stop(fbSig)
+				go func() {
+					for range fbSig {
+						if !s.interruptTurn() {
+							signal.Stop(fbSig)
+							p, _ := os.FindProcess(os.Getpid())
+							p.Signal(os.Interrupt)
+							return
+						}
+					}
+				}()
+				return s.runSession(fbCtx, *promptFlag, *newSession)
 			}
 			s.tui = ts
 			// Re-resolve progressOut now that os.Stderr points to the TUI pipe.
@@ -431,8 +444,25 @@ func Run() int {
 			return code
 		}
 
-		replCtx, replCancel := signal.NotifyContext(context.Background(), os.Interrupt)
+		replCtx, replCancel := context.WithCancel(context.Background())
 		defer replCancel()
+
+		sigCh := make(chan os.Signal, 1)
+		signal.Notify(sigCh, os.Interrupt)
+		defer signal.Stop(sigCh)
+		go func() {
+			for range sigCh {
+				if !s.interruptTurn() {
+					// No turn in progress — restore default signal
+					// handling and re-raise so the process exits.
+					signal.Stop(sigCh)
+					p, _ := os.FindProcess(os.Getpid())
+					p.Signal(os.Interrupt)
+					return
+				}
+			}
+		}()
+
 		return s.runSession(replCtx, *promptFlag, *newSession)
 	}
 
@@ -492,11 +522,11 @@ func runBareStream(ctx context.Context, client *openaiclient.Client, workspace, 
 	return 0
 }
 
+// assistantOutputRich selects markdown rendering (glamour) for assistant replies.
+// It tracks -plain / config plain only: markdown is used whenever styling is enabled,
+// including when stdout is piped or not a TTY (assistout.WriteAssistant picks a no-TTY style).
 func assistantOutputRich(plain bool) bool {
-	if plain {
-		return false
-	}
-	return assistout.StdoutIsInteractive()
+	return !plain
 }
 
 func resolveProgressOut(progressCfg, logRequested bool) io.Writer {
@@ -525,6 +555,13 @@ func streamWriterForTurn(streamReplyVal bool, stdoutTTY bool, mode prompt.Mode, 
 		return nil
 	}
 	if mode == prompt.ModePlan && richAssistant && assistout.ReplySignalsPlanWait(lastAssistantReply) {
+		return nil
+	}
+	// Glamour renders the full reply once at end of the turn (finishAssistantTurn). Streaming
+	// assistant tokens to stdout sets streamed=true and skips glamour, leaving raw markdown on
+	// the terminal. For styled (-plain off) sessions, disable stdout streaming so the final
+	// output is proper markdown. Use -plain to stream raw assistant text as it arrives.
+	if richAssistant {
 		return nil
 	}
 	return os.Stdout

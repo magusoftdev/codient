@@ -30,6 +30,62 @@ func TestWriteAssistant_Plain(t *testing.T) {
 	}
 }
 
+func TestWriteAssistant_Markdown_GlamourTransforms(t *testing.T) {
+	var buf bytes.Buffer
+	in := "# Report\n\nIntro.\n\n- one\n- two\n\n```\ncode\n```"
+	err := WriteAssistant(&buf, in, true, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := buf.String()
+	if strings.TrimSpace(s) == strings.TrimSpace(in) {
+		t.Fatalf("expected glamour output, got unchanged markdown:\n%s", s)
+	}
+	if !strings.Contains(s, "Intro") || !strings.Contains(s, "one") {
+		t.Fatalf("missing expected content after render: %q", s)
+	}
+}
+
+func TestWriteAssistant_Markdown_GlamourTransforms_TUIOverride(t *testing.T) {
+	SetTUIOverride(NewTUIOverrideValues(true, true, 80, true))
+	defer SetTUIOverride(nil)
+
+	var buf bytes.Buffer
+	in := "## Summary\n\ncodient is **well-engineered**.\n\n- item one\n- item two"
+	err := WriteAssistant(&buf, in, true, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := buf.String()
+	if strings.Contains(s, "**well-engineered**") {
+		t.Fatalf("bold markers should be stripped by glamour, got:\n%s", s)
+	}
+	if !strings.Contains(s, "well-engineered") {
+		t.Fatalf("bold text content missing after render: %q", s)
+	}
+	if strings.HasPrefix(strings.TrimSpace(s), "## Summary") {
+		t.Fatalf("heading marker should be transformed by glamour, got:\n%s", s)
+	}
+}
+
+func TestWriteAssistant_Markdown_GlamourTransforms_NoTTY(t *testing.T) {
+	SetTUIOverride(nil)
+
+	var buf bytes.Buffer
+	in := "## Heading\n\n**Bold text** here.\n\n- bullet"
+	err := WriteAssistant(&buf, in, true, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := buf.String()
+	if strings.TrimSpace(s) == strings.TrimSpace(in) {
+		t.Fatalf("expected glamour to transform, got unchanged:\n%s", s)
+	}
+	if !strings.Contains(s, "Bold text") || !strings.Contains(s, "bullet") {
+		t.Fatalf("missing expected content after render: %q", s)
+	}
+}
+
 func TestWriteAssistant_EmptyPlain(t *testing.T) {
 	var buf bytes.Buffer
 	if err := WriteAssistant(&buf, "", false, false); err != nil {

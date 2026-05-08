@@ -297,7 +297,7 @@ You are connected to **Codient Unity** over the Agent Client Protocol. **unity_*
 	if mode == ModeBuild {
 		b.WriteString(`
 
-- **unity_apply_actions** applies structured scene edits. The user must **confirm** in a Unity dialog before changes run. Use **schemaVersion** 1 and a JSON **actions** array; each action has **op** plus fields for that operation.`)
+- **unity_apply_actions** applies structured scene edits and can create prefab assets. The user must **confirm** in a Unity dialog before changes run. Use **schemaVersion** 1 and a JSON **actions** array; each action has **op** plus fields for that operation (including **create_prefab** with **assetPath** under **Assets/** ending in **.prefab** and optional **rootName** for the root GameObject).`)
 	} else {
 		b.WriteString(`
 
@@ -467,7 +467,7 @@ func sectionPerToolNotes(p Params) string {
 		b.WriteString("- **unity_summarize_project_packages**: No parameters. Bounded summary of package manifest and asmdef paths.\n")
 	}
 	if _, ok := set["unity_apply_actions"]; ok {
-		b.WriteString("- **unity_apply_actions**: **schemaVersion** must be 1. **actions** is an array of objects with **op** (e.g. create_empty_gameobject, destroy_gameobject, set_gameobject_name, set_parent, add_component, set_component_property). The Unity Editor prompts the user before applying.\n")
+		b.WriteString("- **unity_apply_actions**: **schemaVersion** must be 1. **actions** is an array of objects with **op** (e.g. create_empty_gameobject, create_prefab, destroy_gameobject, set_gameobject_name, set_parent, add_component, set_component_property). **create_prefab** requires **assetPath** (**Assets/.../Name.prefab**) and optional **rootName**. The Unity Editor prompts the user before applying.\n")
 	}
 	if _, ok := set["echo"]; ok {
 		b.WriteString("- **echo** / **get_time**: Utility tools for sanity checks.\n")

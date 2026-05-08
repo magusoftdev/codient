@@ -964,6 +964,104 @@ func TestRunner_RequestsFinalResponseWhenModelReturnsEmpty(t *testing.T) {
 	}
 }
 
+func TestRunner_NudgesIntentOnlyProseThenRunsTools(t *testing.T) {
+	intentOnly := `{
+  "id": "a",
+  "object": "chat.completion",
+  "created": 1,
+  "model": "m",
+  "choices": [{
+    "index": 0,
+    "message": {
+      "role": "assistant",
+      "content": "Let me search the codebase for that symbol."
+    },
+    "finish_reason": "stop"
+  }]
+}`
+	toolRound := `{
+  "id": "b",
+  "object": "chat.completion",
+  "created": 2,
+  "model": "m",
+  "choices": [{
+    "index": 0,
+    "message": {
+      "role": "assistant",
+      "content": "",
+      "tool_calls": [{
+        "id": "call_1",
+        "type": "function",
+        "function": {
+          "name": "echo",
+          "arguments": "{\"message\":\"hi\"}"
+        }
+      }]
+    },
+    "finish_reason": "tool_calls"
+  }]
+}`
+	final := `{
+  "id": "c",
+  "object": "chat.completion",
+  "created": 3,
+  "model": "m",
+  "choices": [{
+    "index": 0,
+    "message": {
+      "role": "assistant",
+      "content": "Echo said hi."
+    },
+    "finish_reason": "stop"
+  }]
+}`
+	llm := &mockLLM{model: "m", script: []string{intentOnly, toolRound, final}}
+	reg := tools.NewRegistry()
+	reg.Register(mustEchoTool(t))
+	r := &Runner{LLM: llm, Cfg: &config.Config{}, Tools: reg}
+	out, _, err := r.Run(context.Background(), "", openai.UserMessage("find it"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != "Echo said hi." {
+		t.Fatalf("got %q", out)
+	}
+	if llm.calls != 3 {
+		t.Fatalf("expected 3 llm calls, got %d", llm.calls)
+	}
+}
+
+func TestRunner_NoToolIntentNudgeForDirectAnswer(t *testing.T) {
+	direct := `{
+  "id": "x",
+  "object": "chat.completion",
+  "created": 1,
+  "model": "m",
+  "choices": [{
+    "index": 0,
+    "message": {
+      "role": "assistant",
+      "content": "Use a larger buffer for the ring."
+    },
+    "finish_reason": "stop"
+  }]
+}`
+	llm := &mockLLM{model: "m", script: []string{direct}}
+	reg := tools.NewRegistry()
+	reg.Register(mustEchoTool(t))
+	r := &Runner{LLM: llm, Cfg: &config.Config{}, Tools: reg}
+	out, _, err := r.Run(context.Background(), "", openai.UserMessage("why fail?"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out != "Use a larger buffer for the ring." {
+		t.Fatalf("got %q", out)
+	}
+	if llm.calls != 1 {
+		t.Fatalf("expected 1 llm call, got %d", llm.calls)
+	}
+}
+
 func TestRunner_ParsesToolCallsFromReasoningContentWhenContentEmpty(t *testing.T) {
 	withReasoningToolCall := `{
   "id": "x",
@@ -1068,7 +1166,7 @@ func TestRunner_EmitsIntentForToolRound(t *testing.T) {
 	}
 }
 
-func TestRunner_SyntheticIntentWhenContentEmpty(t *testing.T) {
+func TestRunner_NoSyntheticIntentWhenContentEmpty(t *testing.T) {
 	toolRound := `{
   "id": "x",
   "object": "chat.completion",
@@ -1122,11 +1220,8 @@ func TestRunner_SyntheticIntentWhenContentEmpty(t *testing.T) {
 	if out != "done" {
 		t.Fatalf("got %q", out)
 	}
-	if gotIntent == "" {
-		t.Fatal("expected synthetic intent when model content is empty")
-	}
-	if !strings.Contains(gotIntent, "main.go") {
-		t.Fatalf("synthetic intent should mention the file; got %q", gotIntent)
+	if gotIntent != "" {
+		t.Fatalf("no synthetic intent expected when model provides no prose; got %q", gotIntent)
 	}
 }
 
@@ -1221,10 +1316,11 @@ func TestRunner_EmitsIntentFromReasoningContent(t *testing.T) {
 	}
 }
 
-func TestRunner_SyntheticIntentForTextToolCallPath(t *testing.T) {
+func TestRunner_NoSyntheticIntentForTextToolCallPath(t *testing.T) {
 	// Simulates models like Qwen3.5 that embed XML tool calls in
 	// reasoning_content with no natural language surrounding them.
-	// The runner must generate a synthetic intent via OnIntent.
+	// No synthetic intent should be fabricated — only real model prose
+	// should be surfaced as intent.
 	toolRound := `{
   "id": "x",
   "object": "chat.completion",
@@ -1271,11 +1367,8 @@ func TestRunner_SyntheticIntentForTextToolCallPath(t *testing.T) {
 	if out != "Here is the file." {
 		t.Fatalf("got %q", out)
 	}
-	if gotIntent == "" {
-		t.Fatal("expected synthetic intent for text tool call path, got empty")
-	}
-	if !strings.Contains(strings.ToLower(gotIntent), "main.go") {
-		t.Fatalf("intent = %q, expected mention of main.go", gotIntent)
+	if gotIntent != "" {
+		t.Fatalf("no synthetic intent expected for text tool call path; got %q", gotIntent)
 	}
 }
 

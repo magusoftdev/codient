@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -99,6 +100,9 @@ type session struct {
 	// replPromptMu serializes the REPL prompt (no trailing newline) and async stderr lines
 	// (e.g. semantic index completion) so messages do not append to the same line as the prompt.
 	replPromptMu sync.Mutex
+	// promptMu guards s.systemPrompt and coordinated updates to s.registry so background
+	// repo-map completion cannot race with executeTurn or context estimation.
+	promptMu sync.RWMutex
 	// replSkipFirstLoopPrompt is set when replAsyncStderrNote redraws the prompt before the first
 	// readUserInput; the first loop iteration skips a duplicate "\n" + prompt pair.
 	replSkipFirstLoopPrompt bool
@@ -107,6 +111,12 @@ type session struct {
 	// immediately, avoiding visual corruption of the user's input line.
 	replInputActive   bool
 	pendingAsyncNotes []string
+
+	// turnCancel cancels the context for the currently executing agent turn.
+	// Non-nil only while executeTurn is in flight; reset to nil when the turn
+	// completes. Protected by turnCancelMu.
+	turnCancel   context.CancelFunc
+	turnCancelMu sync.Mutex
 
 	codeIndex *codeindex.Index // semantic search index; nil when embedding_model is not configured
 	repoMap   *repomap.Map     // structural repo map; nil when repo_map_tokens is -1
@@ -217,7 +227,26 @@ func (s *session) loadSkillsCatalog() {
 	s.skillsCatalog = cat
 }
 
+func (s *session) setRegistryAndPrompt(reg *tools.Registry, mode prompt.Mode, rm *repomap.Map) {
+	s.promptMu.Lock()
+	defer s.promptMu.Unlock()
+	s.registry = reg
+	s.systemPrompt = buildAgentSystemPrompt(s.cfg, reg, mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory, s.skillsCatalog, rm)
+}
+
+// installRegistry assigns a newly built registry and rebuilds the system prompt using s.mode and s.repoMap.
+func (s *session) installRegistry(reg *tools.Registry) {
+	s.setRegistryAndPrompt(reg, s.mode, s.repoMap)
+}
+
+// installRegistryForMode is like installRegistry but uses an explicit mode (e.g. before s.mode is updated).
+func (s *session) installRegistryForMode(reg *tools.Registry, mode prompt.Mode) {
+	s.setRegistryAndPrompt(reg, mode, s.repoMap)
+}
+
 func (s *session) rebuildSystemPromptWithRepoMap(rm *repomap.Map) {
+	s.promptMu.Lock()
+	defer s.promptMu.Unlock()
 	s.systemPrompt = buildAgentSystemPrompt(s.cfg, s.registry, s.mode, s.userSystem, s.repoInstructions, s.projectContext, s.memory, s.skillsCatalog, rm)
 }
 
@@ -344,10 +373,42 @@ func (s *session) delegateTaskFn() tools.DelegateRunner {
 	}
 }
 
+// interruptTurn cancels the currently executing agent turn, if any.
+// Returns true if a turn was in progress and was cancelled.
+func (s *session) interruptTurn() bool {
+	s.turnCancelMu.Lock()
+	defer s.turnCancelMu.Unlock()
+	if s.turnCancel != nil {
+		s.turnCancel()
+		return true
+	}
+	return false
+}
+
+// isRunning reports whether an agent turn is currently in progress.
+func (s *session) isRunning() bool {
+	s.turnCancelMu.Lock()
+	defer s.turnCancelMu.Unlock()
+	return s.turnCancel != nil
+}
+
 func (s *session) executeTurn(ctx context.Context, runner *agent.Runner, user openai.ChatCompletionMessageParamUnion) (reply string, err error) {
 	if err := s.cfg.RequireModel(); err != nil {
 		return "", err
 	}
+
+	turnCtx, turnCancel := context.WithCancel(ctx)
+	defer func() {
+		turnCancel()
+		s.turnCancelMu.Lock()
+		s.turnCancel = nil
+		s.turnCancelMu.Unlock()
+	}()
+	s.turnCancelMu.Lock()
+	s.turnCancel = turnCancel
+	s.turnCancelMu.Unlock()
+	ctx = turnCtx
+
 	if s.hooksMgr != nil {
 		s.hooksMgr.NextTurn()
 		up, herr := s.hooksMgr.RunUserPromptSubmit(ctx, agent.UserMessageText(user))
@@ -422,20 +483,24 @@ func (s *session) executeTurn(ctx context.Context, runner *agent.Runner, user op
 	var streamed bool
 	var runErr error
 
+	s.promptMu.RLock()
+	sysPrompt := s.systemPrompt
+	s.promptMu.RUnlock()
+
 	usePlanTot := s.mode == prompt.ModePlan && s.cfg.PlanTot &&
 		agent.PlanTotHeuristicMet(s.turn, s.lastReply)
 	if usePlanTot {
 		totClient := agent.NewPlanTotOpenAIClient(s.cfg)
 		var used bool
-		reply, newHist, streamed, used, runErr = agent.RunPlanModeTot(ctx, runner, totClient, s.systemPrompt, s.history, user, streamTo)
+		reply, newHist, streamed, used, runErr = agent.RunPlanModeTot(ctx, runner, totClient, sysPrompt, s.history, user, streamTo)
 		if runErr != nil {
 			return "", runErr
 		}
 		if !used {
-			reply, newHist, streamed, runErr = runner.RunConversation(ctx, s.systemPrompt, s.history, user, streamTo)
+			reply, newHist, streamed, runErr = runner.RunConversation(ctx, sysPrompt, s.history, user, streamTo)
 		}
 	} else {
-		reply, newHist, streamed, runErr = runner.RunConversation(ctx, s.systemPrompt, s.history, user, streamTo)
+		reply, newHist, streamed, runErr = runner.RunConversation(ctx, sysPrompt, s.history, user, streamTo)
 	}
 	if runErr != nil {
 		return "", runErr
@@ -775,8 +840,7 @@ func (s *session) applyStoredSessionState(existing *sessionstore.SessionState) e
 	s.loadPlanFromDisk()
 	s.loadSkillsCatalog()
 	s.todos = sessionTodosToTools(existing.Todos)
-	s.registry = buildRegistry(s.cfg, s.mode, s, s.memOpts)
-	s.rebuildSystemPrompt()
+	s.installRegistry(buildRegistry(s.cfg, s.mode, s, s.memOpts))
 	s.syncTodosToTUI()
 	return nil
 }
@@ -901,7 +965,9 @@ func (s *session) runSingleTurn(ctx context.Context, user string, extra []imageu
 		if herr != nil {
 			fmt.Fprintf(os.Stderr, "codient: hooks SessionStart: %v\n", herr)
 		} else if strings.TrimSpace(add) != "" {
+			s.promptMu.Lock()
 			s.systemPrompt += "\n\n# Hook context (SessionStart)\n" + add
+			s.promptMu.Unlock()
 		}
 	}
 	rawUser := user
@@ -989,8 +1055,7 @@ func (s *session) runSession(ctx context.Context, initialPrompt string, newSessi
 				mode, modeErr := prompt.ParseMode(existing.Mode)
 				if modeErr == nil && mode != s.mode {
 					s.setMode(mode)
-					s.registry = buildRegistry(s.cfg, mode, s, s.memOpts)
-					s.rebuildSystemPrompt()
+					s.installRegistryForMode(buildRegistry(s.cfg, mode, s, s.memOpts), mode)
 				}
 				if existing.PlanPhase != "" {
 					s.planPhase = planstore.Phase(existing.PlanPhase)
@@ -1044,16 +1109,14 @@ func (s *session) runSession(ctx context.Context, initialPrompt string, newSessi
 	}
 	s.scanner = sc
 	resolveAstGrep(s.cfg, sc)
-	s.registry = buildRegistry(s.cfg, s.mode, s, s.memOpts)
 	s.loadSkillsCatalog()
-	s.rebuildSystemPrompt()
+	s.installRegistry(buildRegistry(s.cfg, s.mode, s, s.memOpts))
 
 	if strings.TrimSpace(s.cfg.Model) == "" {
 		s.runSetupWizard(ctx, sc)
 		s.client = openaiclient.New(s.cfg)
-		s.registry = buildRegistry(s.cfg, s.mode, s, s.memOpts)
 		s.loadSkillsCatalog()
-		s.rebuildSystemPrompt()
+		s.installRegistry(buildRegistry(s.cfg, s.mode, s, s.memOpts))
 	}
 
 	s.probeAndSetContext(ctx)
@@ -1067,7 +1130,9 @@ func (s *session) runSession(ctx context.Context, initialPrompt string, newSessi
 		if herr != nil {
 			fmt.Fprintf(os.Stderr, "codient: hooks SessionStart: %v\n", herr)
 		} else if strings.TrimSpace(add) != "" {
+			s.promptMu.Lock()
 			s.systemPrompt += "\n\n# Hook context (SessionStart)\n" + add
+			s.promptMu.Unlock()
 		}
 	}
 
@@ -1137,12 +1202,18 @@ func (s *session) runSession(ctx context.Context, initialPrompt string, newSessi
 		s.turn++
 		reply, err := s.executeTurn(ctx, runner, userMsg)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "agent: %v\n", err)
-			return 1
+			if isInterruptErr(err) {
+				fmt.Fprintf(os.Stderr, "\ncodient: interrupted\n")
+			} else {
+				fmt.Fprintf(os.Stderr, "agent: %v\n", err)
+				return 1
+			}
 		}
-		s.pushUndoIfChanged(preModified, preUntracked, histLen, commitLine)
-		maybeSaveDesign(os.Stderr, ws, s.designSaveDir, s.sessionID, s.mode, reply, s.taskSlug, s.cfg.DesignSave)
-		s.lastReply = assistout.PrepareAssistantText(reply, s.mode == prompt.ModePlan)
+		if err == nil {
+			s.pushUndoIfChanged(preModified, preUntracked, histLen, commitLine)
+			maybeSaveDesign(os.Stderr, ws, s.designSaveDir, s.sessionID, s.mode, reply, s.taskSlug, s.cfg.DesignSave)
+			s.lastReply = assistout.PrepareAssistantText(reply, s.mode == prompt.ModePlan)
+		}
 		s.autoSave()
 		s.maybeAutoCompact(ctx)
 		s.showGitDiffIfBuild()
@@ -1163,7 +1234,11 @@ func (s *session) runSession(ctx context.Context, initialPrompt string, newSessi
 			break
 		}
 		if s.tui != nil && line != "" {
-			fmt.Fprintf(os.Stderr, "\n%s%s\n", assistout.SessionPrompt(s.cfg.Plain, string(s.mode)), line)
+			if trimmed := strings.TrimSpace(line); strings.HasPrefix(trimmed, "/") {
+				fmt.Fprintf(os.Stderr, "\n%s%s\n", assistout.SessionPrompt(s.cfg.Plain, string(s.mode)), line)
+			} else {
+				s.tui.prog.Send(tuiUserPromptMsg(line))
+			}
 		}
 		if line == "" {
 			continue
@@ -1205,17 +1280,26 @@ func (s *session) runSession(ctx context.Context, initialPrompt string, newSessi
 		s.turn++
 		reply, err := s.executeTurn(ctx, runner, userMsg)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "agent: %v\n", err)
-			return 1
+			if isInterruptErr(err) {
+				fmt.Fprintf(os.Stderr, "\ncodient: interrupted\n")
+			} else if errors.Is(err, context.Canceled) {
+				// Parent context cancelled (e.g. second Ctrl+C in plain mode) — exit.
+				return 0
+			} else {
+				fmt.Fprintf(os.Stderr, "agent: %v\n", err)
+				return 1
+			}
 		}
-		s.pushUndoIfChanged(preModified, preUntracked, histLen, commitLine)
-		maybeSaveDesign(os.Stderr, ws, s.designSaveDir, s.sessionID, s.mode, reply, s.taskSlug, s.cfg.DesignSave)
-		s.lastReply = assistout.PrepareAssistantText(reply, s.mode == prompt.ModePlan)
+		if err == nil {
+			s.pushUndoIfChanged(preModified, preUntracked, histLen, commitLine)
+			maybeSaveDesign(os.Stderr, ws, s.designSaveDir, s.sessionID, s.mode, reply, s.taskSlug, s.cfg.DesignSave)
+			s.lastReply = assistout.PrepareAssistantText(reply, s.mode == prompt.ModePlan)
+		}
 		s.autoSave()
 		s.maybeAutoCompact(ctx)
 		s.showGitDiffIfBuild()
 
-		if s.mode == prompt.ModePlan {
+		if err == nil && s.mode == prompt.ModePlan {
 			designText := assistout.PrepareAssistantText(reply, true)
 			s.updatePlanFromReply(designText, line)
 			if designstore.LooksLikeReadyToImplement(designText) {
@@ -1433,6 +1517,7 @@ func (s *session) buildSlashCommands(ctx context.Context, sc *bufio.Scanner) *sl
 		Run: func(string) error {
 			fmt.Fprint(os.Stderr, cmds.Help())
 			fmt.Fprint(os.Stderr, "\nTip: end a line with \\ for multiline input. Pasting multiline text is also supported.\n")
+			fmt.Fprint(os.Stderr, "Ctrl+C while agent is working cancels the current turn; Ctrl+C at the prompt exits.\n")
 			fmt.Fprint(os.Stderr, "Images: /image path.png attaches to your next message; or use @image:path in text; or codient -image path.png …\n")
 			return nil
 		},
@@ -1506,9 +1591,8 @@ func (s *session) buildSlashCommands(ctx context.Context, sc *bufio.Scanner) *sl
 		Run: func(string) error {
 			s.runSetupWizard(ctx, sc)
 			s.client = openaiclient.New(s.cfg)
-			s.registry = buildRegistry(s.cfg, s.mode, s, s.memOpts)
 			s.loadSkillsCatalog()
-			s.rebuildSystemPrompt()
+			s.installRegistry(buildRegistry(s.cfg, s.mode, s, s.memOpts))
 			s.cfg.ContextWindowTokens = 0
 			s.probeAndSetContext(ctx)
 			return nil
@@ -1596,12 +1680,13 @@ func (s *session) buildSlashCommands(ctx context.Context, sc *bufio.Scanner) *sl
 			s.todos = nil
 			s.todosMu.Unlock()
 			s.syncTodosToTUI()
+			s.loadSkillsCatalog()
 			if len(s.cfg.ExecAllowlist) > 0 {
 				s.execAllow = tools.NewSessionExecAllow(s.cfg.ExecAllowlist)
-				s.registry = buildRegistry(s.cfg, s.mode, s, s.memOpts)
+				s.installRegistry(buildRegistry(s.cfg, s.mode, s, s.memOpts))
+			} else {
+				s.rebuildSystemPrompt()
 			}
-			s.loadSkillsCatalog()
-			s.rebuildSystemPrompt()
 			s.captureGitSessionState(s.cfg.EffectiveWorkspace())
 			fmt.Fprintf(os.Stderr, "codient: new session %s\n", s.sessionID)
 			fmt.Fprintf(os.Stderr, "%s\n", assistout.ModeHint(s.cfg.Plain, string(s.mode)))
@@ -1754,8 +1839,7 @@ func (s *session) buildSlashCommands(ctx context.Context, sc *bufio.Scanner) *sl
 			}
 			s.cfg.Workspace = path
 			s.projectContext = projectinfo.Detect(s.cfg.EffectiveWorkspace())
-			s.registry = buildRegistry(s.cfg, s.mode, s, s.memOpts)
-			s.rebuildSystemPrompt()
+			s.installRegistry(buildRegistry(s.cfg, s.mode, s, s.memOpts))
 			s.captureGitSessionState(s.cfg.EffectiveWorkspace())
 			s.warnIfNotGitRepo()
 			fmt.Fprintf(os.Stderr, "codient: workspace set to %s\n", path)
@@ -2059,8 +2143,7 @@ func (s *session) handleConfig(ctx context.Context, args string) error {
 
 	switch key {
 	case "sandbox_mode", "sandbox_ro_paths", "sandbox_container_image", "exec_env_passthrough":
-		s.registry = buildRegistry(s.cfg, s.mode, s, s.memOpts)
-		s.rebuildSystemPrompt()
+		s.installRegistry(buildRegistry(s.cfg, s.mode, s, s.memOpts))
 	case "model", "base_url", "api_key", "max_concurrent":
 		s.client = openaiclient.New(s.cfg)
 		s.rebuildSystemPrompt()
@@ -2071,8 +2154,7 @@ func (s *session) handleConfig(ctx context.Context, args string) error {
 	case "fetch_allow_hosts", "fetch_preapproved", "fetch_max_bytes", "fetch_timeout_sec",
 		"fetch_web_rate_per_sec", "fetch_web_rate_burst",
 		"search_max_results":
-		s.registry = buildRegistry(s.cfg, s.mode, s, s.memOpts)
-		s.rebuildSystemPrompt()
+		s.installRegistry(buildRegistry(s.cfg, s.mode, s, s.memOpts))
 	case "autocheck_cmd", "lint_cmd", "test_cmd":
 		s.rebuildSystemPrompt()
 	case "embedding_model":
@@ -2524,8 +2606,7 @@ func (s *session) setConfig(key, value string) error {
 		s.cfg.ProjectContext = value
 	case "ast_grep":
 		s.cfg.AstGrep = value
-		s.registry = buildRegistry(s.cfg, s.mode, s, s.memOpts)
-		s.rebuildSystemPrompt()
+		s.installRegistry(buildRegistry(s.cfg, s.mode, s, s.memOpts))
 	case "embedding_model":
 		s.cfg.EmbeddingModel = value
 	case "repo_map_tokens":
@@ -2715,7 +2796,7 @@ func computeUndoEntry(preModified, preUntracked, postModified, postUntracked []s
 }
 
 // startCodeIndex launches background indexing if an embedding model is configured.
-// After the index is built, the registry and system prompt are rebuilt to include semantic_search.
+// semantic_search is registered with the new index; Query blocks until the initial build finishes.
 func (s *session) startCodeIndex(ctx context.Context) {
 	model := strings.TrimSpace(s.cfg.EmbeddingModel)
 	ws := s.cfg.EffectiveWorkspace()
@@ -2723,8 +2804,7 @@ func (s *session) startCodeIndex(ctx context.Context) {
 		return
 	}
 	s.codeIndex = codeindex.New(ws, s.client, model)
-	s.registry = buildRegistry(s.cfg, s.mode, s, s.memOpts)
-	s.rebuildSystemPrompt()
+	s.installRegistry(buildRegistry(s.cfg, s.mode, s, s.memOpts))
 	fmt.Fprintf(os.Stderr, "codient: indexing workspace for semantic search...\n")
 	go func() {
 		s.codeIndex.BuildOrUpdate(ctx)
@@ -2746,14 +2826,12 @@ func (s *session) startRepoMap(ctx context.Context) {
 	}
 	if s.cfg.RepoMapTokens < 0 {
 		s.repoMap = nil
-		s.registry = buildRegistry(s.cfg, s.mode, s, s.memOpts)
-		s.rebuildSystemPromptWithRepoMap(nil)
+		s.installRegistry(buildRegistry(s.cfg, s.mode, s, s.memOpts))
 		return
 	}
 
 	s.repoMap = repomap.New(ws)
-	s.registry = buildRegistry(s.cfg, s.mode, s, s.memOpts)
-	s.rebuildSystemPrompt()
+	s.installRegistry(buildRegistry(s.cfg, s.mode, s, s.memOpts))
 
 	fmt.Fprintf(os.Stderr, "codient: building repository map...\n")
 	go func() {
@@ -2765,8 +2843,8 @@ func (s *session) startRepoMap(ctx context.Context) {
 		} else if nf > 0 {
 			s.replAsyncStderrNote(fmt.Sprintf("codient: repo map ready (%d files, %d symbols)\n", nf, nt))
 		}
-		s.registry = buildRegistry(s.cfg, s.mode, s, s.memOpts)
-		s.rebuildSystemPrompt()
+		reg := buildRegistry(s.cfg, s.mode, s, s.memOpts)
+		s.installRegistry(reg)
 	}()
 }
 
@@ -2896,6 +2974,12 @@ func (s *session) planStatusLine() string {
 		}
 	}
 	return fmt.Sprintf("rev %d, phase %s, steps %d/%d", p.Revision, p.Phase, done, total)
+}
+
+// isInterruptErr reports whether err indicates a user-initiated turn cancellation
+// (Ctrl+C) rather than a timeout or other context error from the parent session.
+func isInterruptErr(err error) bool {
+	return errors.Is(err, context.Canceled)
 }
 
 func setDiff(a, b []string) []string {

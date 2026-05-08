@@ -83,12 +83,6 @@ func TestFormatThinkingProgressLine_empty(t *testing.T) {
 	}
 }
 
-func TestFormatSyntheticIntentThinkingLine_webSearch(t *testing.T) {
-	got := FormatSyntheticIntentThinkingLine(true, "ask", "web_search", []byte(`{"query":"Go 1.26 release"}`))
-	if !strings.HasPrefix(got, "  ● ") || !strings.Contains(got, "I'll search the web") {
-		t.Fatalf("got %q", got)
-	}
-}
 
 func TestFormatStatusProgressLine_plain(t *testing.T) {
 	got := FormatStatusProgressLine(true, "ask", "verifying suggestions…")

@@ -100,11 +100,13 @@ func estimateHistoryTokens(history []openai.ChatCompletionMessageParamUnion) int
 // estimateFullContextUsage returns the estimated total tokens for the next API request:
 // system prompt + tool definitions + history messages.
 func (s *session) estimateFullContextUsage() int {
+	s.promptMu.RLock()
+	defer s.promptMu.RUnlock()
 	sys := tokenest.Estimate(s.systemPrompt) + tokenest.MessageOverhead
 	toolJSON, _ := json.Marshal(s.registry.OpenAITools())
-	tools := tokenest.Estimate(string(toolJSON))
+	toolsTok := tokenest.Estimate(string(toolJSON))
 	hist := estimateHistoryTokens(s.history)
-	return sys + tools + hist
+	return sys + toolsTok + hist
 }
 
 // minHistoryForCompact is the minimum number of history messages required

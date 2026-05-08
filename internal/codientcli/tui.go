@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"codient/internal/agent"
@@ -19,7 +20,7 @@ import (
 	"codient/internal/tools"
 
 	"github.com/charmbracelet/bubbles/key"
-	"github.com/charmbracelet/bubbles/textinput"
+	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -63,6 +64,8 @@ type (
 	tuiTodosMsg struct {
 		items []tools.TodoItem
 	}
+	// tuiUserPromptMsg appends a styled transcript block for the user's submitted prompt (TUI only).
+	tuiUserPromptMsg string
 )
 
 var tuiSpinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
@@ -72,7 +75,7 @@ var tuiSpinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦",
 // and Bubble Tea passes models by value through Update.
 type tuiModel struct {
 	viewport     viewport.Model
-	input        textinput.Model
+	input        textarea.Model
 	inputCloser  *inputCloser
 	content      *strings.Builder
 	ready        bool
@@ -86,9 +89,15 @@ type tuiModel struct {
 	picker       slashPicker
 	slashCmds    *slashcmd.Registry
 
+	// inputHeight caches the textarea's current visual row count so the
+	// model can detect height changes and re-flow the viewport when the
+	// input box grows or shrinks.
+	inputHeight int
+
 	todos             []tools.TodoItem
 	inReasoningStream bool
 	thinkingCompact   bool // toggled with ctrl+t: shorter Thinking blocks
+	onInterrupt       func() bool // returns true if a turn was cancelled
 
 	chromeModel            string
 	chromeBackendLabel     string
@@ -98,20 +107,43 @@ type tuiModel struct {
 }
 
 // Footer below the viewport: separator, input panel (when not plain), context hint, safety line.
+// The input panel can grow vertically as the user types longer messages, so the
+// total footer height is computed dynamically from the textarea's current row
+// count rather than being a fixed constant.
 const (
 	tuiAccentColWidth     = 1
 	tuiInputInnerPadH     = 1
 	tuiFooterSepLines     = 1
-	tuiFooterPanelLines   = 3 // input + spacer + meta
-	tuiFooterContextLines = 1
-	tuiFooterSafetyLines  = 1
-	tuiFooterHeight       = tuiFooterSepLines + tuiFooterPanelLines + tuiFooterContextLines + tuiFooterSafetyLines
+	tuiFooterSpacerLines  = 1 // blank row between input and meta line
+	tuiFooterMetaLines    = 1 // model · backend
+	tuiFooterContextLines = 1 // context-hint / slash hint
+	tuiFooterSafetyLines  = 1 // safety margin so the panel never collides with the viewport
+	tuiInputMinRows       = 1
+	tuiInputMaxRows       = 8
 )
 
+// tuiPanelBg is the background colour used for the input panel + meta row.
+// Defining it once at the package level keeps the textarea Style and the
+// surrounding lipgloss wrapper in sync.
+var tuiPanelBg = lipgloss.AdaptiveColor{Light: "#EEEEEE", Dark: "#1A1A1A"}
+
 func newTUIModel(ic *inputCloser, mode string, plain bool) tuiModel {
-	ti := textinput.New()
+	ti := textarea.New()
+	ti.CharLimit = 0
+	ti.MaxHeight = tuiInputMaxRows
+	ti.ShowLineNumbers = false
+	ti.EndOfBufferCharacter = ' '
+	// Plain Enter submits the message; multi-line input is inserted with
+	// ctrl+j (universal "line feed") or alt+enter / shift+enter on terminals
+	// that distinguish them. The outer model intercepts plain Enter before
+	// the textarea sees it, so InsertNewline must not re-bind "enter" here.
+	ti.KeyMap.InsertNewline = key.NewBinding(
+		key.WithKeys("ctrl+j", "alt+enter", "shift+enter"),
+		key.WithHelp("ctrl+j", "insert newline"),
+	)
+	ti.SetWidth(40)
+	ti.SetHeight(tuiInputMinRows)
 	ti.Focus()
-	ti.CharLimit = 0 // unlimited
 
 	m := tuiModel{
 		input:       ti,
@@ -119,32 +151,126 @@ func newTUIModel(ic *inputCloser, mode string, plain bool) tuiModel {
 		content:     &strings.Builder{},
 		mode:        mode,
 		plain:       plain,
+		inputHeight: tuiInputMinRows,
 	}
 	m.applyInputPrompt()
+	m.applyInputStyle()
 	return m
 }
 
 func (m *tuiModel) applyInputPrompt() {
+	var rendered string
 	if m.plain {
-		m.input.Prompt = assistout.SessionPrompt(true, m.mode)
-		return
+		rendered = assistout.SessionPrompt(true, m.mode)
+	} else {
+		mode := strings.ToLower(strings.TrimSpace(m.mode))
+		if mode == "" {
+			mode = "build"
+		}
+		accent := assistout.ModeAccentColor(m.mode)
+		dim := lipgloss.AdaptiveColor{Light: "#525252", Dark: "#A3A3A3"}
+		// Bake the panel background into each segment so the rendered prompt
+		// does not contain a mid-string SGR reset that would clear the panel
+		// colour. Without this, the area "behind" the prompt characters
+		// renders with the terminal's default background while the empty
+		// padding cells render with panelBg.
+		rendered = lipgloss.NewStyle().
+			Foreground(accent).
+			Background(tuiPanelBg).
+			Bold(true).
+			Render(mode) +
+			lipgloss.NewStyle().
+				Foreground(dim).
+				Background(tuiPanelBg).
+				Render(" > ")
 	}
-	mode := strings.ToLower(strings.TrimSpace(m.mode))
-	if mode == "" {
-		mode = "build"
+	m.input.Prompt = rendered
+	promptW := lipgloss.Width(rendered)
+	if promptW < 1 {
+		promptW = 1
 	}
-	accent := assistout.ModeAccentColor(m.mode)
-	dim := lipgloss.AdaptiveColor{Light: "#525252", Dark: "#A3A3A3"}
-	m.input.Prompt = lipgloss.JoinHorizontal(lipgloss.Top,
-		lipgloss.NewStyle().Foreground(accent).Bold(true).Render(mode),
-		lipgloss.NewStyle().Foreground(dim).Render(" > "),
-	)
+	pad := strings.Repeat(" ", promptW)
+	if !m.plain {
+		// Continuation rows in the panel still need panelBg under the leading
+		// space gutter so the wrapped text appears flush against a uniform
+		// box.
+		pad = lipgloss.NewStyle().Background(tuiPanelBg).Render(pad)
+	}
+	m.input.SetPromptFunc(promptW, func(line int) string {
+		if line == 0 {
+			return rendered
+		}
+		return pad
+	})
 }
 
-func (m *tuiModel) applyInputChromeLayout() {
-	if m.plain || !m.ready {
-		m.input.Width = 0
+// applyInputStyle configures the textarea's Style so the entire content area
+// (cursor row, non-cursor rows, value text, end-of-buffer fill) shares the
+// panel background. Setting Base.Background and letting the other style slots
+// inherit it is enough because textarea always renders via Inherit(Base).
+func (m *tuiModel) applyInputStyle() {
+	if m.plain {
+		focused, blurred := textarea.DefaultStyles()
+		m.input.FocusedStyle = focused
+		m.input.BlurredStyle = blurred
+		m.input.Cursor.TextStyle = lipgloss.NewStyle()
 		return
+	}
+	base := lipgloss.NewStyle().Background(tuiPanelBg)
+	styled := textarea.Style{
+		Base:             base,
+		CursorLine:       base,
+		CursorLineNumber: base,
+		// EndOfBuffer needs Foreground == Background so the gutter character
+		// is invisible on the panel background.
+		EndOfBuffer: base.Foreground(tuiPanelBg),
+		LineNumber:  base,
+		Placeholder: base,
+		Prompt:      base,
+		Text:        base,
+	}
+	m.input.FocusedStyle = styled
+	m.input.BlurredStyle = styled
+	// The hidden (blink-off) cursor cell uses TextStyle; the visible cursor
+	// uses Style.Reverse(true), which inverts foreground/background and
+	// looks correct against panelBg without further configuration.
+	m.input.Cursor.TextStyle = base
+}
+
+// applyInputChromeLayout sizes the textarea to match the current terminal
+// width and computes its desired visual row count from the user's text. The
+// computed height is clamped so the input never collapses below one row or
+// grows past tuiInputMaxRows; longer text scrolls inside the textarea's own
+// viewport.
+func (m *tuiModel) applyInputChromeLayout() {
+	if !m.ready {
+		return
+	}
+	totalW := m.inputTotalWidth()
+	if totalW < 4 {
+		totalW = 4
+	}
+	m.input.SetWidth(totalW)
+
+	rows := wrappedRowCount(m.input.Value(), m.input.Width())
+	if rows < tuiInputMinRows {
+		rows = tuiInputMinRows
+	}
+	if rows > tuiInputMaxRows {
+		rows = tuiInputMaxRows
+	}
+	m.input.SetHeight(rows)
+	m.inputHeight = rows
+}
+
+// inputTotalWidth returns the outer width the textarea is allowed to occupy,
+// which is the inner panel width in non-plain mode (terminal width minus the
+// accent column and horizontal padding) and the full terminal width in plain
+// mode. The result is clamped to the terminal width so degenerate sizes never
+// produce a textarea wider than the screen.
+func (m *tuiModel) inputTotalWidth() int {
+	if m.plain {
+		return m.width
 	}
 	contentW := m.width - tuiAccentColWidth
 	if contentW < 8 {
@@ -154,7 +280,111 @@ func (m *tuiModel) applyInputChromeLayout() {
 	if inner < 10 {
 		inner = max(10, contentW-1)
 	}
-	m.input.Width = inner
+	if m.width > 0 && inner > m.width {
+		inner = m.width
+	}
+	return inner
+}
+
+// footerHeight returns the number of rows reserved below the viewport,
+// including the dynamic input box.
+func (m *tuiModel) footerHeight() int {
+	rows := tuiInputMinRows
+	if m.ready {
+		rows = m.input.Height()
+	}
+	if rows < tuiInputMinRows {
+		rows = tuiInputMinRows
+	}
+	if m.plain {
+		return tuiFooterSepLines + rows + tuiFooterSafetyLines
+	}
+	return tuiFooterSepLines + rows + tuiFooterSpacerLines + tuiFooterMetaLines + tuiFooterContextLines + tuiFooterSafetyLines
+}
+
+// resetInputAfterSubmit clears the textarea and snaps the input box back to
+// a single row, re-flowing the viewport if the panel shrank.
+func (m *tuiModel) resetInputAfterSubmit() {
+	m.input.Reset()
+	if !m.ready {
+		return
+	}
+	prev := m.input.Height()
+	m.input.SetHeight(tuiInputMinRows)
+	m.inputHeight = tuiInputMinRows
+	if prev != m.input.Height() {
+		m.applyViewportLayout()
+	}
+}
+
+// wrappedRowCount computes how many visual rows a string occupies when
+// word-wrapped at `width`. The algorithm mirrors charmbracelet/bubbles
+// textarea's internal wrap() so the row count stays in sync with what the
+// textarea actually renders. Each "\n" begins a new logical line; empty
+// logical lines still count as one visible row.
+func wrappedRowCount(s string, width int) int {
+	if width <= 0 {
+		return 1
+	}
+	total := 0
+	for _, line := range strings.Split(s, "\n") {
+		total += wordWrapLineCount(line, width)
+	}
+	if total == 0 {
+		return 1
+	}
+	return total
+}
+
+// wordWrapLineCount counts the visual rows a single logical line occupies
+// when word-wrapped at width, matching the textarea's wrap() behaviour:
+// break at space boundaries; force-break a word that would exceed width.
+func wordWrapLineCount(s string, width int) int {
+	runes := []rune(s)
+	if len(runes) == 0 {
+		return 1
+	}
+	var (
+		rows   = 1
+		lineW  int
+		word   []rune
+		spaces int
+	)
+	for _, r := range runes {
+		if unicode.IsSpace(r) {
+			spaces++
+		} else {
+			word = append(word, r)
+		}
+		if spaces > 0 {
+			ww := lipgloss.Width(string(word))
+			if lineW+ww+spaces > width {
+				rows++
+				lineW = ww + spaces
+			} else {
+				lineW += ww + spaces
+			}
+			spaces = 0
+			word = nil
+		} else if len(word) > 0 {
+			ww := lipgloss.Width(string(word))
+			lastW := lipgloss.Width(string(word[len(word)-1:]))
+			if ww+lastW > width {
+				if lineW > 0 {
+					rows++
+				}
+				lineW = ww
+				word = nil
+			}
+		}
+	}
+	if len(word) > 0 || spaces > 0 {
+		ww := lipgloss.Width(string(word))
+		if lineW+ww+spaces >= width {
+			rows++
+		}
+	}
+	return rows
 }
 
 func formatTUIBackendLabel(baseURL string) string {
@@ -200,9 +430,11 @@ func (m *tuiModel) metaLineStyled(innerW int) string {
 		backend = "—"
 	}
 
-	sep := lipgloss.NewStyle().Foreground(dim).Render(" · ")
-	modelSt := lipgloss.NewStyle().Foreground(modelFg).Render(truncateRunes(model, 56))
-	backSt := lipgloss.NewStyle().Foreground(dim).Render(truncateRunes(backend, 28))
+	// Embed the panel background in every segment so the meta row's text
+	// cells share the same background as the surrounding padding.
+	sep := lipgloss.NewStyle().Foreground(dim).Background(tuiPanelBg).Render(" · ")
+	modelSt := lipgloss.NewStyle().Foreground(modelFg).Background(tuiPanelBg).Render(truncateRunes(model, 56))
+	backSt := lipgloss.NewStyle().Foreground(dim).Background(tuiPanelBg).Render(truncateRunes(backend, 28))
 
 	line := lipgloss.JoinHorizontal(lipgloss.Top, modelSt, sep, backSt)
 	return lipgloss.NewStyle().MaxWidth(innerW).Render(line)
@@ -213,7 +445,6 @@ func (m *tuiModel) inputFooterView() string {
 		return m.input.View()
 	}
 
-	panelBg := lipgloss.AdaptiveColor{Light: "#EEEEEE", Dark: "#1A1A1A"}
 	contentW := m.width - tuiAccentColWidth
 	if contentW < 8 {
 		contentW = m.width
@@ -226,19 +457,19 @@ func (m *tuiModel) inputFooterView() string {
 	inputLine := lipgloss.NewStyle().
 		Width(contentW).
 		Padding(0, tuiInputInnerPadH).
-		Background(panelBg).
+		Background(tuiPanelBg).
 		Render(m.input.View())
 
 	spacer := lipgloss.NewStyle().
 		Width(contentW).
 		Height(1).
-		Background(panelBg).
+		Background(tuiPanelBg).
 		Render(" ")
 
 	metaLine := lipgloss.NewStyle().
 		Width(contentW).
 		Padding(0, tuiInputInnerPadH).
-		Background(panelBg).
+		Background(tuiPanelBg).
 		Render(m.metaLineStyled(innerW))
 
 	innerCol := lipgloss.JoinVertical(lipgloss.Left, inputLine, spacer, metaLine)
@@ -267,13 +498,13 @@ func (m *tuiModel) inputFooterView() string {
 		Width(m.width).
 		Align(lipgloss.Right).
 		Foreground(lipgloss.AdaptiveColor{Light: "#737373", Dark: "#888888"}).
-		Render(ctxHint + "  ·  type / for commands")
+		Render(ctxHint + "  ·  type / for commands  ·  ctrl+j newline")
 
 	return panel + "\n" + ctxLine
 }
 
 func (m tuiModel) Init() tea.Cmd {
-	return textinput.Blink
+	return textarea.Blink
 }
 
 // tuiRecover logs a panic with its stack trace to a temp file and re-panics.
@@ -315,7 +546,7 @@ func (m tuiModel) Update(msg tea.Msg) (_ tea.Model, _ tea.Cmd) {
 					if typed == selected {
 						newValue := current[:slashIdx+1] + selected + " "
 						m.input.SetValue(newValue)
-						m.input.Reset()
+						m.resetInputAfterSubmit()
 						if m.inputCloser != nil {
 							m.inputCloser.ch <- newValue
 						}
@@ -326,7 +557,7 @@ func (m tuiModel) Update(msg tea.Msg) (_ tea.Model, _ tea.Cmd) {
 						newValue := current[:slashIdx+1] + selected + " "
 						m.input.SetValue(newValue)
 						text := m.input.Value()
-						m.input.Reset()
+						m.resetInputAfterSubmit()
 						if m.inputCloser != nil {
 							m.inputCloser.ch <- text
 						}
@@ -337,7 +568,7 @@ func (m tuiModel) Update(msg tea.Msg) (_ tea.Model, _ tea.Cmd) {
 				return m, nil
 			}
 			text := m.input.Value()
-			m.input.Reset()
+			m.resetInputAfterSubmit()
 			if m.inputCloser != nil {
 				m.inputCloser.ch <- text
 			}
@@ -346,6 +577,11 @@ func (m tuiModel) Update(msg tea.Msg) (_ tea.Model, _ tea.Cmd) {
 			m.thinkingCompact = !m.thinkingCompact
 			return m, nil
 		case tea.KeyCtrlC:
+			if m.working && m.onInterrupt != nil {
+				if m.onInterrupt() {
+					return m, nil
+				}
+			}
 			if m.inputCloser != nil {
 				m.inputCloser.Close()
 				m.inputCloser = nil
@@ -367,64 +603,65 @@ func (m tuiModel) Update(msg tea.Msg) (_ tea.Model, _ tea.Cmd) {
 				m.picker.selectUp()
 				return m, nil
 			}
-			if m.ready {
-				n := 3
-				if !msg.Alt {
-					n = 1
-				}
-				m.viewport.ScrollUp(n)
+			// Hold Alt+Up as a viewport scroll shortcut so users can still
+			// scroll history without leaving the input. Plain Up navigates
+			// inside the textarea (line previous) when content spans
+			// multiple visual rows.
+			if msg.Alt && m.ready {
+				m.viewport.ScrollUp(3)
+				return m, nil
 			}
-			return m, nil
 		case tea.KeyDown:
 			if m.picker.visible {
 				m.picker.selectDown()
 				return m, nil
 			}
-			if m.ready {
-				n := 3
-				if !msg.Alt {
-					n = 1
-				}
-				m.viewport.ScrollDown(n)
+			if msg.Alt && m.ready {
+				m.viewport.ScrollDown(3)
+				return m, nil
 			}
-			return m, nil
-		case tea.KeyHome:
-			if m.ready {
-				m.viewport.GotoTop()
-			}
-			return m, nil
-		case tea.KeyEnd:
-			if m.ready {
-				m.viewport.GotoBottom()
-			}
-			return m, nil
 		case tea.KeyEscape:
 			if m.picker.visible {
 				m.picker.hide()
+				return m, nil
+			}
+			if m.working && m.onInterrupt != nil {
+				m.onInterrupt()
 				return m, nil
 			}
 
 		}
 
 	case tea.WindowSizeMsg:
+		firstResize := !m.ready
 		m.width = msg.Width
 		m.height = msg.Height
-		vpHeight := max(1, msg.Height-tuiFooterHeight)
+		// Mark the model ready before computing the input chrome layout so
+		// applyInputChromeLayout can call SetWidth/SetHeight on the textarea.
+		// The footer height depends on the textarea's row count, so the
+		// chrome must be applied before the viewport is sized.
+		m.ready = true
+		m.applyInputChromeLayout()
+		vpHeight := max(1, msg.Height-m.footerHeight())
 		mainW := m.mainViewportWidth()
-		if !m.ready {
+		if firstResize {
 			m.viewport = viewport.New(mainW, vpHeight)
 			m.viewport.KeyMap = disabledViewportKeyMap()
 			m.viewport.SetContent(m.content.String())
-			m.ready = true
 		} else {
 			m.viewport.Width = mainW
 			m.viewport.Height = vpHeight
 			m.syncViewport()
 		}
-		m.applyInputChromeLayout()
 
 	case tuiOutputMsg:
 		m.content.WriteString(string(msg))
+		if m.ready {
+			m.syncViewport()
+		}
+
+	case tuiUserPromptMsg:
+		m.appendUserPromptBlock(string(msg))
 		if m.ready {
 			m.syncViewport()
 		}
@@ -437,7 +674,14 @@ func (m tuiModel) Update(msg tea.Msg) (_ tea.Model, _ tea.Cmd) {
 		m.chromeLastPromptTok = msg.LastPromptTokens
 		m.chromeContextEstimated = msg.ContextEstimated
 		m.applyInputPrompt()
+		// Restyle the textarea too so the panel background reflects the new
+		// mode / chrome state.
+		m.applyInputStyle()
 		m.applyInputChromeLayout()
+		// applyInputChromeLayout may have grown or shrunk the input panel
+		// because the prompt width can change with the mode label; re-flow
+		// the viewport so it doesn't overlap or leave a gap.
+		m.applyViewportLayout()
 
 	case tuiWorkingMsg:
 		m.working = bool(msg)
@@ -479,8 +723,43 @@ func (m tuiModel) Update(msg tea.Msg) (_ tea.Model, _ tea.Cmd) {
 	}
 
 	var cmd tea.Cmd
+	prevInputRows := m.input.Height()
 	m.input, cmd = m.input.Update(msg)
 	cmds = append(cmds, cmd)
+
+	// Re-flow the viewport when the textarea's visual row count changes so
+	// the input panel can grow or shrink with the user's content. Skip the
+	// recomputation until the model has been ready'd by an initial
+	// WindowSizeMsg, otherwise SetHeight/SetWidth would clobber tests that
+	// drive the model without sending a resize.
+	if m.ready {
+		desired := wrappedRowCount(m.input.Value(), max(1, m.input.Width()))
+		if desired < tuiInputMinRows {
+			desired = tuiInputMinRows
+		}
+		if desired > tuiInputMaxRows {
+			desired = tuiInputMaxRows
+		}
+		if desired != m.input.Height() {
+			growing := desired > m.input.Height()
+			m.input.SetHeight(desired)
+			if growing {
+				// The textarea's repositionView (called inside its
+				// Update) only guarantees the cursor row is visible —
+				// it does not scroll back to show line 0 (the prompt).
+				// When the input grows, re-set the same value: SetValue
+				// calls Reset → viewport.GotoTop, which zeroes YOffset
+				// so the prompt stays visible. The cursor ends up at
+				// the end of the text, which is where it already is
+				// since growth is caused by typing.
+				m.input.SetValue(m.input.Value())
+			}
+		}
+		if m.input.Height() != prevInputRows {
+			m.inputHeight = m.input.Height()
+			m.applyViewportLayout()
+		}
+	}
 
 	// Check for slash command prefix and show picker.
 	if m.slashCmds != nil {
@@ -537,12 +816,22 @@ func (m *tuiModel) syncViewport() {
 }
 
 // viewportContent returns the accumulated output plus an animated spinner line
-// when the agent is working.
+// when the agent is working. The result is word-wrapped (then hard-wrapped as
+// a fallback for tokens wider than the viewport) so content never overflows
+// the terminal width.
 func (m *tuiModel) viewportContent() string {
 	s := m.content.String()
 	if m.working {
 		frame := tuiSpinnerFrames[m.spinnerFrame%len(tuiSpinnerFrames)]
-		s += frame + " Agent is working…"
+		line := frame + " Agent is working…"
+		if strings.TrimSpace(s) != "" {
+			s += "\n\n" + line
+		} else {
+			s += line
+		}
+	}
+	if w := m.viewport.Width; w > 0 {
+		s = indentAwareWrap(s, w)
 	}
 	return s
 }
@@ -618,7 +907,9 @@ type tuiSetup struct {
 // initTUI creates the Bubble Tea program and redirects stdout/stderr into it.
 // The caller must run the returned setup's start method in a goroutine to pump
 // pipe output into the TUI, then call prog.Run() on the main goroutine.
-func initTUI(mode string, plain bool) (*tuiSetup, error) {
+// onInterrupt is called when Ctrl+C is pressed while the agent is working;
+// it should return true if a turn was successfully cancelled.
+func initTUI(mode string, plain bool, onInterrupt func() bool) (*tuiSetup, error) {
 	origOut := os.Stdout
 	origErr := os.Stderr
 
@@ -648,8 +939,10 @@ func initTUI(mode string, plain bool) (*tuiSetup, error) {
 
 	ic := newInputCloser()
 	model := newTUIModel(ic, mode, plain)
+	model.onInterrupt = onInterrupt
 	prog := tea.NewProgram(model,
 		tea.WithAltScreen(),
+		tea.WithMouseCellMotion(),
 		tea.WithOutput(origErr),
 	)
 

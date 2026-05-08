@@ -9,7 +9,22 @@ import (
 	"codient/internal/tools"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 )
+
+func TestTUIModel_UserPromptBlockPlain(t *testing.T) {
+	ic := newInputCloser()
+	m := newTUIModel(ic, "ask", true)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(tuiModel)
+	updated, _ = m.Update(tuiUserPromptMsg("hello"))
+	m = updated.(tuiModel)
+	s := m.content.String()
+	if !strings.Contains(s, "hello") || !strings.Contains(s, "[ask]") {
+		t.Fatalf("expected plain transcript echo, got %q", s)
+	}
+}
 
 func TestTUIModel_OutputAppendsToViewport(t *testing.T) {
 	ic := newInputCloser()
@@ -42,8 +57,12 @@ func TestTUIModel_TranscriptThinkingBlock(t *testing.T) {
 		ThinkingFull:   "Short plan.",
 	}})
 	m = updated.(tuiModel)
-	if !strings.Contains(m.content.String(), "Thinking:") || !strings.Contains(m.content.String(), "Short plan") {
-		t.Fatalf("expected thinking block, got %q", m.content.String())
+	s := m.content.String()
+	if !strings.Contains(s, "Short plan") || !strings.Contains(s, "●") {
+		t.Fatalf("expected intent-style thinking line with bullet and prose, got %q", s)
+	}
+	if strings.Contains(s, "Thinking:") {
+		t.Fatalf("should not use legacy Thinking: header, got %q", s)
 	}
 }
 
@@ -291,6 +310,305 @@ func TestTUIModel_ViewContainsInput(t *testing.T) {
 	}
 }
 
+// TestTUIModel_InputGrowsWithMultilineText verifies the input box expands
+// vertically as the user adds text that wraps past the inner width, and
+// shrinks back to a single row after the message is submitted.
+func TestTUIModel_InputGrowsWithMultilineText(t *testing.T) {
+	ic := newInputCloser()
+	m := newTUIModel(ic, "build", false)
+
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 60, Height: 24})
+	m = updated.(tuiModel)
+
+	if got := m.input.Height(); got != tuiInputMinRows {
+		t.Fatalf("initial input height = %d, want %d", got, tuiInputMinRows)
+	}
+	initialFooter := m.footerHeight()
+	initialVPHeight := m.viewport.Height
+
+	// Inject a value long enough to wrap to several visual rows, then send a
+	// no-op key so the model's post-update layout pass picks up the change.
+	long := strings.Repeat("abcdefghij ", 30)
+	m.input.SetValue(long)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{' '}})
+	m = updated.(tuiModel)
+
+	if m.input.Height() <= tuiInputMinRows {
+		t.Fatalf("input should have grown past %d rows for wrapped text, got %d",
+			tuiInputMinRows, m.input.Height())
+	}
+	if m.input.Height() > tuiInputMaxRows {
+		t.Fatalf("input height %d exceeds max %d", m.input.Height(), tuiInputMaxRows)
+	}
+	if m.footerHeight() <= initialFooter {
+		t.Fatalf("footer height should grow with input, was %d now %d",
+			initialFooter, m.footerHeight())
+	}
+	if m.viewport.Height >= initialVPHeight {
+		t.Fatalf("viewport height should shrink as input grows, was %d now %d",
+			initialVPHeight, m.viewport.Height)
+	}
+
+	// Submitting via Enter should reset the input back to a single row and
+	// give the viewport its space back.
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(tuiModel)
+	<-ic.ch // drain submitted message
+
+	if m.input.Height() != tuiInputMinRows {
+		t.Fatalf("input height after submit = %d, want %d",
+			m.input.Height(), tuiInputMinRows)
+	}
+	if m.viewport.Height != initialVPHeight {
+		t.Fatalf("viewport height should restore after submit, was %d want %d",
+			m.viewport.Height, initialVPHeight)
+	}
+}
+
+// TestTUIModel_InsertNewlineWithCtrlJ verifies that ctrl+j inserts a newline
+// inside the textarea and grows the input panel without submitting.
+func TestTUIModel_InsertNewlineWithCtrlJ(t *testing.T) {
+	ic := newInputCloser()
+	m := newTUIModel(ic, "build", false)
+
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 60, Height: 24})
+	m = updated.(tuiModel)
+
+	m.input.SetValue("first")
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlJ})
+	m = updated.(tuiModel)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("second")})
+	m = updated.(tuiModel)
+
+	if !strings.Contains(m.input.Value(), "\n") {
+		t.Fatalf("ctrl+j should insert a newline into the textarea, got %q", m.input.Value())
+	}
+	if m.input.Height() < 2 {
+		t.Fatalf("input should be at least 2 rows after newline, got %d", m.input.Height())
+	}
+
+	select {
+	case got := <-ic.ch:
+		t.Fatalf("ctrl+j should not submit, but channel received %q", got)
+	default:
+	}
+}
+
+// TestTUIModel_InputBackgroundUniform verifies that the panel background
+// SGR sequence is present in the row that contains the user's typed text,
+// not just in the empty padding cells next to it. This guards against the
+// regression where a styled prompt with an embedded reset code clobbered
+// the panel background once the user began typing.
+func TestTUIModel_InputBackgroundUniform(t *testing.T) {
+	// Force colour rendering even in non-TTY environments (CI) so the test
+	// can inspect the background SGR codes regardless of where it runs.
+	prev := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
+
+	ic := newInputCloser()
+	m := newTUIModel(ic, "build", false)
+
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 60, Height: 24})
+	m = updated.(tuiModel)
+
+	emptyView := m.inputFooterView()
+	emptyFirstLine := strings.SplitN(emptyView, "\n", 2)[0]
+	if !strings.Contains(emptyFirstLine, "\x1b[48") {
+		t.Fatalf("empty input row should already carry a panel-background SGR; got %q", emptyFirstLine)
+	}
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("hello world")})
+	m = updated.(tuiModel)
+
+	typedView := m.inputFooterView()
+	typedFirstLine := strings.SplitN(typedView, "\n", 2)[0]
+
+	// After typing, the row that contains the user's text must still have
+	// at least as many background-colour sequences as the empty view. If
+	// the background were lost mid-row (the original bug) we'd expect
+	// fewer or zero "\x1b[48" sequences in the affected segment.
+	bgEscapeEmpty := strings.Count(emptyFirstLine, "\x1b[48")
+	bgEscapeTyped := strings.Count(typedFirstLine, "\x1b[48")
+	if bgEscapeTyped < bgEscapeEmpty {
+		t.Fatalf("typed input should keep the panel background; bg-seqs went from %d → %d\nempty: %q\ntyped: %q",
+			bgEscapeEmpty, bgEscapeTyped, emptyFirstLine, typedFirstLine)
+	}
+	if !strings.Contains(typedFirstLine, "hello world") {
+		t.Fatalf("typed input view should contain the typed text, got %q", typedFirstLine)
+	}
+}
+
+// TestWrappedRowCount exercises the helper used to size the input panel.
+func TestWrappedRowCount(t *testing.T) {
+	tests := []struct {
+		name  string
+		text  string
+		width int
+		want  int
+	}{
+		{"empty", "", 10, 1},
+		{"single line short", "hello", 10, 1},
+		{"single line exact", "0123456789", 10, 1},
+		{"wraps to two", "01234567890", 10, 2},
+		{"wraps to four", strings.Repeat("a", 35), 10, 4},
+		{"explicit newlines", "a\nb\nc", 10, 3},
+		{"empty trailing line", "a\n", 10, 2},
+		{"width <= 0 defaults to one", "anything", 0, 1},
+
+		// Word-wrap cases: words that don't fit on the current line
+		// push to the next, producing more rows than character-level
+		// division would predict.
+		{"word wrap three rows", "aaaa bbbbb cccc", 10, 3},
+		{"word wrap repeated", "word word word", 8, 3},
+		{"word wrap with newlines", "aaaa bbbbb cccc\ndd ee", 10, 4},
+		{"words fit just under", "aaa bbb c", 10, 1},
+		{"single space boundary", "abcde fghij", 10, 2},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := wrappedRowCount(tt.text, tt.width); got != tt.want {
+				t.Fatalf("wrappedRowCount(%q, %d) = %d, want %d", tt.text, tt.width, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestTUIModel_ViewportContentWrapsLongLines(t *testing.T) {
+	ic := newInputCloser()
+	m := newTUIModel(ic, "ask", true)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 40, Height: 24})
+	m = updated.(tuiModel)
+
+	longLine := strings.Repeat("x", 80)
+	updated, _ = m.Update(tuiOutputMsg(longLine))
+	m = updated.(tuiModel)
+
+	content := m.viewportContent()
+	for i, line := range strings.Split(content, "\n") {
+		w := lipgloss.Width(line)
+		if w > 40 {
+			t.Fatalf("line %d exceeds viewport width 40: width=%d, content=%q", i, w, line)
+		}
+	}
+}
+
+func TestTUIModel_ViewportContentWordWrapsAtBoundaries(t *testing.T) {
+	ic := newInputCloser()
+	m := newTUIModel(ic, "ask", true)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 20, Height: 24})
+	m = updated.(tuiModel)
+
+	updated, _ = m.Update(tuiOutputMsg("hello world this is a long sentence for wrapping"))
+	m = updated.(tuiModel)
+
+	content := m.viewportContent()
+	lines := strings.Split(content, "\n")
+	if len(lines) < 2 {
+		t.Fatalf("expected multiple lines after wrapping at width 20, got %d: %q", len(lines), content)
+	}
+	for i, line := range lines {
+		w := lipgloss.Width(line)
+		if w > 20 {
+			t.Fatalf("line %d exceeds viewport width 20: width=%d, content=%q", i, w, line)
+		}
+	}
+}
+
+func TestTUIModel_ScrollUpPreservesPosition(t *testing.T) {
+	ic := newInputCloser()
+	m := newTUIModel(ic, "ask", true)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 6})
+	m = updated.(tuiModel)
+
+	var buf strings.Builder
+	for i := 0; i < 50; i++ {
+		buf.WriteString("line\n")
+	}
+	updated, _ = m.Update(tuiOutputMsg(buf.String()))
+	m = updated.(tuiModel)
+
+	if !m.viewport.AtBottom() {
+		t.Fatal("should auto-scroll to bottom on new content")
+	}
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyPgUp})
+	m = updated.(tuiModel)
+	if m.viewport.AtBottom() {
+		t.Fatal("PgUp should scroll away from bottom")
+	}
+
+	// New content while scrolled up must not snap back to bottom.
+	updated, _ = m.Update(tuiOutputMsg("new content\n"))
+	m = updated.(tuiModel)
+	if m.viewport.AtBottom() {
+		t.Fatal("new content should not auto-scroll when user has scrolled up")
+	}
+}
+
+func TestHangingIndentWidth(t *testing.T) {
+	tests := []struct {
+		name string
+		line string
+		want int
+	}{
+		{"empty", "", 0},
+		{"no indent", "hello world", 0},
+		{"spaces", "  hello", 2},
+		{"bullet", "● hello", 2},
+		{"indented bullet", "  ▸ hello", 4},
+		{"pipe prefix", "│ hello", 2},
+		{"spinner", "⠋ working", 2},
+		{"ansi styled", "\x1b[38;2;107;114;128m  ▸ hello\x1b[0m", 4},
+		{"ansi then text", "\x1b[31mhello\x1b[0m", 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := hangingIndentWidth(tt.line); got != tt.want {
+				t.Fatalf("hangingIndentWidth(%q) = %d, want %d", tt.line, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIndentAwareWrap_ContinuationIndent(t *testing.T) {
+	s := "● " + strings.Repeat("word ", 20)
+	wrapped := indentAwareWrap(s, 40)
+	lines := strings.Split(wrapped, "\n")
+	if len(lines) < 2 {
+		t.Fatalf("expected multiple lines, got %d: %q", len(lines), wrapped)
+	}
+	for i, line := range lines {
+		w := lipgloss.Width(line)
+		if w > 40 {
+			t.Fatalf("line %d exceeds width 40: width=%d, content=%q", i, w, line)
+		}
+	}
+	for _, line := range lines[1:] {
+		if !strings.HasPrefix(line, "  ") {
+			t.Fatalf("continuation should be indented by 2 (matching bullet prefix), got %q", line)
+		}
+	}
+}
+
+func TestIndentAwareWrap_NoIndent(t *testing.T) {
+	s := strings.Repeat("x", 60)
+	wrapped := indentAwareWrap(s, 40)
+	for i, line := range strings.Split(wrapped, "\n") {
+		w := lipgloss.Width(line)
+		if w > 40 {
+			t.Fatalf("line %d exceeds width 40: width=%d", i, w)
+		}
+	}
+}
+
+func TestIndentAwareWrap_ShortLineUnchanged(t *testing.T) {
+	s := "  ▸ short"
+	if got := indentAwareWrap(s, 80); got != s {
+		t.Fatalf("short line should be unchanged, got %q", got)
+	}
+}
+
 func TestSlashPicker_ShowAndSelect(t *testing.T) {
 	cmds := &slashcmd.Registry{}
 	cmds.Register(slashcmd.Command{Name: "build", Aliases: []string{"b"}, Description: "switch to build mode"})
@@ -485,5 +803,116 @@ func TestTUIModel_SlashPickerEscapeDismisses(t *testing.T) {
 
 	if m.picker.visible {
 		t.Fatal("picker should be hidden after escape")
+	}
+}
+
+func TestTUIModel_CtrlC_InterruptsWhileWorking(t *testing.T) {
+	ic := newInputCloser()
+	m := newTUIModel(ic, "build", true)
+
+	interrupted := false
+	m.onInterrupt = func() bool {
+		interrupted = true
+		return true
+	}
+
+	// Put the model into working state.
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(tuiModel)
+	updated, _ = m.Update(tuiWorkingMsg(true))
+	m = updated.(tuiModel)
+
+	// Ctrl+C while working should call onInterrupt and not quit.
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	m = updated.(tuiModel)
+
+	if !interrupted {
+		t.Fatal("onInterrupt should have been called")
+	}
+	if m.quitting {
+		t.Fatal("should not be quitting when interrupt succeeds")
+	}
+	if cmd != nil {
+		t.Fatal("should not return tea.Quit cmd when interrupt succeeds")
+	}
+}
+
+func TestTUIModel_CtrlC_QuitsWhenIdle(t *testing.T) {
+	ic := newInputCloser()
+	m := newTUIModel(ic, "build", true)
+
+	interrupted := false
+	m.onInterrupt = func() bool {
+		interrupted = true
+		return true
+	}
+
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(tuiModel)
+
+	// Not working — Ctrl+C should quit normally.
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	m = updated.(tuiModel)
+
+	if interrupted {
+		t.Fatal("onInterrupt should not be called when not working")
+	}
+	if !m.quitting {
+		t.Fatal("should be quitting when not working")
+	}
+	if cmd == nil {
+		t.Fatal("should return tea.Quit cmd when quitting")
+	}
+}
+
+func TestTUIModel_Escape_InterruptsWhileWorking(t *testing.T) {
+	ic := newInputCloser()
+	m := newTUIModel(ic, "build", true)
+
+	interrupted := false
+	m.onInterrupt = func() bool {
+		interrupted = true
+		return true
+	}
+
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(tuiModel)
+	updated, _ = m.Update(tuiWorkingMsg(true))
+	m = updated.(tuiModel)
+
+	// Escape while working should call onInterrupt.
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEscape})
+	m = updated.(tuiModel)
+
+	if !interrupted {
+		t.Fatal("onInterrupt should have been called on Escape while working")
+	}
+	if m.quitting {
+		t.Fatal("should not be quitting on Escape")
+	}
+}
+
+func TestTUIModel_Escape_NoopWhenIdle(t *testing.T) {
+	ic := newInputCloser()
+	m := newTUIModel(ic, "build", true)
+
+	interrupted := false
+	m.onInterrupt = func() bool {
+		interrupted = true
+		return true
+	}
+
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(tuiModel)
+
+	// Escape while idle and no picker — should be a no-op.
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEscape})
+	m = updated.(tuiModel)
+
+	if interrupted {
+		t.Fatal("onInterrupt should not be called when not working")
+	}
+	if m.quitting {
+		t.Fatal("should not be quitting on idle Escape")
 	}
 }

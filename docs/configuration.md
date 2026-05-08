@@ -110,11 +110,11 @@ Run `/config` with no arguments to see all current values. `/config <key>` shows
 | `git_protected_branches` | Comma-separated branch names; when the first change lands on one of these, codient creates `codient/<task-slug>` and commits there | `main,master,develop` |
 | `checkpoint_auto` | Automatic checkpoints: **`plan`** (after each completed plan phase group), **`all`** (after each build turn that changes files and commits), **`off`** (manual `/checkpoint` only) | `plan` |
 | **UI/Output** | | |
-| `plain` | Raw assistant text (no markdown/ANSI) | `false` |
+| `plain` | Raw assistant text (skip markdown rendering; use for streaming tokens or logs without glamour) | `false` |
 | `quiet` | Suppress the welcome banner | `false` |
 | `verbose` | Extra session diagnostics | `false` |
 | `log` | Default JSONL log path | *(empty)* |
-| `stream_reply` | Stream assistant tokens to stdout | `true` |
+| `stream_reply` | When **`plain`** is on: stream assistant tokens to stdout as they arrive. Styled (non-plain) sessions render the full reply with markdown once per turn instead of streaming raw tokens | `true` |
 | `progress` | Force progress output on stderr | `false` |
 | `acp_preload_model_on_set_model` | When **`true`** (default), ACP **`session/set_model`** runs a minimal chat completion so local inference servers load the model before the RPC returns; set **`false`** to skip (saves one completion per switch) | `true` |
 | **Plan** | | |
@@ -133,6 +133,10 @@ Run `/config` with no arguments to see all current values. `/config <key>` shows
 | `update_notify` | Show interactive update prompt on REPL startup | `true` |
 | **MCP** | | |
 | `mcp_servers` | Map of MCP server IDs to connection configs (see [MCP servers](context-and-integrations.md#mcp-model-context-protocol-servers)) | *(empty)* |
+
+### Local models and tool calling
+
+When tools are enabled and **`stream_with_tools`** is **`false`** (default), codient uses non-streaming completions so local OpenAI-compatible servers are less likely to drop **`tool_calls`** over SSE. If the model returns recognized intent-only prose once without **`tool_calls`** or XML `<tool_call>` markup, codient injects a single follow-up user message (stderr progress shows `requesting tool calls…`) so the next completion can emit real tool calls.
 
 ## Subprocess sandboxing
 

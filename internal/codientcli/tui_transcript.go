@@ -1,22 +1,19 @@
 package codientcli
 
 import (
+	"regexp"
 	"strings"
 	"unicode/utf8"
 
 	"codient/internal/agent"
+	"codient/internal/assistout"
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/reflow/wordwrap"
+	"github.com/muesli/reflow/wrap"
 )
 
 var (
-	tuiThinkingHeaderStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.AdaptiveColor{Light: "#B45309", Dark: "#EAB308"}).
-				Bold(true)
-	tuiThinkingBodyStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.AdaptiveColor{Light: "#4B5563", Dark: "#A1A1AA"}).
-				Italic(true)
 	tuiReasoningStreamStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.AdaptiveColor{Light: "#6B7280", Dark: "#9CA3AF"}).
 				Italic(true)
@@ -28,6 +25,89 @@ var (
 			Foreground(lipgloss.AdaptiveColor{Light: "#B91C1C", Dark: "#F87171"})
 	tuiTodoTitleStyle = lipgloss.NewStyle().Bold(true)
 )
+
+// wordwrapUserInput wraps each line / paragraph for the user prompt box.
+func wordwrapUserInput(text string, width int) string {
+	if width < 8 {
+		width = 8
+	}
+	paras := strings.Split(text, "\n")
+	out := make([]string, 0, len(paras))
+	for _, p := range paras {
+		p = strings.TrimRight(p, "\r")
+		if strings.TrimSpace(p) == "" {
+			out = append(out, "")
+			continue
+		}
+		out = append(out, wordwrap.String(strings.TrimSpace(p), width))
+	}
+	return strings.Join(out, "\n")
+}
+
+// appendUserPromptBlock renders the submitted user message like a chat bubble:
+// rounded outline, elevated background, mode-colored vertical accent on the left.
+func (m *tuiModel) appendUserPromptBlock(text string) {
+	text = strings.TrimRight(text, "\r\n")
+	if text == "" {
+		return
+	}
+	if m.plain {
+		m.content.WriteString("\n")
+		m.content.WriteString(assistout.SessionPrompt(true, m.mode))
+		m.content.WriteString(text)
+		m.content.WriteString("\n")
+		return
+	}
+	pw := m.mainViewportWidth()
+	if pw < 16 {
+		pw = m.width
+		if pw < 16 {
+			pw = 72
+		}
+	}
+	innerW := pw - 8
+	if innerW < 12 {
+		innerW = 12
+	}
+	wrapped := wordwrapUserInput(text, innerW)
+
+	accent := assistout.ModeAccentColor(m.mode)
+	innerFg := lipgloss.AdaptiveColor{Light: "#18181B", Dark: "#FAFAFA"}
+	innerBg := lipgloss.AdaptiveColor{Light: "#F4F4F5", Dark: "#27272A"}
+	borderFg := lipgloss.AdaptiveColor{Light: "#A1A1AA", Dark: "#52525B"}
+
+	inner := lipgloss.NewStyle().
+		Foreground(innerFg).
+		Background(innerBg).
+		Padding(1, 2).
+		Width(innerW).
+		Render(wrapped)
+
+	h := lipgloss.Height(inner)
+	if h < 1 {
+		h = 1
+	}
+	accentStyle := lipgloss.NewStyle().
+		Background(accent).
+		Foreground(accent)
+	var barCol strings.Builder
+	for i := 0; i < h; i++ {
+		if i > 0 {
+			barCol.WriteByte('\n')
+		}
+		barCol.WriteString(accentStyle.Width(2).Render("  "))
+	}
+
+	joined := lipgloss.JoinHorizontal(lipgloss.Top, barCol.String(), inner)
+	boxed := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(borderFg).
+		Render(joined)
+
+	m.content.WriteString("\n")
+	m.content.WriteString(boxed)
+	m.content.WriteString("\n")
+}
 
 func (m *tuiModel) todoSidebarWidth() int {
 	if len(m.todos) == 0 {
@@ -62,7 +142,7 @@ func (m *tuiModel) applyViewportLayout() {
 	if !m.ready {
 		return
 	}
-	vpHeight := max(1, m.height-tuiFooterHeight)
+	vpHeight := max(1, m.height-m.footerHeight())
 	m.viewport.Width = m.mainViewportWidth()
 	m.viewport.Height = vpHeight
 	m.syncViewport()
@@ -99,11 +179,9 @@ func (m *tuiModel) appendTranscriptEvent(ev agent.TranscriptEvent, delegate bool
 			return
 		}
 		if !m.inReasoningStream {
-			hdr := "Thinking (stream):"
-			if !m.plain {
-				hdr = tuiThinkingHeaderStyle.Render(hdr)
-			}
-			writePrefixed(hdr)
+			m.content.WriteString("\n")
+			m.content.WriteString(prefix)
+			m.content.WriteString(assistout.ProgressIntentBulletPrefix(m.plain, m.mode))
 			m.inReasoningStream = true
 		}
 		frag := ev.Text
@@ -120,36 +198,22 @@ func (m *tuiModel) appendTranscriptEvent(ev agent.TranscriptEvent, delegate bool
 		if full == "" {
 			full = strings.TrimSpace(agent.FormatFullThinkingProse(ev.AssistantProse))
 		}
-		if full == "" && ev.ToolName != "" {
-			args := ev.ToolArgs
-			if args == nil {
-				args = []byte("null")
-			}
-			line := agent.FormatSyntheticIntentThinkingLine(m.plain, m.mode, ev.ToolName, args)
-			if strings.TrimSpace(line) != "" {
-				if m.plain {
-					writePrefixed(line)
-				} else {
-					writePrefixed(tuiToolLineStyle.Render(line))
-				}
-			}
-			return
-		}
 		if full == "" {
 			return
 		}
 		if m.thinkingCompact && utf8.RuneCountInString(full) > 480 {
 			full = string([]rune(full)[:477]) + "…"
 		}
-		body := wordwrap.String(full, pw)
-		if !m.plain {
-			hdr := tuiThinkingHeaderStyle.Render("Thinking:")
-			body = tuiThinkingBodyStyle.Width(pw).Render(body)
-			writePrefixed(hdr + "\n" + body)
-		} else {
-			writePrefixed("Thinking:\n" + body)
+		line := agent.FormatThinkingProgressLine(m.plain, m.mode, full)
+		if strings.TrimSpace(line) == "" {
+			return
 		}
 		m.content.WriteString("\n")
+		if m.plain {
+			writePrefixed(line)
+		} else {
+			writePrefixed(tuiToolLineStyle.Render(line))
+		}
 
 	case agent.TranscriptToolIntent:
 		flushStream()
@@ -310,4 +374,89 @@ func (m *tuiModel) composeMainRow(vpView string) string {
 		return left + right
 	}
 	return lipgloss.JoinHorizontal(lipgloss.Top, left, right)
+}
+
+// ---------------------------------------------------------------------------
+// Indent-aware viewport wrapping
+// ---------------------------------------------------------------------------
+
+// reAnsiCSI matches ANSI CSI escape sequences (SGR colour codes, cursor
+// movement, etc.) so they can be stripped for visible-width measurement.
+var reAnsiCSI = regexp.MustCompile(`\x1b\[[0-9;]*[A-Za-z]`)
+
+// isPrefixRune returns true for characters commonly used as line-start
+// decoration in the TUI: bullets, borders, spinners, and warning signs.
+func isPrefixRune(r rune) bool {
+	switch r {
+	case '●', '◐', '▸', '▹', '•', '·', '○', '✓', '⊘',
+		'│', '─',
+		'⚠',
+		'⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏':
+		return true
+	}
+	return false
+}
+
+// hangingIndentWidth measures the visible width of the leading prefix
+// characters (whitespace, bullets, box-drawing, spinners) in a line that
+// may contain ANSI escape codes.
+func hangingIndentWidth(line string) int {
+	visible := reAnsiCSI.ReplaceAllString(line, "")
+	var prefix []rune
+	for _, r := range visible {
+		if r == ' ' || r == '\t' || isPrefixRune(r) {
+			prefix = append(prefix, r)
+		} else {
+			break
+		}
+	}
+	if len(prefix) == 0 {
+		return 0
+	}
+	return lipgloss.Width(string(prefix))
+}
+
+// indentAwareWrap word-wraps s at width, preserving leading indentation on
+// continuation lines so wrapped text stays visually aligned with its parent
+// line's content rather than resetting to column 0.
+//
+// The first line of each paragraph uses the full width. Continuation lines
+// receive a hanging indent equal to the parent's prefix (whitespace +
+// bullets / box-drawing characters), with their content re-wrapped at
+// width − indentWidth so the total never exceeds the viewport.
+func indentAwareWrap(s string, width int) string {
+	if width <= 0 {
+		return s
+	}
+	lines := strings.Split(s, "\n")
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if lipgloss.Width(line) <= width {
+			out = append(out, line)
+			continue
+		}
+		indentW := hangingIndentWidth(line)
+		innerW := width - indentW
+		if indentW == 0 || innerW < 10 {
+			out = append(out, strings.Split(
+				wrap.String(wordwrap.String(line, width), width), "\n")...)
+			continue
+		}
+		wrapped := wrap.String(wordwrap.String(line, width), width)
+		subs := strings.Split(wrapped, "\n")
+		out = append(out, subs[0])
+		pad := strings.Repeat(" ", indentW)
+		for _, sub := range subs[1:] {
+			indented := pad + sub
+			if lipgloss.Width(indented) <= width {
+				out = append(out, indented)
+			} else {
+				rewrapped := wrap.String(wordwrap.String(sub, innerW), innerW)
+				for _, rs := range strings.Split(rewrapped, "\n") {
+					out = append(out, pad+rs)
+				}
+			}
+		}
+	}
+	return strings.Join(out, "\n")
 }

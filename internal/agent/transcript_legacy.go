@@ -28,16 +28,6 @@ func transcriptLegacyText(plain bool, mode string, ev *TranscriptEvent) string {
 			if line := FormatThinkingProgressLine(plain, mode, src); line != "" {
 				return "\n" + line + "\n"
 			}
-			return ""
-		}
-		if ev.ToolName != "" {
-			args := ev.ToolArgs
-			if args == nil {
-				args = jsonNull
-			}
-			if line := FormatSyntheticIntentThinkingLine(plain, mode, ev.ToolName, args); line != "" {
-				return "\n" + line + "\n"
-			}
 		}
 		return ""
 	case TranscriptReasoningDelta:

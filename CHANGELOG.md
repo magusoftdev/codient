@@ -11,10 +11,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`/create-rule`** REPL slash command: interactive wizard that writes a Cursor-compatible **`.mdc`** rule under **`<workspace>/.cursor/rules/`** (`description`, optional **`globs`**, **`alwaysApply`**). See [docs/usage.md](docs/usage.md#slash-commands).
 - **Single-shot / `-print` session resume:** non-REPL runs save to **`<workspace>/.codient/sessions/`** after each turn and, unless **`-new-session`**, load the latest session (or **`-session-id <id>`**). JSON / `stream-json` output includes **`session_id`** and **`workspace`**. See [docs/usage.md](docs/usage.md#headless--ci-mode--print) and [Bring-your-own remote runs](docs/usage.md#bring-your-own-remote-and-background-runs).
+- **Multi-line input editor** in the TUI: the input panel is now a true multi-line text area that word-wraps and grows up to 8 visible rows. **Enter** submits; **Ctrl+J** / **Alt+Enter** / **Shift+Enter** inserts a newline. Standard editing keys (Home/End, Ctrl+W, Ctrl+U, Backspace/Delete) work within the box.
+- **Turn interruption:** **Ctrl+C** (or **Escape** in the TUI) while the agent is working cancels the current turn and returns to the prompt without exiting codient. The second Ctrl+C while idle quits. See [docs/usage.md](docs/usage.md#interrupting-a-running-turn).
+- **Intent nudge for local models:** when tools are enabled and the model returns intent-only prose without tool calls or XML markup, codient injects a single follow-up message asking the model to emit real tool calls (stderr progress: `requesting tool calls…`). This helps local OpenAI-compatible servers that occasionally narrate intent instead of invoking tools.
+- **Boxed user messages** in the TUI transcript: submitted prompts display in a rounded box with a mode-colored left accent (slash commands stay plain).
+- **Vendor directory exclusion:** code indexing and repo map walkers now skip `vendor/` directories so Go vendored dependencies are not indexed.
 
 ### Changed
 
 - **OpenAI client in agent turns** now uses **per-mode** connection settings (**`NewForMode`**) for each runner, matching the mode selected for the session (including after resume).
+- **TUI viewport scrolling:** **Page Up/Down** and **Alt+Up/Down** scroll the transcript; plain **Up/Down** and **Home/End** now belong to the multi-line input editor.
+- **Intent / reasoning display:** model pre-tool prose and streaming reasoning deltas appear as mode-colored **● intent lines** (replaces the old boxed "Thinking:" blocks). **Ctrl+T** toggles compact vs full display.
+- **Styled markdown output:** assistant replies are rendered with GitHub-flavored markdown (via glamour) at end of turn even when stdout is not a TTY, unless **`-plain`** is set. **`-stream-reply`** applies to plain sessions only.
+- **`stream_with_tools`** defaults to **`false`**: non-streaming completions for tool-enabled turns reduce dropped `tool_calls` on local servers.
 
 ## [0.10.0] - 2026-04-29
 

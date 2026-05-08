@@ -37,20 +37,31 @@ When stdin is a TTY and `-plain` is **not** set, codient launches a Bubble Tea s
 
 | Area | Behaviour |
 |------|-----------|
-| **Viewport** (top) | Shows the full session: welcome banner, streamed assistant replies, and structured agent activity (chain-of-thought blocks, tool intents, per-tool results, round summaries). |
+| **Viewport** (top) | Shows the full session: welcome banner, **boxed user messages** (rounded outline and mode-colored left accent), streamed assistant replies, and structured agent activity (intent lines, tool intents, per-tool results, round summaries). Slash commands (`/…`) stay as a simple echoed line without the box. All content is **word-wrapped** to the viewport width (with a hard-wrap fallback for very long tokens) so nothing overflows the terminal edge. |
 | **Todo column** (right) | When the model uses **todo_write**, a narrow **Todo** panel lists tasks and statuses (hidden if the terminal is very narrow). Todos are saved in the session JSON and restored on resume. |
 | **Status bar** | Displays "Agent is working…" during turns; a plain separator otherwise. |
-| **Input panel** (bottom) | Mode-colored accent strip, **`build > `**-style prompt (lowercase mode before `>`), a line with **model · backend**, then a right-aligned hint: **exact** prompt tokens and **context %** when the API returns `usage` and **`context_window`** is set; if the server omits usage, an **estimated** total (**`~`…**) from system + tools + history (same heuristic as `/compact`). **`—`** only when nothing can be computed. Press **Enter** to submit, **Ctrl+C** to quit. |
+| **Input panel** (bottom) | Mode-colored accent strip, **`build > `**-style prompt (lowercase mode before `>`), a multi-line text area that wraps to the panel width and grows up to **8 visible rows** as you type (longer messages scroll inside the panel), a line with **model · backend**, then a right-aligned hint: **exact** prompt tokens and **context %** when the API returns `usage` and **`context_window`** is set; if the server omits usage, an **estimated** total (**`~`…**) from system + tools + history (same heuristic as `/compact`). **`—`** only when nothing can be computed. Press **Enter** to submit, **Ctrl+J** (or **Alt+Enter** / **Shift+Enter** on terminals that distinguish them) to insert a newline without submitting, **Ctrl+C** or **Escape** while the agent is working to **interrupt the current turn** (cancels the in-flight request and returns to the prompt), and **Ctrl+C** while idle to quit. |
 
-**Chain-of-thought:** the TUI renders **Thinking:** blocks with the model’s full pre-tool prose (not just the short one-line summary used on plain stderr). Streaming APIs that send **reasoning** / **reasoning_content** deltas show a **Thinking (stream):** section as tokens arrive.
+**Assistant intent:** model pre-tool prose and streaming **reasoning** / **reasoning_content** deltas appear as **mode-colored ● intent lines** (same accent palette as the input panel). **Ctrl+T** toggles a shorter extract when a block would be very long (compact vs fuller wrap).
 
-**Shortcuts:** **Ctrl+T** toggles a shorter display for large Thinking blocks (compact vs full wrap).
+**Editing the input:** the input panel is a true multi-line editor. **Up/Down** move the cursor between lines, **Home/End** jump to the start or end of the current line, and **Backspace/Delete**, **Ctrl+W** (delete word left), and **Ctrl+U** (delete to start of line) all work as in standard readline-style editors. Long lines word-wrap to the panel width — the box height grows automatically and shrinks back to one row after submission.
 
-**Scrolling:** **Up/Down** arrows scroll one line, **Alt+Up/Down** scroll three lines, **Page Up/Down** scroll half a page, and **Home/End** jump to the top or bottom.
+**Scrolling:** the conversation viewport scrolls with **Page Up/Page Down** (half a page), **Alt+Up/Alt+Down** (three lines), or the mouse wheel. (Plain **Up/Down** and **Home/End** now belong to the input editor; use the modifier or paging keys for transcript navigation.)
 
 **Slash command autocomplete:** type **`/`** at the start of a line to open a dropdown of available commands. Navigate with **Up/Down** arrows, press **Enter** to select (inserts the command name followed by a space), or **Escape** to dismiss. The list filters as you type.
 
 The TUI uses the alternate screen buffer; when you exit, the terminal returns to its previous state. Pass **`-plain`** or pipe stdin to fall back to the classic inline REPL.
+
+## Interrupting a running turn
+
+While the agent is working (making LLM calls or executing tools), you can cancel the current turn and return to the prompt without exiting codient:
+
+| Mode | Interrupt | Effect |
+|------|-----------|--------|
+| **TUI** (default) | **Ctrl+C** or **Escape** | Cancels the current turn; prints "interrupted" and returns to the input panel. Press **Ctrl+C** when idle to quit. |
+| **Plain REPL** (`-plain`) | **Ctrl+C** | Cancels the current turn; prints "interrupted" and returns to the prompt. Press **Ctrl+C** at the prompt to exit. |
+
+Partial results from an interrupted turn (e.g. files already written by tools) are kept on disk but the assistant reply is discarded from conversation history.
 
 ## Headless / CI mode (`-print`)
 
@@ -163,7 +174,7 @@ codient -plain -progress -acp -mode build -workspace /path/to/project
 - **`agent/list_models`** returns ids from **`GET …/models`** on the effective connection for the current **`codient -mode`** (top-level **`base_url`** plus any per-mode **`models`** overrides in **`config.json`**). Parsing accepts OpenAI **`data`** arrays, common alternate **`models`** arrays (including LM Studio-style objects with **`key`**), and object entries keyed by **`id`**, **`model`**, **`key`**, or **`name`** — same endpoint as **`codient -list-models`**.
 - **stderr** may carry human-readable progress; **stdout** is reserved for ACP messages only.
 - **`-max-turns`** and **`-max-cost`** apply per user prompt turn, like headless mode.
-- **Codient Unity / Editor-shaped workspaces:** When **`-workspace`** looks like a Unity project (**`Assets/`** plus **`ProjectSettings/ProjectVersion.txt`**), the agent system prompt includes **Unity ACP** guidance. In **`-acp`**, the agent registers **`unity_*`** tools that issue JSON-RPC **`unity/...`** requests on stdout; the editor client (Codient Unity) runs them on the **Unity main thread** and returns results on stdin—same transport as **`session/request_permission`**. Read tools (hierarchy, assets, prefabs, console snapshot, package/asmdef summary) work in **ask** / **plan** / **build**; **`unity_apply_actions`** is **build mode only** and requires a **user confirmation** dialog in Unity before mutating the scene. API keys and chat payloads still follow your **`config.json`** / provider rules; nothing is sent to Unity except what the model requests through those tools.
+- **Codient Unity / Editor-shaped workspaces:** When **`-workspace`** looks like a Unity project (**`Assets/`** plus **`ProjectSettings/ProjectVersion.txt`**), the agent system prompt includes **Unity ACP** guidance. In **`-acp`**, the agent registers **`unity_*`** tools that issue JSON-RPC **`unity/...`** requests on stdout; the editor client (Codient Unity) runs them on the **Unity main thread** and returns results on stdin—same transport as **`session/request_permission`**. Read tools (hierarchy, assets, prefabs, console snapshot, package/asmdef summary) work in **ask** / **plan** / **build**; **`unity_apply_actions`** is **build mode only** and requires a **user confirmation** dialog in Unity before applying structured edits (scene objects and **`create_prefab`** for new **`Assets/.../*.prefab`** assets). API keys and chat payloads still follow your **`config.json`** / provider rules; nothing is sent to Unity except what the model requests through those tools.
 
 Implementation: [`internal/acpserver/`](../internal/acpserver/) (transport) and [`internal/codientcli/acp_serve.go`](../internal/codientcli/acp_serve.go) (handlers).
 
@@ -309,4 +320,12 @@ Read-only parent modes (ask, plan) can only delegate to read-only sub-agents, pr
 
 ## Streaming
 
-Assistant text can stream to the terminal as it is generated (`-stream-reply`, default on for TTYs). In plan mode with styled markdown, the turn that produces the full design after a blocking question is buffered once so the reply can be rendered with full markdown formatting.
+With **styled output** (default when **`-plain`** is off), assistant replies are **not** streamed token-by-token to stdout on interactive terminals: the full reply is rendered once at end of turn with **GitHub-flavored markdown** (headings, lists, code blocks, tables) via [glamour](https://github.com/charmbracelet/glamour). That avoids raw `**bold**` and fences in the transcript while the model is still generating.
+
+When stdout is **not** a TTY (pipe, redirect, or some IDE integrations), codient still renders markdown, using glamours **no-TTY** layout (structured text without relying on a character device).
+
+Use **`-plain`** if you want **live** assistant tokens as they arrive as raw text with no markdown layout.
+
+**`-stream-reply`** (default on for TTYs) still applies to **plain** sessions: when plain and streaming is enabled, assistant text is written to stdout as it streams.
+
+Plan mode with a blocking **Question** already buffered the next turn so the full design could be markdown-rendered; non-blocking turns now use the same “render once” path whenever styled output is on.
