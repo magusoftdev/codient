@@ -92,11 +92,27 @@ func gitListFiles(root string) ([]string, error) {
 	var paths []string
 	for _, l := range lines {
 		l = strings.TrimSpace(l)
-		if l != "" {
-			paths = append(paths, filepath.FromSlash(l))
+		if l == "" {
+			continue
 		}
+		if isUnderVendor(l) {
+			continue
+		}
+		paths = append(paths, filepath.FromSlash(l))
 	}
 	return paths, nil
+}
+
+// isUnderVendor reports whether any path component is "vendor".
+// This filters out Go vendored dependencies from indexing.
+func isUnderVendor(rel string) bool {
+	parts := strings.Split(filepath.ToSlash(rel), "/")
+	for _, p := range parts[:len(parts)-1] { // exclude filename itself
+		if p == "vendor" {
+			return true
+		}
+	}
+	return false
 }
 
 func walkDir(root string) ([]string, error) {

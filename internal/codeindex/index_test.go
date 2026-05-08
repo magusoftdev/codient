@@ -5,6 +5,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -212,6 +213,43 @@ func TestWalker_SkipsExtensions(t *testing.T) {
 	for _, d := range docs {
 		if d.Path == "image.png" || d.Path == "archive.zip" {
 			t.Fatalf("file %s should be skipped by extension", d.Path)
+		}
+	}
+}
+
+func TestWalker_SkipsVendorDir(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "main.go", "package main\n")
+	writeFile(t, dir, "vendor/pkg/lib.go", "package pkg\n")
+	writeFile(t, dir, "third_party/vendor/deep.go", "package deep\n")
+
+	docs, err := walkWorkspace(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range docs {
+		if strings.Contains(d.Path, "vendor") {
+			t.Fatalf("vendor file should be skipped: %s", d.Path)
+		}
+	}
+}
+
+func TestIsUnderVendor(t *testing.T) {
+	tests := []struct {
+		path  string
+		skip  bool
+	}{
+		{"vendor/a.go", true},
+		{"vendor/pkg/lib.go", true},
+		{"third_party/vendor/deep.go", true},
+		{"pkg/vendor/file.go", true}, // vendor is a directory component
+		{"main.go", false},
+		{"a/vendor/b.go", true},
+	}
+	for _, tc := range tests {
+		got := isUnderVendor(tc.path)
+		if got != tc.skip {
+			t.Errorf("isUnderVendor(%q) = %v, want %v", tc.path, got, tc.skip)
 		}
 	}
 }
