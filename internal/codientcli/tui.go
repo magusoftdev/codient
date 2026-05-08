@@ -1,10 +1,12 @@
 package codientcli
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"strings"
@@ -15,6 +17,8 @@ import (
 
 	"codient/internal/agent"
 	"codient/internal/assistout"
+	"codient/internal/clipboard"
+	"codient/internal/imageutil"
 	"codient/internal/slashcmd"
 	"codient/internal/tokentracker"
 	"codient/internal/tools"
@@ -66,6 +70,10 @@ type (
 	}
 	// tuiUserPromptMsg appends a styled transcript block for the user's submitted prompt (TUI only).
 	tuiUserPromptMsg string
+	// tuiClipImageMsg carries a successfully loaded clipboard image attachment.
+	tuiClipImageMsg struct{ attach imageutil.ImageAttachment }
+	// tuiClipErrorMsg carries a clipboard paste error for display.
+	tuiClipErrorMsg struct{ err error }
 )
 
 var tuiSpinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
@@ -104,6 +112,8 @@ type tuiModel struct {
 	chromeContextWindow    int
 	chromeLastPromptTok    int64
 	chromeContextEstimated bool
+
+	tuiOwner *tuiSetup // back-pointer for clipboard image coordination
 }
 
 // Footer below the viewport: separator, input panel (when not plain), context hint, safety line.
@@ -576,6 +586,11 @@ func (m tuiModel) Update(msg tea.Msg) (_ tea.Model, _ tea.Cmd) {
 		case tea.KeyCtrlT:
 			m.thinkingCompact = !m.thinkingCompact
 			return m, nil
+		case tea.KeyCtrlV:
+			if m.tuiOwner != nil && m.tuiOwner.clipWorkspace != "" {
+				ws := m.tuiOwner.clipWorkspace
+				return m, m.checkClipboardCmd(ws)
+			}
 		case tea.KeyCtrlC:
 			if m.working && m.onInterrupt != nil {
 				if m.onInterrupt() {
@@ -686,13 +701,18 @@ func (m tuiModel) Update(msg tea.Msg) (_ tea.Model, _ tea.Cmd) {
 	case tuiWorkingMsg:
 		m.working = bool(msg)
 		if m.working {
+			m.input.Blur()
 			m.spinnerFrame = 0
 			if m.ready {
 				m.syncViewport()
 			}
 			cmds = append(cmds, m.spinnerTick())
-		} else if m.ready {
-			m.syncViewport()
+		} else {
+			m.input.Focus()
+			cmds = append(cmds, textarea.Blink)
+			if m.ready {
+				m.syncViewport()
+			}
 		}
 
 	case tuiSpinnerTickMsg:
@@ -716,6 +736,27 @@ func (m tuiModel) Update(msg tea.Msg) (_ tea.Model, _ tea.Cmd) {
 	case tuiTodosMsg:
 		m.todos = append([]tools.TodoItem(nil), msg.items...)
 		m.applyViewportLayout()
+
+	case tuiClipImageMsg:
+		if m.tuiOwner != nil {
+			m.tuiOwner.pushClipImage(msg.attach)
+		}
+		n := 0
+		if m.tuiOwner != nil {
+			m.tuiOwner.clipMu.Lock()
+			n = len(m.tuiOwner.clipImages)
+			m.tuiOwner.clipMu.Unlock()
+		}
+		fmt.Fprintf(m.content, "codient: pasted clipboard image (%d image(s) pending)\n", n)
+		if m.ready {
+			m.syncViewport()
+		}
+
+	case tuiClipErrorMsg:
+		fmt.Fprintf(m.content, "codient: clipboard: %v\n", msg.err)
+		if m.ready {
+			m.syncViewport()
+		}
 
 	case tuiQuitMsg:
 		m.quitting = true
@@ -902,6 +943,10 @@ type tuiSetup struct {
 	stderrW  *os.File
 	exitCode int
 	done     chan struct{} // closed when the session goroutine exits
+
+	clipMu        sync.Mutex
+	clipImages    []imageutil.ImageAttachment
+	clipWorkspace string // set by session so TUI Ctrl+V knows where to save
 }
 
 // initTUI creates the Bubble Tea program and redirects stdout/stderr into it.
@@ -938,16 +983,8 @@ func initTUI(mode string, plain bool, onInterrupt func() bool) (*tuiSetup, error
 	os.Stderr = stderrW
 
 	ic := newInputCloser()
-	model := newTUIModel(ic, mode, plain)
-	model.onInterrupt = onInterrupt
-	prog := tea.NewProgram(model,
-		tea.WithAltScreen(),
-		tea.WithMouseCellMotion(),
-		tea.WithOutput(origErr),
-	)
 
 	ts := &tuiSetup{
-		prog:    prog,
 		input:   ic,
 		origOut: origOut,
 		origErr: origErr,
@@ -957,7 +994,57 @@ func initTUI(mode string, plain bool, onInterrupt func() bool) (*tuiSetup, error
 		stderrW: stderrW,
 		done:    make(chan struct{}),
 	}
+
+	model := newTUIModel(ic, mode, plain)
+	model.onInterrupt = onInterrupt
+	model.tuiOwner = ts
+	prog := tea.NewProgram(model,
+		tea.WithAltScreen(),
+		tea.WithMouseCellMotion(),
+		tea.WithOutput(origErr),
+	)
+	ts.prog = prog
+
 	return ts, nil
+}
+
+// checkClipboardCmd returns a Bubble Tea command that asynchronously checks
+// the clipboard for an image, saves it, and loads it via imageutil.
+func (m *tuiModel) checkClipboardCmd(workspace string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		clipDir := clipboard.ClipboardDir(workspace)
+		path, err := clipboard.SaveImage(ctx, clipboard.DefaultExecutor(), clipDir)
+		if err != nil {
+			return tuiClipErrorMsg{err: err}
+		}
+		a, err := imageutil.LoadImage(path, imageutil.DefaultMaxBytes)
+		if err != nil {
+			return tuiClipErrorMsg{err: err}
+		}
+		if a.OrigBytes >= imageutil.WarnLargeBytes {
+			a.Path = filepath.Base(path) + " (large)"
+		}
+		return tuiClipImageMsg{attach: a}
+	}
+}
+
+// pushClipImage appends a clipboard image for the session to pick up on the next submit.
+func (ts *tuiSetup) pushClipImage(a imageutil.ImageAttachment) {
+	ts.clipMu.Lock()
+	defer ts.clipMu.Unlock()
+	ts.clipImages = append(ts.clipImages, a)
+}
+
+// drainClipImages returns and clears any pending clipboard images.
+func (ts *tuiSetup) drainClipImages() []imageutil.ImageAttachment {
+	ts.clipMu.Lock()
+	defer ts.clipMu.Unlock()
+	imgs := ts.clipImages
+	ts.clipImages = nil
+	return imgs
 }
 
 // reEraseLine matches ANSI "erase in line" sequences (ESC [ … K).

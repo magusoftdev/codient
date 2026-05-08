@@ -25,6 +25,7 @@ import (
 	"codient/internal/agentlog"
 	"codient/internal/assistout"
 	"codient/internal/astgrep"
+	"codient/internal/clipboard"
 	"codient/internal/codeindex"
 	"codient/internal/config"
 	"codient/internal/designstore"
@@ -771,11 +772,14 @@ func (s *session) captureSnapshot() (modified, untracked []string) {
 }
 
 // userMessageForTurn builds the API user message from text, optional @image: paths,
-// and images queued via -image (first turn only) or /image.
+// and images queued via -image (first turn only), /image, /paste, or Ctrl+V.
 func (s *session) userMessageForTurn(text string) (openai.ChatCompletionMessageParamUnion, string, error) {
 	var attach []imageutil.ImageAttachment
 	attach = append(attach, s.pendingImages...)
 	s.pendingImages = nil
+	if s.tui != nil {
+		attach = append(attach, s.tui.drainClipImages()...)
+	}
 	if s.turn == 0 {
 		attach = append(s.initialImages, attach...)
 		s.initialImages = nil
@@ -1096,12 +1100,16 @@ func (s *session) runSession(ctx context.Context, initialPrompt string, newSessi
 
 	config.SaveLastMode(string(s.mode))
 
+	// Clean up stale clipboard temp images from previous sessions.
+	go clipboard.Cleanup(clipboard.ClipboardDir(ws), 1*time.Hour)
+
 	s.captureGitSessionState(ws)
 	s.warnIfNotGitRepo()
 
 	var sc *bufio.Scanner
 	if s.tui != nil {
 		sc = bufio.NewScanner(&chanReader{ch: s.tui.input.ch})
+		s.tui.clipWorkspace = ws
 	} else {
 		sc = bufio.NewScanner(os.Stdin)
 		enableBracketedPaste()
@@ -1518,7 +1526,7 @@ func (s *session) buildSlashCommands(ctx context.Context, sc *bufio.Scanner) *sl
 			fmt.Fprint(os.Stderr, cmds.Help())
 			fmt.Fprint(os.Stderr, "\nTip: end a line with \\ for multiline input. Pasting multiline text is also supported.\n")
 			fmt.Fprint(os.Stderr, "Ctrl+C while agent is working cancels the current turn; Ctrl+C at the prompt exits.\n")
-			fmt.Fprint(os.Stderr, "Images: /image path.png attaches to your next message; or use @image:path in text; or codient -image path.png …\n")
+			fmt.Fprint(os.Stderr, "Images: /image path.png attaches to your next message; /paste attaches from clipboard; or use @image:path in text; or codient -image path.png …\n")
 			return nil
 		},
 	})
@@ -1576,6 +1584,31 @@ func (s *session) buildSlashCommands(ctx context.Context, sc *bufio.Scanner) *sl
 			}
 			s.pendingImages = append(s.pendingImages, a)
 			fmt.Fprintf(os.Stderr, "codient: attached %q for next message (%d image(s) pending)\n", filepath.Base(path), len(s.pendingImages))
+			return nil
+		},
+	})
+	cmds.Register(slashcmd.Command{
+		Name:        "paste",
+		Usage:       "/paste",
+		Description: "attach an image from the clipboard to your next message",
+		Run: func(string) error {
+			ws := s.cfg.EffectiveWorkspace()
+			clipDir := clipboard.ClipboardDir(ws)
+			clipCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			defer cancel()
+			path, err := clipboard.SaveImage(clipCtx, clipboard.DefaultExecutor(), clipDir)
+			if err != nil {
+				return err
+			}
+			a, err := imageutil.LoadImage(path, imageutil.DefaultMaxBytes)
+			if err != nil {
+				return err
+			}
+			if a.OrigBytes >= imageutil.WarnLargeBytes {
+				fmt.Fprintf(os.Stderr, "codient: warning: large image %q (%d bytes)\n", path, a.OrigBytes)
+			}
+			s.pendingImages = append(s.pendingImages, a)
+			fmt.Fprintf(os.Stderr, "codient: pasted clipboard image for next message (%d image(s) pending)\n", len(s.pendingImages))
 			return nil
 		},
 	})

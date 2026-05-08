@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Clipboard image paste:** `/paste` slash command and **Ctrl+V** in the TUI grab an image from the OS clipboard and attach it to the next message. Platform-specific: `wl-paste` (Wayland) or `xclip` (X11) on Linux; `osascript` on macOS; PowerShell on Windows. Stale temp files are cleaned up automatically. See [docs/usage.md](docs/usage.md#images-and-vision).
 - **`/create-rule`** REPL slash command: interactive wizard that writes a Cursor-compatible **`.mdc`** rule under **`<workspace>/.cursor/rules/`** (`description`, optional **`globs`**, **`alwaysApply`**). See [docs/usage.md](docs/usage.md#slash-commands).
 - **Single-shot / `-print` session resume:** non-REPL runs save to **`<workspace>/.codient/sessions/`** after each turn and, unless **`-new-session`**, load the latest session (or **`-session-id <id>`**). JSON / `stream-json` output includes **`session_id`** and **`workspace`**. See [docs/usage.md](docs/usage.md#headless--ci-mode--print) and [Bring-your-own remote runs](docs/usage.md#bring-your-own-remote-and-background-runs).
 - **Multi-line input editor** in the TUI: the input panel is now a true multi-line text area that word-wraps and grows up to 8 visible rows. **Enter** submits; **Ctrl+J** / **Alt+Enter** / **Shift+Enter** inserts a newline. Standard editing keys (Home/End, Ctrl+W, Ctrl+U, Backspace/Delete) work within the box.
