@@ -120,6 +120,7 @@ Use a **vision-capable** model (e.g. GPT-4o, Claude 3.5+, many local multimodal 
 
 - **CLI:** `-image path` or repeat `-image` for multiple paths. Comma-separated lists work (`-image a.png,b.png`). Applies to the **first user message** in a REPL session, or to a **single-shot** `-prompt` / stdin run. Combines with `-stream` (no tools).
 - **REPL:** `/image path/to.png` queues an image for your **next** message (repeat to attach several). You can also embed paths in text: `@image:screenshot.png` or `@image:"C:\path\with spaces.png"` (paths are relative to the workspace when not absolute).
+- **Clipboard:** `/paste` grabs an image from the OS clipboard and attaches it to your next message. In the TUI, **Ctrl+V** does the same thing. Requires a clipboard tool on Linux: **`wl-paste`** (Wayland) or **`xclip`** (X11). macOS and Windows use built-in APIs (`osascript` / PowerShell).
 - **Limits:** PNG, JPEG, GIF, WebP; max **20 MiB** per file (warning above **5 MiB**). Large images still count toward context—use `/compact` if needed.
 
 Use `-help` for all flags. Notable options:

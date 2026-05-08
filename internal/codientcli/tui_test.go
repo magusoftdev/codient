@@ -26,6 +26,44 @@ func TestTUIModel_UserPromptBlockPlain(t *testing.T) {
 	}
 }
 
+func TestTUIModel_UserPromptBlockBorderWidth(t *testing.T) {
+	prev := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
+
+	ic := newInputCloser()
+	m := newTUIModel(ic, "build", false)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(tuiModel)
+
+	m.appendUserPromptBlock("Please create a plan to fix both bugs")
+	rendered := m.content.String()
+	lines := strings.Split(strings.TrimRight(rendered, "\n"), "\n")
+
+	var widths []int
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		widths = append(widths, lipgloss.Width(line))
+	}
+	if len(widths) < 3 {
+		t.Fatalf("expected at least 3 non-empty lines (top border, content, bottom border), got %d", len(widths))
+	}
+	maxW := 0
+	for _, w := range widths {
+		if w > maxW {
+			maxW = w
+		}
+	}
+	for i, w := range widths {
+		if w != maxW {
+			t.Fatalf("line %d has width %d, want %d (all lines should be the same width); rendered:\n%s",
+				i, w, maxW, rendered)
+		}
+	}
+}
+
 func TestTUIModel_OutputAppendsToViewport(t *testing.T) {
 	ic := newInputCloser()
 	m := newTUIModel(ic, "ask", true)
@@ -152,6 +190,9 @@ func TestTUIModel_WorkingStatus(t *testing.T) {
 	if !strings.Contains(m.viewportContent(), "Agent is working") {
 		t.Fatal("viewport content should contain spinner text while working")
 	}
+	if m.input.Focused() {
+		t.Fatal("input should be blurred while agent is working")
+	}
 
 	updated, _ = m.Update(tuiWorkingMsg(false))
 	m = updated.(tuiModel)
@@ -160,6 +201,9 @@ func TestTUIModel_WorkingStatus(t *testing.T) {
 	}
 	if strings.Contains(m.viewportContent(), "Agent is working") {
 		t.Fatal("viewport content should not contain spinner text when idle")
+	}
+	if !m.input.Focused() {
+		t.Fatal("input should be focused when agent is idle")
 	}
 }
 

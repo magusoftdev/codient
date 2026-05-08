@@ -16,3 +16,16 @@ make test-integration         # live API only (CODIENT_INTEGRATION=1)
 make test-integration-strict  # + strict tool tests (no run_command test unless you set CODIENT_INTEGRATION_RUN_COMMAND=1 yourself)
 make test-acp                 # live ACP subprocess tests (spawns codient -acp; same JSON-RPC as Codient Unity)
 ```
+
+## Optional dependencies
+
+**Clipboard image paste** (`/paste`, Ctrl+V in TUI) shells out to platform-specific tools:
+
+| Platform | Tool | Install |
+|----------|------|---------|
+| Linux (Wayland) | `wl-paste` | `apt install wl-clipboard` / `pacman -S wl-clipboard` |
+| Linux (X11) | `xclip` | `apt install xclip` / `pacman -S xclip` |
+| macOS | `osascript` | Built-in |
+| Windows | `powershell` | Built-in |
+
+The clipboard integration test (`internal/clipboard/integration_test.go`) requires `CODIENT_INTEGRATION=1` and a real clipboard with an image copied.

@@ -28,7 +28,7 @@ This document supersedes informal “gap list” audits: it records **what codie
 | **MCP client** | **Done** | `internal/mcpclient`; config `mcp_servers`; tools `mcp__…`. See [Context and integrations](context-and-integrations.md#mcp-model-context-protocol-servers). |
 | **Sub-agents / delegation** | **Partial** | `delegate_task` + `internal/subagent`: nested child runner, same workspace, **sequential**. No parallel agents or **git worktrees** per task. See [Usage](usage.md) (sub-agents). |
 | **Sandbox / isolation** | **Done (platform-dependent)** | `sandbox_mode`: `off`, `native`, `container`, `auto`. Native: Linux/Darwin/Windows job limits; **container**: Docker/Podman. See [Configuration](configuration.md) (sandboxing). |
-| **Multimodal (images)** | **Done** | CLI `-image`, REPL `/image`; use vision-capable models. See [Usage](usage.md). |
+| **Multimodal (images)** | **Done** | CLI `-image`, REPL `/image`, `/paste` (clipboard), Ctrl+V in TUI; use vision-capable models. See [Usage](usage.md). |
 | **Headless / CI** | **Partial** | `-print`, `-auto-approve`, JSON / `stream-json` (`session_id`, `workspace`, `cost_usd`). Sessions persist under **`.codient/sessions/`**; resume latest or **`-session-id`** for chained runs. **No first-party cloud** — see [Bring-your-own remote](usage.md#bring-your-own-remote-and-background-runs). |
 
 ---

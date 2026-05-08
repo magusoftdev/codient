@@ -102,6 +102,7 @@ func (m *tuiModel) appendUserPromptBlock(text string) {
 	boxed := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(borderFg).
+		Width(innerW + 4).
 		Render(joined)
 
 	m.content.WriteString("\n")
@@ -412,9 +413,185 @@ func hangingIndentWidth(line string) int {
 	return lipgloss.Width(string(prefix))
 }
 
+// isDecoratedLine reports whether line has a non-whitespace prefix decoration
+// (bullet, box-drawing, spinner, warning) that marks it as a structured TUI
+// element rather than plain prose. Decorated lines must not be joined with
+// adjacent lines during the re-flow pre-pass.
+func isDecoratedLine(line string) bool {
+	visible := reAnsiCSI.ReplaceAllString(line, "")
+	for _, r := range visible {
+		if r == ' ' || r == '\t' {
+			continue
+		}
+		return isPrefixRune(r)
+	}
+	return false
+}
+
+// looksLikeCodeFence returns true when the visible content of line starts
+// with ``` or ~~~, indicating a fenced code block boundary.
+func looksLikeCodeFence(line string) bool {
+	visible := strings.TrimLeft(reAnsiCSI.ReplaceAllString(line, ""), " \t")
+	return strings.HasPrefix(visible, "```") || strings.HasPrefix(visible, "~~~")
+}
+
+// looksLikeTableRow returns true when the visible content of line looks like
+// a Markdown table row (contains a | character that is not part of a box
+// border used as a delegation prefix).
+func looksLikeTableRow(line string) bool {
+	visible := reAnsiCSI.ReplaceAllString(line, "")
+	// A delegation prefix is "│ " at the very start. Table rows have | in
+	// the middle of the content.
+	trimmed := strings.TrimLeft(visible, " \t")
+	if strings.HasPrefix(trimmed, "│ ") || strings.HasPrefix(trimmed, "| ") {
+		// Could be a delegation prefix — check if there is another | later.
+		rest := trimmed[2:]
+		return strings.ContainsRune(rest, '|') || strings.ContainsRune(rest, '│')
+	}
+	return strings.ContainsRune(trimmed, '|') || strings.ContainsRune(trimmed, '│')
+}
+
+// looksLikeHeading returns true for lines that look like markdown headings
+// (leading # after stripping ANSI) or glamour-rendered headings (lines that
+// are entirely bold/upper-cased surrounded by blank lines). We use a simple
+// heuristic: visible content starts with '#'.
+func looksLikeHeading(line string) bool {
+	visible := strings.TrimLeft(reAnsiCSI.ReplaceAllString(line, ""), " \t")
+	return strings.HasPrefix(visible, "#")
+}
+
+// isJoinable reports whether line is plain prose that may be joined with
+// adjacent lines during the re-flow pre-pass. A line is joinable when it:
+//   - is non-empty
+//   - carries no leading decoration (bullet, box-drawing, etc.)
+//   - is not a code fence
+//   - is not a table row
+//   - is not a heading
+//   - has no leading indentation beyond a single space (indented blocks such
+//     as blockquotes and code-without-fence are left alone)
+func isJoinable(line string) bool {
+	if strings.TrimSpace(line) == "" {
+		return false
+	}
+	if isDecoratedLine(line) {
+		return false
+	}
+	if looksLikeCodeFence(line) {
+		return false
+	}
+	if looksLikeTableRow(line) {
+		return false
+	}
+	if looksLikeHeading(line) {
+		return false
+	}
+	// Lines with 2+ leading spaces are treated as intentionally indented
+	// (blockquotes, code, etc.) and are not joined.
+	visible := reAnsiCSI.ReplaceAllString(line, "")
+	return !strings.HasPrefix(visible, "  ")
+}
+
+// joinProseLines merges adjacent joinable lines that are shorter than width
+// into a single line so that a subsequent wrap pass can re-flow them at the
+// current terminal width. This is the inverse of word-wrapping: it undoes
+// hard newlines that were inserted by a previous wrap at a narrower width.
+//
+// Two consecutive non-blank joinable lines are joined with a single space.
+// A blank line (or any non-joinable line) resets the accumulator so that
+// paragraph boundaries, decorated lines, code blocks, and table rows are
+// always preserved.
+func joinProseLines(lines []string, width int) []string {
+	out := make([]string, 0, len(lines))
+	acc := ""        // current accumulated joinable run
+	inCode := false  // inside a fenced code block
+
+	flush := func() {
+		if acc != "" {
+			out = append(out, acc)
+			acc = ""
+		}
+	}
+
+	for _, line := range lines {
+		// Track code fence state on the raw line.
+		if looksLikeCodeFence(line) {
+			flush()
+			out = append(out, line)
+			inCode = !inCode
+			continue
+		}
+		if inCode {
+			flush()
+			out = append(out, line)
+			continue
+		}
+
+		blank := strings.TrimSpace(reAnsiCSI.ReplaceAllString(line, "")) == ""
+		if blank {
+			flush()
+			out = append(out, line)
+			continue
+		}
+
+		if !isJoinable(line) {
+			flush()
+			out = append(out, line)
+			continue
+		}
+
+		// Plain prose: join with previous accumulator if both are short
+		// enough that they came from a previous wrap pass (heuristic:
+		// the accumulated line is shorter than width-1).
+		if acc == "" {
+			acc = line
+		} else if lipgloss.Width(acc) < width-1 {
+			// Join: separate with a space only if acc doesn't already end
+			// with a space and line doesn't start with a space.
+			sep := " "
+			if strings.HasSuffix(acc, " ") || strings.HasPrefix(line, " ") {
+				sep = ""
+			}
+			acc = acc + sep + line
+		} else {
+			// acc is already wide enough — flush and start a new run.
+			flush()
+			acc = line
+		}
+	}
+	flush()
+	return out
+}
+
+// collapseBlankLines reduces runs of more than maxRun consecutive blank lines
+// to exactly maxRun blank lines. This prevents the "extra spaces between
+// paragraphs" artifact that arises when word-wrapping inserts newlines into
+// content that already has newline terminators.
+func collapseBlankLines(lines []string, maxRun int) []string {
+	out := make([]string, 0, len(lines))
+	run := 0
+	for _, line := range lines {
+		if strings.TrimSpace(reAnsiCSI.ReplaceAllString(line, "")) == "" {
+			run++
+			if run <= maxRun {
+				out = append(out, line)
+			}
+		} else {
+			run = 0
+			out = append(out, line)
+		}
+	}
+	return out
+}
+
 // indentAwareWrap word-wraps s at width, preserving leading indentation on
 // continuation lines so wrapped text stays visually aligned with its parent
 // line's content rather than resetting to column 0.
+//
+// Before wrapping, a join pre-pass merges adjacent short prose lines that
+// were produced by a previous wrap at a narrower width. This allows the
+// viewport to re-flow correctly when the terminal is widened. A blank-line
+// collapse post-pass then ensures no more than one consecutive blank line
+// appears between paragraphs, preventing the extra-spacing artefact.
 //
 // The first line of each paragraph uses the full width. Continuation lines
 // receive a hanging indent equal to the parent's prefix (whitespace +
@@ -425,6 +602,10 @@ func indentAwareWrap(s string, width int) string {
 		return s
 	}
 	lines := strings.Split(s, "\n")
+
+	// Pre-pass: re-join prose lines that were split by a previous narrower wrap.
+	lines = joinProseLines(lines, width)
+
 	out := make([]string, 0, len(lines))
 	for _, line := range lines {
 		if lipgloss.Width(line) <= width {
@@ -454,5 +635,9 @@ func indentAwareWrap(s string, width int) string {
 			}
 		}
 	}
+
+	// Post-pass: collapse runs of blank lines to at most 1 consecutive blank.
+	out = collapseBlankLines(out, 1)
+
 	return strings.Join(out, "\n")
 }
