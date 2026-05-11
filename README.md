@@ -5,7 +5,9 @@
 [![Go version](https://img.shields.io/github/go-mod/go-version/magusoftdev/codient/main?label=Go&logo=go)](https://github.com/magusoftdev/codient/blob/main/go.mod)
 [![Latest release](https://img.shields.io/github/v/release/magusoftdev/codient?label=release&logo=github)](https://github.com/magusoftdev/codient/releases/latest)
 
-**codient** is a command-line agent for any **OpenAI-compatible** chat API (local server, cloud provider, etc.). It runs multi-step tool use against your workspace—read and search files, run allowlisted commands, optional HTTPS fetch and web search, and write access in **build** mode. **Ask** and **plan** modes use a read-only tool set and different system prompts: ask for exploration, plan for structured implementation plans with clarifying questions.
+**codient** is a command-line agent for any **OpenAI-compatible** chat API (local server, cloud provider, etc.). It runs multi-step tool use against your workspace — read and search files, run allowlisted commands, optional HTTPS fetch and web search, and write access when the orchestrator routes a turn into the build path.
+
+Codient runs the **Intent-Driven Orchestrator** on every turn: a tiny supervisor LLM call classifies each user prompt into **QUERY** (read-only Q&A), **DESIGN** (read-only architectural plan), **SIMPLE_FIX** (build), or **COMPLEX_TASK** (plan, then auto-handoff to build), and selects the right tool set, system prompt, and reasoning tier behind the scenes. Configure two reasoning tiers — **`low_reasoning_model`** (supervisor, QUERY answers, SIMPLE_FIX builds) and **`high_reasoning_model`** (DESIGN advice and COMPLEX_TASK planning) — and just type `codient "your prompt"`. There are no manual mode flags or slash commands: pass **`-force`** / **`-yes`** to auto-approve plan -> build hand-offs in non-interactive runs.
 
 When the API returns usage metadata, codient aggregates **prompt and completion tokens** per session and shows **estimated cost** using a built-in pricing table or your `cost_per_mtok` override. See [Token usage and cost estimates](docs/configuration.md#token-usage-and-cost-estimates).
 
@@ -56,7 +58,7 @@ If you are browsing the [`docs/`](docs/) tree (for example on GitHub), start wit
 | [**Getting started**](docs/getting-started.md) | Requirements and optional tools (install steps are above) |
 | [**Configuration**](docs/configuration.md) | Config file, `/config` keys, subprocess sandboxing, auto-check sequence, tokens and cost, environment variables |
 | [**Context and integrations**](docs/context-and-integrations.md) | Web search, semantic search, repository map, MCP servers, lifecycle hooks, auto-update |
-| [**Usage**](docs/usage.md) | CLI examples, split-screen TUI, `-print` (session resume, JSON `session_id`), BYO remote/CI, images and vision, flags, **`-acp`** (Agent Client Protocol stdio for editors such as Codient Unity), A2A server, slash commands, git workflow, sessions, memory, plan mode, sub-agents, streaming |
+| [**Usage**](docs/usage.md) | CLI examples, split-screen TUI, `-print` (session resume, JSON `session_id`), BYO remote/CI, images and vision, flags, **`-acp`** (Agent Client Protocol stdio for editors such as Codient Unity), A2A server, slash commands, git workflow, sessions, memory, the Intent-Driven Orchestrator and plan -> build hand-off, sub-agents, streaming |
 | [**Development**](docs/development.md) | Building and testing the project |
 | [**Feature parity**](docs/feature-parity.md) | Gap list vs. other agents (kept current) |
 

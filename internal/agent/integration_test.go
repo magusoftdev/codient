@@ -452,3 +452,60 @@ func workspaceFixture(t *testing.T, files map[string]string) string {
 	}
 	return root
 }
+
+// TestIntegration_PlanToBuildHandoffWritesFile exercises the same end-to-end
+// flow as the REPL plan->build handoff at the agent.Runner layer: a synthetic
+// plan-mode assistant reply followed by the handoff directive must cause the
+// build-mode runner to call a write tool on the next turn instead of
+// gathering more context. See internal/codientcli/designhandoff.go for the
+// canonical message format; this test inlines the same wording so the live
+// behavior is verified end-to-end.
+func TestIntegration_PlanToBuildHandoffWritesFile(t *testing.T) {
+	skipUnlessIntegration(t)
+	skipUnlessStrictTools(t)
+	if testing.Short() {
+		t.Skip("skipping live LLM round in -short mode")
+	}
+	dir := workspaceFixture(t, map[string]string{
+		"README.md": "# project\n",
+	})
+	ar, ctx, cancel := newLiveRunner(t, dir)
+	defer cancel()
+
+	const planMarkdown = "## Implementation steps\n\n1. Create note.txt with the literal text 'hello-handoff'.\n\n## Files to modify\n\n- note.txt\n\n## Verification\n\n- Confirm note.txt exists.\n\nReady to implement"
+	handoff := "This session is already in build mode. Available tools: " +
+		strings.Join(ar.Tools.Names(), ", ") + ". Only use tools from this list.\n\n" +
+		"The user just chose to implement the design from the previous turn. " +
+		"Do not ask whether to proceed, whether they want you to build, or for confirmation—they already confirmed. " +
+		"Do not treat the design as a proposal to discuss: start implementing now using tools.\n\n" +
+		"Ignore any line in the design below that says to run codient or switch modes elsewhere; you are in the correct mode here.\n\n" +
+		"---\n\n" + planMarkdown
+
+	system := "You are codient in build mode. Available tools: " + strings.Join(ar.Tools.Names(), ", ") + "."
+	history := []openai.ChatCompletionMessageParamUnion{
+		openai.UserMessage("Plan a tiny change: a new file named note.txt containing 'hello-handoff'."),
+		openai.AssistantMessage(planMarkdown),
+		openai.UserMessage(handoff),
+	}
+	userMsg := openai.UserMessage("Implement the plan now.")
+
+	var sawWriteTool sync.Mutex
+	writeToolCalled := false
+	ar.OnIntent = nil
+	ar.MaxTurns = 8
+	reply, _, _, err := ar.RunConversation(ctx, system, history, userMsg, io.Discard)
+	if err != nil {
+		t.Fatalf("RunConversation: %v", err)
+	}
+	_ = reply
+
+	notePath := filepath.Join(dir, "note.txt")
+	if _, statErr := os.Stat(notePath); statErr == nil {
+		sawWriteTool.Lock()
+		writeToolCalled = true
+		sawWriteTool.Unlock()
+	}
+	if !writeToolCalled {
+		t.Fatalf("expected agent to write note.txt during build-mode handoff implementation; reply=%s", stringutil.TruncateRunes(reply, 800))
+	}
+}

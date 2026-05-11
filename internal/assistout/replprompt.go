@@ -1,18 +1,10 @@
 package assistout
 
 import (
-	"fmt"
 	"os"
-	"strings"
 
 	"github.com/charmbracelet/lipgloss"
 )
-
-var modeColors = map[string]lipgloss.AdaptiveColor{
-	"build": {Light: "#0369A1", Dark: "#7DD3FC"}, // blue
-	"plan":  {Light: "#C2410C", Dark: "#FB923C"}, // orange
-	"ask":   {Light: "#15803D", Dark: "#4ADE80"}, // green
-}
 
 func stderrIsInteractive() bool {
 	if o := tuiOverride.Load(); o != nil {
@@ -25,31 +17,32 @@ func stderrIsInteractive() bool {
 	return (st.Mode() & os.ModeCharDevice) != 0
 }
 
-func normalizedMode(mode string) string {
-	m := strings.ToLower(strings.TrimSpace(mode))
-	if m == "" {
-		return "build"
-	}
-	return m
+// UserMessageAccentColor returns the accent color used for rendered user
+// chat entries in the transcript (bubble border, input panel accent strip,
+// REPL "> " prompt). We use the codient brand sky-blue — the same hue as
+// the leftmost stop of the welcome logo gradient — so user-authored content
+// is visually distinct from agent-side framing, which uses
+// [AgentAccentColor] (purple, the rightmost / magenta-leaning stop).
+func UserMessageAccentColor() lipgloss.AdaptiveColor {
+	return lipgloss.AdaptiveColor{Light: "#0284C7", Dark: "#38BDF8"}
 }
 
-func modeForeground(mode string) lipgloss.AdaptiveColor {
-	c, ok := modeColors[normalizedMode(mode)]
-	if !ok {
-		return modeColors["build"]
-	}
-	return c
+// AgentAccentColor returns the accent color used for codient's own agent
+// framing in the transcript and chrome: the welcome banner border, the
+// "● " progress / intent bullets, and any other place that should read as
+// "the codient agent speaking". It pairs with [UserMessageAccentColor]
+// (blue) to color-code the two voices in the REPL.
+func AgentAccentColor() lipgloss.AdaptiveColor {
+	return lipgloss.AdaptiveColor{Light: "#7C3AED", Dark: "#C084FC"}
 }
 
-// ModeAccentColor returns the standard mode accent (same foreground as the REPL mode label and progress bullets).
-func ModeAccentColor(mode string) lipgloss.AdaptiveColor {
-	return modeForeground(mode)
-}
-
-// ProgressIntentBulletPrefix is the leading indent and bullet for assistant thinking / intent
-// prose on stderr. The bullet uses the same color as the REPL mode label for mode.
-func ProgressIntentBulletPrefix(plain bool, mode string) string {
-	return progressBulletPrefix(plain, modeForeground(mode))
+// ProgressIntentBulletPrefix is the leading indent and bullet for assistant
+// thinking / intent prose on stderr. The bullet uses the agent accent
+// (purple) so the "codient is speaking" voice is consistent regardless of
+// which internal mode the orchestrator picked for the current turn. The
+// mode parameter is kept for API stability but no longer influences color.
+func ProgressIntentBulletPrefix(plain bool, _ string) string {
+	return progressBulletPrefix(plain, AgentAccentColor())
 }
 
 func progressBulletPrefix(plain bool, fg lipgloss.AdaptiveColor) string {
@@ -61,35 +54,12 @@ func progressBulletPrefix(plain bool, fg lipgloss.AdaptiveColor) string {
 	return "  " + b + " "
 }
 
-// SessionPrompt returns a styled REPL prompt showing the current mode, e.g. "[build] > ".
-// Used for all modes as the default input prompt between turns.
-func SessionPrompt(plain bool, mode string) string {
-	label := fmt.Sprintf("[%s] > ", mode)
-	color, ok := modeColors[mode]
-	if !ok {
-		color = modeColors["build"]
-	}
-	return styledLabel(plain, label, color, true)
-}
-
-// ModeHint returns a short description of the mode and how to use it.
-func ModeHint(plain bool, mode string) string {
-	var text string
-	switch mode {
-	case "build":
-		text = "Build mode — full read/write tools. Ask the agent to implement, refactor, or fix code."
-	case "plan":
-		text = "Plan mode — read-only tools. Describe what you want built and the agent will draft an implementation design, asking clarifying questions along the way."
-	case "ask":
-		text = "Ask mode — read-only tools. Ask questions about your codebase, libraries, or concepts."
-	default:
-		return ""
-	}
-	color, ok := modeColors[mode]
-	if !ok {
-		color = modeColors["build"]
-	}
-	return styledLabel(plain, text, color, false)
+// UserPrompt returns the styled REPL prompt for the orchestrator-driven default
+// experience: a single chevron in the user-message accent color, no mode label.
+// The orchestrator picks an internal mode per turn so we no longer surface a
+// mode label at the input line.
+func UserPrompt(plain bool) string {
+	return styledLabel(plain, "> ", UserMessageAccentColor(), true)
 }
 
 // PlanAnswerPrefix returns text to print before stdin when the assistant is

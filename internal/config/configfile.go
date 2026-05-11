@@ -21,7 +21,10 @@ type PersistentConfig struct {
 	Model   string `json:"model,omitempty"`
 
 	// Default mode
-	Mode string `json:"mode,omitempty"` // build|ask|plan
+	// Mode is read for backwards compatibility only — the runtime mode is
+	// always the Intent-Driven Orchestrator. A non-empty/non-"auto" value
+	// triggers a one-time deprecation warning at startup.
+	Mode string `json:"mode,omitempty"`
 
 	// Workspace
 	Workspace string `json:"workspace,omitempty"`
@@ -75,6 +78,11 @@ type PersistentConfig struct {
 	Quiet   bool `json:"quiet,omitempty"`
 	Verbose bool `json:"verbose,omitempty"`
 
+	// MouseEnabled toggles TUI mouse capture (wheel scroll). When false the
+	// terminal handles mouse events itself so native click-and-drag text
+	// selection works (default true when omitted).
+	MouseEnabled *bool `json:"mouse_enabled,omitempty"`
+
 	// Logging
 	LogPath string `json:"log,omitempty"`
 
@@ -99,6 +107,10 @@ type PersistentConfig struct {
 
 	// Embedding model for semantic code search (e.g. "text-embedding-3-small"). Empty disables.
 	EmbeddingModel string `json:"embedding_model,omitempty"`
+	// EmbeddingBaseURL routes /v1/embeddings to a different server than chat (e.g. local LM Studio while chat uses Anthropic). Empty inherits base_url.
+	EmbeddingBaseURL string `json:"embedding_base_url,omitempty"`
+	// EmbeddingAPIKey is the API key for EmbeddingBaseURL. Empty inherits api_key (only used when EmbeddingBaseURL is set).
+	EmbeddingAPIKey string `json:"embedding_api_key,omitempty"`
 
 	// RepoMapTokens caps the structural repo map in the system prompt (0 = auto by workspace size, -1 = off).
 	RepoMapTokens int `json:"repo_map_tokens,omitempty"`
@@ -106,8 +118,26 @@ type PersistentConfig struct {
 	// UpdateNotify opt-out: set to false to suppress the interactive update prompt on startup.
 	UpdateNotify *bool `json:"update_notify,omitempty"`
 
-	// Per-mode connection overrides (build, ask, plan). Fields left empty inherit top-level.
+	// Models held per-mode connection overrides (build / ask / plan) in older
+	// releases. The runtime no longer honors them — every turn picks
+	// LowReasoningModel or HighReasoningModel based on the orchestrator's
+	// classification — but the field is still parsed so config.Load can emit
+	// a one-time deprecation warning when an old config.json arrives.
 	Models map[string]ModeConnectionOverride `json:"models,omitempty"`
+
+	// LowReasoningModel selects the model used for the supervisor (intent
+	// classification), QUERY answers, and SIMPLE_FIX implementation. Empty
+	// inherits Model. Pair with LowReasoningBaseURL / LowReasoningAPIKey for a
+	// fully separate inference endpoint.
+	LowReasoningModel   string `json:"low_reasoning_model,omitempty"`
+	LowReasoningBaseURL string `json:"low_reasoning_base_url,omitempty"`
+	LowReasoningAPIKey  string `json:"low_reasoning_api_key,omitempty"`
+
+	// HighReasoningModel selects the model used for DESIGN advice and
+	// COMPLEX_TASK plan generation. Empty inherits Model.
+	HighReasoningModel   string `json:"high_reasoning_model,omitempty"`
+	HighReasoningBaseURL string `json:"high_reasoning_base_url,omitempty"`
+	HighReasoningAPIKey  string `json:"high_reasoning_api_key,omitempty"`
 
 	// MCP servers to connect to at session start.
 	MCPServers map[string]MCPServerConfig `json:"mcp_servers,omitempty"`
@@ -239,7 +269,6 @@ func ConfigToPersistent(cfg *Config) *PersistentConfig {
 		BaseURL:               cfg.BaseURL,
 		APIKey:                cfg.APIKey,
 		Model:                 cfg.Model,
-		Mode:                  cfg.Mode,
 		Workspace:             cfg.Workspace,
 		MaxConcurrent:         cfg.MaxConcurrent,
 		ExecAllowlist:         strings.Join(cfg.ExecAllowlist, ","),
@@ -272,8 +301,15 @@ func ConfigToPersistent(cfg *Config) *PersistentConfig {
 		ProjectContext:        cfg.ProjectContext,
 		AstGrep:               cfg.AstGrep,
 		EmbeddingModel:        cfg.EmbeddingModel,
+		EmbeddingBaseURL:      cfg.EmbeddingBaseURL,
+		EmbeddingAPIKey:       cfg.EmbeddingAPIKey,
 		RepoMapTokens:         cfg.RepoMapTokens,
-		Models:                cfg.ModeModels,
+		LowReasoningModel:     cfg.LowReasoning.Model,
+		LowReasoningBaseURL:   cfg.LowReasoning.BaseURL,
+		LowReasoningAPIKey:    cfg.LowReasoning.APIKey,
+		HighReasoningModel:    cfg.HighReasoning.Model,
+		HighReasoningBaseURL:  cfg.HighReasoning.BaseURL,
+		HighReasoningAPIKey:   cfg.HighReasoning.APIKey,
 		MCPServers:            cfg.MCPServers,
 		GitProtectedBranches:  strings.Join(cfg.GitProtectedBranches, ","),
 	}
@@ -304,6 +340,10 @@ func ConfigToPersistent(cfg *Config) *PersistentConfig {
 	if !cfg.PlanTot {
 		f := false
 		pc.PlanTot = &f
+	}
+	if !cfg.MouseEnabled {
+		f := false
+		pc.MouseEnabled = &f
 	}
 	pc.CostPerMTok = cfg.CostPerMTok
 	pc.HooksEnabled = cfg.HooksEnabled

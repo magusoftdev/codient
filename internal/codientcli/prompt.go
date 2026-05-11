@@ -52,6 +52,13 @@ func searchOptsFrom(cfg *config.Config, netLimit *tools.RateLimiter) *tools.Sear
 }
 
 func buildRegistry(cfg *config.Config, mode prompt.Mode, s *session, memOpts *tools.MemoryOptions) *tools.Registry {
+	// ModeAuto is a sentinel for the orchestrator; the bootstrap registry is the
+	// build-mode (write-enabled) variant so first-turn classification still has
+	// every tool available. The orchestrator rebuilds the registry per turn once
+	// it has resolved a concrete mode.
+	if mode == prompt.ModeAuto || mode == "" {
+		mode = prompt.ModeBuild
+	}
 	netLimit := tools.NewNetworkLimiter(cfg.FetchWebRatePerSec, cfg.FetchWebRateBurst)
 	fetch := fetchOptsFrom(cfg, s, netLimit)
 	search := searchOptsFrom(cfg, netLimit)

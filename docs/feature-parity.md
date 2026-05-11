@@ -8,7 +8,8 @@ This document supersedes informal “gap list” audits: it records **what codie
 
 ## Strengths (unchanged themes)
 
-- Multi-mode architecture (Build / Ask / Plan) with tool scoping per mode  
+- Intent-Driven Orchestrator (auto-only): supervisor LLM picks the internal path (ask / plan / build / plan -> auto-handoff to build) per turn, with per-path tool scoping  
+- Two-tier reasoning model selection (`low_reasoning_model` / `high_reasoning_model`)  
 - OpenAI-compatible APIs  
 - File and search tools (read, write, patch, grep, glob, search, semantic search)  
 - Embedded web search (searchmux) where configured  
@@ -29,7 +30,9 @@ This document supersedes informal “gap list” audits: it records **what codie
 | **Sub-agents / delegation** | **Partial** | `delegate_task` + `internal/subagent`: nested child runner, same workspace, **sequential**. No parallel agents or **git worktrees** per task. See [Usage](usage.md) (sub-agents). |
 | **Sandbox / isolation** | **Done (platform-dependent)** | `sandbox_mode`: `off`, `native`, `container`, `auto`. Native: Linux/Darwin/Windows job limits; **container**: Docker/Podman. See [Configuration](configuration.md) (sandboxing). |
 | **Multimodal (images)** | **Done** | CLI `-image`, REPL `/image`, `/paste` (clipboard), Ctrl+V in TUI; use vision-capable models. See [Usage](usage.md). |
+| **File references (`@path`)** | **Done** | `@path/to/file.go` inlines file contents into the user message. Drag-and-drop detection auto-prefixes pasted paths. See [Usage](usage.md#file-references-path). |
 | **Headless / CI** | **Partial** | `-print`, `-auto-approve`, JSON / `stream-json` (`session_id`, `workspace`, `cost_usd`). Sessions persist under **`.codient/sessions/`**; resume latest or **`-session-id`** for chained runs. **No first-party cloud** — see [Bring-your-own remote](usage.md#bring-your-own-remote-and-background-runs). |
+| **Plan -> build handoff** | **Done** | The orchestrator drives the transition automatically on COMPLEX_TASK turns: after a `Ready to implement` plan-path reply, codient injects a structured implementation directive and the next user message implements without an extra approval menu (gated by an interactive prompt or `-force` / `-yes` in non-interactive runs). See [Usage](usage.md#plan-build-hand-off). Aligned with Claude Code, Cursor, Codex CLI. |
 
 ---
 
@@ -38,7 +41,7 @@ This document supersedes informal “gap list” audits: it records **what codie
 | Theme | Status | Notes |
 |--------|--------|--------|
 | **Git workflow** | **Largely done** | Default `git_auto_commit`, undo/checkpoint integration, branch helpers, `create_pull_request` via `gh` CLI. See [Usage](usage.md) (git workflow). |
-| **Per-mode model / URL / key** | **Done** | `build_*` / `ask_*` / `plan_*` overrides; `openaiclient.NewForMode`. [Configuration](configuration.md). |
+| **Per-tier model / URL / key** | **Done** | `low_reasoning_*` / `high_reasoning_*` overrides routed through `config.ConnectionForTier` and `openaiclient.NewForTier`. The orchestrator uses the low tier for QUERY / SIMPLE_FIX (and the supervisor itself) and the high tier for DESIGN / COMPLEX_TASK planning. [Configuration](configuration.md). |
 | **Hooks** | **Done** | `hooks_enabled`, `hooks.json`. [Context and integrations](context-and-integrations.md). |
 | **Checkpointing** | **Done** | `/checkpoint`, `/checkpoints`, restore / rollback / fork; tree + conversation branches. [Usage](usage.md). |
 | **Auto lint / test** | **Partial** | AutoCheck runs configured build/lint/test after mutations and **injects** output into the conversation. **No** dedicated “parse failures → fix → rerun until green” loop; the **multi-turn agent** must converge. |
@@ -51,7 +54,7 @@ This document supersedes informal “gap list” audits: it records **what codie
 | Theme | Status |
 |--------|--------|
 | **IDE / VS Code extension** | **Out of repo** — not in `codient` CLI; editor integrations may live elsewhere (e.g. Unity package). |
-| **Named config profiles** | **Not implemented** — rich flat config + per-mode overrides, but no Codex-style named profile switcher. |
+| **Named config profiles** | **Not implemented** — rich flat config + low/high reasoning-tier overrides, but no Codex-style named profile switcher. |
 | **Voice input** | **Not implemented** |
 | **Session sync across devices** | **Not implemented** |
 | **Batch / parallel PRs** | **Not implemented** |

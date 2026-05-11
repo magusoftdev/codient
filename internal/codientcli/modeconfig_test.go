@@ -2,54 +2,35 @@ package codientcli
 
 import "testing"
 
-func TestParseModeConfigKey_Valid(t *testing.T) {
-	cases := []struct {
-		key       string
-		wantMode  string
-		wantField string
-	}{
-		{"plan_model", "plan", "model"},
-		{"plan_base_url", "plan", "base_url"},
-		{"plan_api_key", "plan", "api_key"},
-		{"build_model", "build", "model"},
-		{"build_base_url", "build", "base_url"},
-		{"build_api_key", "build", "api_key"},
-		{"ask_model", "ask", "model"},
-		{"ask_base_url", "ask", "base_url"},
-		{"ask_api_key", "ask", "api_key"},
+func TestIsReasoningTierConfigKey(t *testing.T) {
+	yes := []string{
+		"low_reasoning_base_url",
+		"low_reasoning_api_key",
+		"low_reasoning_model",
+		"high_reasoning_base_url",
+		"high_reasoning_api_key",
+		"high_reasoning_model",
 	}
-	for _, tc := range cases {
-		mode, field, ok := parseModeConfigKey(tc.key)
-		if !ok {
-			t.Errorf("%q: expected match", tc.key)
-			continue
-		}
-		if mode != tc.wantMode {
-			t.Errorf("%q: mode got %q want %q", tc.key, mode, tc.wantMode)
-		}
-		if field != tc.wantField {
-			t.Errorf("%q: field got %q want %q", tc.key, field, tc.wantField)
+	for _, k := range yes {
+		if !isReasoningTierConfigKey(k) {
+			t.Errorf("%q: should be a reasoning-tier key", k)
 		}
 	}
-}
-
-func TestParseModeConfigKey_Invalid(t *testing.T) {
-	invalid := []string{
+	no := []string{
 		"model",
 		"base_url",
 		"api_key",
-		"plan_workspace",
-		"debug_model",
-		"plan_",
+		"plan_model",
+		"build_model",
+		"ask_model",
+		"low_reasoning_workspace",
+		"low_reasoning_",
 		"_model",
 		"",
-		"planmodel",
-		"plan model",
 	}
-	for _, key := range invalid {
-		_, _, ok := parseModeConfigKey(key)
-		if ok {
-			t.Errorf("%q: should not match", key)
+	for _, k := range no {
+		if isReasoningTierConfigKey(k) {
+			t.Errorf("%q: should NOT be a reasoning-tier key", k)
 		}
 	}
 }

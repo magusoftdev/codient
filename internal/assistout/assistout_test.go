@@ -98,7 +98,6 @@ func TestWriteWelcome_Plain(t *testing.T) {
 	WriteWelcome(&buf, WelcomeParams{
 		Plain:               true,
 		Repl:                true,
-		Mode:                "plan",
 		Workspace:           "/tmp/ws",
 		Model:               "m1",
 		Version:             "0.3.0",
@@ -106,8 +105,11 @@ func TestWriteWelcome_Plain(t *testing.T) {
 		EmbeddingModel:      "text-embedding-3-small",
 	})
 	s := buf.String()
-	if !strings.Contains(s, "█") || !strings.Contains(s, "Session") || !strings.Contains(s, "plan") {
+	if !strings.Contains(s, "█") || !strings.Contains(s, "Session") {
 		t.Fatalf("unexpected welcome: %q", s)
+	}
+	if strings.Contains(s, "mode") {
+		t.Fatalf("welcome banner should not mention mode (auto-only): %q", s)
 	}
 	if !strings.Contains(s, "OpenAI-compatible") {
 		t.Fatalf("expected OpenAI-compatible tagline: %q", s)
@@ -134,7 +136,6 @@ func TestWriteWelcome_Plain_EmbeddingsOff(t *testing.T) {
 	WriteWelcome(&buf, WelcomeParams{
 		Plain: true,
 		Repl:  true,
-		Mode:  "build",
 	})
 	s := buf.String()
 	if !strings.Contains(s, "Embeddings off") {
@@ -148,7 +149,6 @@ func TestWriteWelcome_Plain_LongWorkspaceTruncates(t *testing.T) {
 	WriteWelcome(&buf, WelcomeParams{
 		Plain:     true,
 		Repl:      true,
-		Mode:      "build",
 		Workspace: long,
 	})
 	s := buf.String()
@@ -186,7 +186,7 @@ func TestCodientBlockASCII(t *testing.T) {
 
 func TestWriteWelcome_Quiet(t *testing.T) {
 	var buf bytes.Buffer
-	WriteWelcome(&buf, WelcomeParams{Quiet: true, Plain: true, Mode: "build"})
+	WriteWelcome(&buf, WelcomeParams{Quiet: true, Plain: true})
 	if buf.Len() != 0 {
 		t.Fatalf("expected empty, got %q", buf.String())
 	}
@@ -194,7 +194,7 @@ func TestWriteWelcome_Quiet(t *testing.T) {
 
 func TestWriteWelcome_Quiet_Version(t *testing.T) {
 	var buf bytes.Buffer
-	WriteWelcome(&buf, WelcomeParams{Quiet: true, Plain: true, Mode: "build", Version: "1.0.0"})
+	WriteWelcome(&buf, WelcomeParams{Quiet: true, Plain: true, Version: "1.0.0"})
 	s := buf.String()
 	if s != "codient 1.0.0\n" {
 		t.Fatalf("expected version line only, got %q", s)
@@ -203,7 +203,7 @@ func TestWriteWelcome_Quiet_Version(t *testing.T) {
 
 func TestWriteWelcome_Quiet_ContextTokens(t *testing.T) {
 	var buf bytes.Buffer
-	WriteWelcome(&buf, WelcomeParams{Quiet: true, Plain: true, Mode: "build", ContextWindowTokens: 16384})
+	WriteWelcome(&buf, WelcomeParams{Quiet: true, Plain: true, ContextWindowTokens: 16384})
 	s := buf.String()
 	if s != "codient: context window 16384 tokens\n" {
 		t.Fatalf("expected context line only, got %q", s)
@@ -212,7 +212,7 @@ func TestWriteWelcome_Quiet_ContextTokens(t *testing.T) {
 
 func TestWriteWelcome_Quiet_EmbeddingModel(t *testing.T) {
 	var buf bytes.Buffer
-	WriteWelcome(&buf, WelcomeParams{Quiet: true, Plain: true, Mode: "build", EmbeddingModel: "nomic-embed-text"})
+	WriteWelcome(&buf, WelcomeParams{Quiet: true, Plain: true, EmbeddingModel: "nomic-embed-text"})
 	s := buf.String()
 	if s != "codient: embeddings nomic-embed-text\n" {
 		t.Fatalf("expected embeddings line only, got %q", s)
@@ -224,7 +224,6 @@ func TestWriteWelcome_Quiet_ResumeSummary(t *testing.T) {
 	WriteWelcome(&buf, WelcomeParams{
 		Quiet:         true,
 		Plain:         true,
-		Mode:          "build",
 		ResumeSummary: "session x · 1 turn · last: hi",
 	})
 	s := buf.String()
@@ -238,7 +237,6 @@ func TestWriteWelcome_Plain_ResumeSummary(t *testing.T) {
 	WriteWelcome(&buf, WelcomeParams{
 		Plain:         true,
 		Repl:          true,
-		Mode:          "build",
 		Workspace:     "/tmp",
 		Model:         "m",
 		ResumeSummary: "session x · 2 turns · last: fix bug",
@@ -263,14 +261,10 @@ func TestFormatResumeSummary_TruncatesAndNormalizesWhitespace(t *testing.T) {
 	}
 }
 
-func TestSessionPrompt_Plain(t *testing.T) {
-	p := SessionPrompt(true, "build")
-	if !strings.HasPrefix(p, "[build] > ") {
-		t.Fatalf("unexpected prompt: %q", p)
-	}
-	p = SessionPrompt(true, "plan")
-	if !strings.HasPrefix(p, "[plan] > ") {
-		t.Fatalf("unexpected prompt: %q", p)
+func TestUserPrompt_Plain(t *testing.T) {
+	p := UserPrompt(true)
+	if p != "> " {
+		t.Fatalf("expected plain prompt %q, got %q", "> ", p)
 	}
 }
 
@@ -283,7 +277,17 @@ func TestPlanAnswerPrefix_Plain(t *testing.T) {
 
 func TestProgressIntentBulletPrefix_Plain(t *testing.T) {
 	want := "  ● "
-	if got := ProgressIntentBulletPrefix(true, "plan"); got != want {
+	if got := ProgressIntentBulletPrefix(true, ""); got != want {
 		t.Fatalf("got %q want %q", got, want)
+	}
+}
+
+// TestAccentPair_DistinctHues ensures the user (blue) and agent (purple)
+// accents stay different so the REPL keeps its color-coded voice split.
+func TestAccentPair_DistinctHues(t *testing.T) {
+	u := UserMessageAccentColor()
+	a := AgentAccentColor()
+	if u.Light == a.Light || u.Dark == a.Dark {
+		t.Fatalf("user accent %+v and agent accent %+v share a hue", u, a)
 	}
 }

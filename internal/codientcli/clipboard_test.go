@@ -22,7 +22,7 @@ func TestTUIModel_CtrlV_DispatchesClipboardCmd(t *testing.T) {
 		clipWorkspace: t.TempDir(),
 		done:          make(chan struct{}),
 	}
-	m := newTUIModel(ic, "build", true)
+	m := newTUIModel(ic, "build", true, true)
 	m.tuiOwner = ts
 
 	// Ready the model with a window size.
@@ -39,7 +39,7 @@ func TestTUIModel_CtrlV_DispatchesClipboardCmd(t *testing.T) {
 
 func TestTUIModel_CtrlV_NoOwner(t *testing.T) {
 	ic := newInputCloser()
-	m := newTUIModel(ic, "build", true)
+	m := newTUIModel(ic, "build", true, true)
 	// No tuiOwner set; Ctrl+V should not panic and should fall through safely.
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlV})
 	_ = updated.(tuiModel)
@@ -48,7 +48,7 @@ func TestTUIModel_CtrlV_NoOwner(t *testing.T) {
 func TestTUIModel_CtrlV_NoWorkspace(t *testing.T) {
 	ic := newInputCloser()
 	ts := &tuiSetup{input: ic, done: make(chan struct{})}
-	m := newTUIModel(ic, "build", true)
+	m := newTUIModel(ic, "build", true, true)
 	m.tuiOwner = ts
 	// No workspace set; Ctrl+V should not dispatch a clipboard command.
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyCtrlV})
@@ -62,7 +62,7 @@ func TestTUIModel_CtrlV_NoWorkspace(t *testing.T) {
 func TestTUIModel_ClipImageMsg(t *testing.T) {
 	ic := newInputCloser()
 	ts := &tuiSetup{input: ic, done: make(chan struct{})}
-	m := newTUIModel(ic, "build", true)
+	m := newTUIModel(ic, "build", true, true)
 	m.tuiOwner = ts
 
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
@@ -92,7 +92,7 @@ func TestTUIModel_ClipImageMsg(t *testing.T) {
 
 func TestTUIModel_ClipErrorMsg(t *testing.T) {
 	ic := newInputCloser()
-	m := newTUIModel(ic, "build", true)
+	m := newTUIModel(ic, "build", true, true)
 
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	m = updated.(tuiModel)

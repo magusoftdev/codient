@@ -83,7 +83,6 @@ type WelcomeParams struct {
 	Plain     bool
 	Quiet     bool
 	Repl      bool
-	Mode      string // build | ask | plan
 	Workspace string
 	Model     string
 	// ResumeSummary is a one-line summary of the session being resumed (e.g. turns + last user message). Empty when not resuming.
@@ -117,10 +116,6 @@ func WriteWelcome(w io.Writer, p WelcomeParams) {
 		}
 		return
 	}
-	mode := strings.TrimSpace(p.Mode)
-	if mode == "" {
-		mode = "build"
-	}
 	run := "Run"
 	if p.Repl {
 		run = "Session"
@@ -148,7 +143,7 @@ func WriteWelcome(w io.Writer, p WelcomeParams) {
 			vMax := maxWelcomeValueRunes(termWidth, labelVersion)
 			fmt.Fprintf(w, "  %s%s\n", labelVersion, truncateWelcomePath(v, vMax))
 		}
-		fmt.Fprintf(w, "  %s · mode %s\n", run, mode)
+		fmt.Fprintf(w, "  %s\n", run)
 		if wsLine != "" {
 			fmt.Fprintf(w, "  %s\n", wsLine)
 		}
@@ -186,17 +181,12 @@ func WriteWelcome(w io.Writer, p WelcomeParams) {
 	dim := lipgloss.NewStyle().
 		Foreground(lipgloss.AdaptiveColor{Light: "#525252", Dark: "#94A3B8"})
 
-	modeHi := lipgloss.NewStyle().
-		Bold(true).
-		Foreground(lipgloss.AdaptiveColor{Light: "#BE185D", Dark: "#E879F9"})
-
-	line1 := dim.Render(run+" · mode ") + modeHi.Render(mode)
 	var boxLines []string
 	if v := strings.TrimSpace(p.Version); v != "" {
 		vMax := maxWelcomeValueRunes(termWidth, labelVersion)
 		boxLines = append(boxLines, "  "+dim.Render(labelVersion+truncateWelcomePath(v, vMax)))
 	}
-	boxLines = append(boxLines, "  "+line1)
+	boxLines = append(boxLines, "  "+dim.Render(run))
 	if wsLine != "" {
 		boxLines = append(boxLines, "  "+dim.Render(wsLine))
 	}
@@ -218,7 +208,7 @@ func WriteWelcome(w io.Writer, p WelcomeParams) {
 
 	boxed := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.AdaptiveColor{Light: "#7C3AED", Dark: "#C084FC"}).
+		BorderForeground(AgentAccentColor()).
 		Padding(0, 1).
 		Render(boxInner)
 

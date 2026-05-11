@@ -23,6 +23,17 @@ import (
 	"codient/internal/tools"
 )
 
+// tierForMode maps a sub-agent mode onto the reasoning tier used to resolve
+// its inference connection. Plan mode (architectural design) requires the
+// high-reasoning model; build / ask / unknown modes use the low-reasoning
+// model so simple delegations stay cheap.
+func tierForMode(m prompt.Mode) string {
+	if m == prompt.ModePlan {
+		return config.TierHigh
+	}
+	return config.TierLow
+}
+
 // Result is returned after a sub-agent completes.
 type Result struct {
 	Reply string
@@ -64,10 +75,11 @@ func newRunnerFromParams(llm agent.ChatClient, p RunParams, reg *tools.Registry,
 	return r
 }
 
-// Run executes a single sub-agent turn: builds a mode-specific Runner with per-mode
-// model resolution, runs the task to completion, and returns the reply.
+// Run executes a single sub-agent turn: builds a mode-specific Runner with the
+// reasoning-tier client matching the requested mode (plan -> high, otherwise
+// low), runs the task to completion, and returns the reply.
 func Run(ctx context.Context, p RunParams) (Result, error) {
-	client := openaiclient.NewForMode(p.Cfg, string(p.Mode))
+	client := openaiclient.NewForTier(p.Cfg, tierForMode(p.Mode))
 
 	reg := agentfactory.RegistryForMode(p.Cfg, p.Mode, p.RepoMap)
 	repoMapText := repomap.PromptText(p.Cfg.RepoMapTokens, p.RepoMap)

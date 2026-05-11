@@ -17,7 +17,7 @@ Or run `/setup` for a guided wizard (connection and model selection).
 
 ## Config file reference (`~/.codient/config.json`)
 
-All settings live in a single JSON file. Use `/config` to view and edit, or edit the file directly. Omitted fields use built-in defaults. CLI flags (e.g. `-mode`, `-plain`, `-workspace`) override config file values when explicitly passed.
+All settings live in a single JSON file. Use `/config` to view and edit, or edit the file directly. Omitted fields use built-in defaults. CLI flags (e.g. `-plain`, `-workspace`, `-force`) override config file values when explicitly passed.
 
 **Example config.json:**
 
@@ -26,7 +26,6 @@ All settings live in a single JSON file. Use `/config` to view and edit, or edit
   "base_url": "http://127.0.0.1:1234/v1",
   "api_key": "codient",
   "model": "qwen3-coder",
-  "mode": "build",
   "search_url": "http://localhost:8888",
   "fetch_allow_hosts": "docs.go.dev,pkg.go.dev",
   "autocheck_cmd": "go build ./...",
@@ -38,24 +37,28 @@ All settings live in a single JSON file. Use `/config` to view and edit, or edit
 
 Omit **`lint_cmd`** and **`test_cmd`** to use [auto-detection](#auto-check-sequence) (same as empty string). Set either to **`off`** to skip that step in the post-edit sequence.
 
-**Per-mode models and endpoints** — Under `models`, you can override `base_url`, `api_key`, and `model` for `plan`, `build`, and `ask`. Any field left out inherits from the top-level connection. Use this for a remote planning API and a local implementation server, for example:
+**Reasoning tiers (Intent-Driven Orchestrator)** — There is only one mode (auto). The orchestrator picks one of two reasoning tiers per turn:
+
+- **Low** — supervisor classifier, **QUERY** (ask path), and **SIMPLE_FIX** (build path).
+- **High** — **DESIGN** (plan path) and **COMPLEX_TASK** planning before the auto plan -> build hand-off.
+
+Configure each tier with **`low_reasoning_model`** and **`high_reasoning_model`** (and optional `_base_url` / `_api_key` siblings):
 
 ```json
 {
   "base_url": "http://127.0.0.1:1234/v1",
   "api_key": "codient",
   "model": "qwen3-coder-30b",
-  "models": {
-    "plan": {
-      "base_url": "https://api.openai.com/v1",
-      "api_key": "sk-...",
-      "model": "gpt-4.1"
-    }
-  }
+  "low_reasoning_model": "qwen3-coder-7b",
+  "high_reasoning_model": "qwen3-coder-30b",
+  "high_reasoning_base_url": "https://api.openai.com/v1",
+  "high_reasoning_api_key": "sk-..."
 }
 ```
 
-The interactive `/setup` wizard can also configure a separate plan server after you pick the default model. Slash commands `/config plan_base_url`, `plan_api_key`, `plan_model` (and `build_*`, `ask_*`) mirror these fields.
+With no overrides, both tiers fall back to the top-level `base_url` / `api_key` / `model`. The `/setup` wizard walks through both tiers after you pick the default chat model.
+
+**Backward compatibility:** older configs that contained a top-level **`mode`** key (or a per-mode **`models`** override map for `build` / `ask` / `plan`) still load. Codient logs a one-time deprecation notice on startup, ignores those values, and uses the auto-only path. Remove them from `config.json` to silence the warning.
 
 ## `/config` reference
 
@@ -66,12 +69,12 @@ Run `/config` with no arguments to see all current values. `/config <key>` shows
 | **Connection** | | |
 | `base_url` | API base URL including `/v1` | `http://127.0.0.1:1234/v1` |
 | `api_key` | Sent as `Authorization` bearer token | `codient` |
-| `model` | Default model id (used by modes that have no override) | *(none — must be set for typical use)* |
-| `plan_model`, `build_model`, `ask_model` | Model id for that mode only | inherit `model` |
-| `plan_base_url`, `build_base_url`, `ask_base_url` | API base URL for that mode | inherit `base_url` |
-| `plan_api_key`, `build_api_key`, `ask_api_key` | API key for that mode | inherit `api_key` |
+| `model` | Default model id (used by tiers that have no override) | *(none — must be set for typical use)* |
+| `low_reasoning_model` | Model id used by the orchestrator supervisor, **QUERY** (ask path), and **SIMPLE_FIX** (build path) turns | inherit `model` |
+| `low_reasoning_base_url`, `low_reasoning_api_key` | Connection overrides for the low-reasoning tier | inherit `base_url` / `api_key` |
+| `high_reasoning_model` | Model id used for **DESIGN** (plan path) turns and **COMPLEX_TASK** planning | inherit `model` |
+| `high_reasoning_base_url`, `high_reasoning_api_key` | Connection overrides for the high-reasoning tier | inherit `base_url` / `api_key` |
 | **Defaults** | | |
-| `mode` | Default mode: `build`, `ask`, or `plan` | `build` |
 | `workspace` | Root for workspace tools | *(process working directory)* |
 | **Agent limits** | | |
 | `max_concurrent` | Max concurrent in-flight completion requests | `3` |
@@ -104,8 +107,8 @@ Run `/config` with no arguments to see all current values. `/config <key>` shows
 | `autocheck_cmd` | **Build** check after mutating file tools in **build** mode (empty = auto-detect from workspace, `off` = skip). Runs first in the auto-check sequence. | *(auto)* |
 | `lint_cmd` | **Lint** check in the same sequence (empty = auto-detect, `off` = skip). Runs after build succeeds (**fail-fast**). | *(auto)* |
 | `test_cmd` | **Test** check in the same sequence (empty = auto-detect, `off` = skip). Runs after lint succeeds. | *(auto)* |
-| **Git (build mode)** | | |
-| `git_auto_commit` | After each build turn that changes files, commit with message `codient: turn N` (set `false` for legacy file-restore `/undo` without commits) | `true` |
+| **Git (build path)** | | |
+| `git_auto_commit` | After each build-path turn that changes files, commit with message `codient: turn N` (set `false` for legacy file-restore `/undo` without commits) | `true` |
 | `delegate_git_worktrees` | When **`true`**, each **`delegate_task`** sub-agent runs in a **detached git worktree** at **`HEAD`** under `~/.codient/delegate-worktrees/` (requires a git workspace and `git` on `PATH`). Filesystem edits there are **not merged** into the parent workspace. Uncommitted changes in the main tree are **not** visible in the worktree. Sub-agents omit the **`repo_map`** tool for this path (MVP). | `false` |
 | `git_protected_branches` | Comma-separated branch names; when the first change lands on one of these, codient creates `codient/<task-slug>` and commits there | `main,master,develop` |
 | `checkpoint_auto` | Automatic checkpoints: **`plan`** (after each completed plan phase group), **`all`** (after each build turn that changes files and commits), **`off`** (manual `/checkpoint` only) | `plan` |
@@ -113,19 +116,22 @@ Run `/config` with no arguments to see all current values. `/config <key>` shows
 | `plain` | Raw assistant text (skip markdown rendering; use for streaming tokens or logs without glamour) | `false` |
 | `quiet` | Suppress the welcome banner | `false` |
 | `verbose` | Extra session diagnostics | `false` |
+| `mouse_enabled` | TUI mouse capture: enables wheel scrolling but prevents native click-and-drag text selection. Set **`false`** (or pass **`-mouse=false`**) when you need to copy text out of the chat window on a terminal that doesn't honor Shift+drag. Keyboard scrolling (**Page Up/Down**, **Alt+Up/Down**) continues to work either way | `true` |
 | `log` | Default JSONL log path | *(empty)* |
 | `stream_reply` | When **`plain`** is on: stream assistant tokens to stdout as they arrive. Styled (non-plain) sessions render the full reply with markdown once per turn instead of streaming raw tokens | `true` |
 | `progress` | Force progress output on stderr | `false` |
 | `acp_preload_model_on_set_model` | When **`true`** (default), ACP **`session/set_model`** runs a minimal chat completion so local inference servers load the model before the RPC returns; set **`false`** to skip (saves one completion per switch) | `true` |
 | **Plan** | | |
 | `design_save_dir` | Override directory for saved plans | `<workspace>/.codient/plans` |
-| `design_save` | Save plan-mode plans to disk | `true` |
-| `plan_tot` | Parallel Tree-of-Thoughts plan generation on selected plan-mode turns (see [usage](usage.md#parallel-plan-generation-tree-of-thoughts)) | `true` |
+| `design_save` | Save plan-path plans to disk | `true` |
+| `plan_tot` | Parallel Tree-of-Thoughts plan generation on selected plan-path turns (see [usage](usage.md#parallel-plan-generation-tree-of-thoughts)) | `true` |
 | **Project** | | |
 | `project_context` | `off` to skip auto-injected project hints | *(empty)* |
 | **Tools** | | |
 | `ast_grep` | ast-grep binary path: `auto` (default), explicit path, or `off` to disable | *(auto)* |
-| `embedding_model` | Model id for `/v1/embeddings` (same base URL as chat). Enables the `semantic_search` tool; leave empty to disable. The welcome banner shows **Embeddings** (model id, or `off`) | *(empty)* |
+| `embedding_model` | Model id for `/v1/embeddings`. Enables the `semantic_search` tool; leave empty to disable. The welcome banner shows **Embeddings** (model id, or `off`) | *(empty)* |
+| `embedding_base_url` | Optional base URL for `/v1/embeddings` when chat targets a server that does not implement embeddings (e.g. Anthropic / Claude). Leave empty to inherit `base_url` | *(inherit `base_url`)* |
+| `embedding_api_key` | API key for `embedding_base_url`. Only used when `embedding_base_url` is also set; otherwise the chat `api_key` is reused | *(inherit `api_key`)* |
 | `repo_map_tokens` | Approximate token budget for the **structural repository map** injected into the system prompt and for the `repo_map` tool. **`0`** (default) picks a budget from workspace size; **`-1`** disables the map and the tool | `0` |
 | `hooks_enabled` | Enable [lifecycle hooks](context-and-integrations.md#lifecycle-hooks) (`hooks.json` under `~/.codient` and `<workspace>/.codient`) | `false` |
 | `cost_per_mtok` | Optional `{"input":N,"output":N}` USD per 1M tokens — overrides built-in pricing for `/cost` and session cost estimates | *(built-in table)* |
@@ -156,7 +162,7 @@ Use **`-sandbox <mode>`** on the CLI to override `sandbox_mode` for that process
 
 ## Auto-check sequence
 
-In **build** mode, after successful mutating tools (`write_file`, `str_replace`, etc.), codient runs **build → lint → test** using the resolved `autocheck_cmd`, `lint_cmd`, and `test_cmd` settings. Order is **fail-fast** (if build fails, lint and test are skipped). Each step uses the same timeout cap as the legacy single-command auto-check (bounded by `exec_timeout_sec`, max 60s per step). **Auto-detection** examples: **build** — same as before (`go build ./...`, `cargo check`, `npx tsc --noEmit`, …). **Lint** — `golangci-lint run ./...` when `go.mod` exists and `golangci-lint` is on `PATH`; `cargo clippy -- -D warnings` for Rust; `npm run lint` when `package.json` has a `lint` script; Python: `ruff check .` or `flake8` if that binary is on `PATH`. **Test** — `go test ./...`, `cargo test`, `npm test` when a `test` script exists, or `python -m pytest` when pytest markers are present. Plan-mode **verification** at the end of a plan uses the same resolved build, lint, and test commands.
+When the orchestrator routes a turn into the **build** path (SIMPLE_FIX or post-handoff COMPLEX_TASK), after successful mutating tools (`write_file`, `str_replace`, etc.) codient runs **build → lint → test** using the resolved `autocheck_cmd`, `lint_cmd`, and `test_cmd` settings. Order is **fail-fast** (if build fails, lint and test are skipped). Each step uses the same timeout cap as the legacy single-command auto-check (bounded by `exec_timeout_sec`, max 60s per step). **Auto-detection** examples: **build** — same as before (`go build ./...`, `cargo check`, `npx tsc --noEmit`, …). **Lint** — `golangci-lint run ./...` when `go.mod` exists and `golangci-lint` is on `PATH`; `cargo clippy -- -D warnings` for Rust; `npm run lint` when `package.json` has a `lint` script; Python: `ruff check .` or `flake8` if that binary is on `PATH`. **Test** — `go test ./...`, `cargo test`, `npm test` when a `test` script exists, or `python -m pytest` when pytest markers are present. Plan-path **verification** at the end of a plan uses the same resolved build, lint, and test commands.
 
 On failure, combined stdout and stderr from the failing step are injected as a user message so the model can fix issues before finishing the turn. Output is truncated by **`exec_max_output_bytes`**.
 
@@ -177,7 +183,7 @@ Adjust flags and add **`-executeMethod`** (or similar) if your project compiles 
 
 ## Token usage and cost estimates
 
-Codient records **API-reported** token counts from chat completions when the server includes a `usage` object (OpenAI-compatible). Many local inference stacks omit this; cloud APIs usually populate it. Totals are **per REPL session** and include agent turns, `/compact`, the ask-mode verification gate, and **`delegate_task`** sub-agents.
+Codient records **API-reported** token counts from chat completions when the server includes a `usage` object (OpenAI-compatible). Many local inference stacks omit this; cloud APIs usually populate it. Totals are **per REPL session** and include agent turns, the orchestrator supervisor call, `/compact`, the ask-path verification gate, and **`delegate_task`** sub-agents.
 
 - **`/cost`** (alias **`/tokens`**) — prompt, completion, and total tokens plus an estimated dollar amount when pricing is known.
 - **`/status`** — session token totals and estimated cost when available.

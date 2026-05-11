@@ -9,8 +9,10 @@ func TestParseMode(t *testing.T) {
 		in   string
 		want Mode
 	}{
-		{"", ModeBuild},
-		{"  ", ModeBuild},
+		{"", ModeAuto},
+		{"  ", ModeAuto},
+		{"auto", ModeAuto},
+		{"AUTO", ModeAuto},
 		{"build", ModeBuild},
 		{"BUILD", ModeBuild},
 		{"ask", ModeAsk},
@@ -29,5 +31,18 @@ func TestParseMode(t *testing.T) {
 	_, err := ParseMode("nope")
 	if err == nil {
 		t.Fatal("expected error")
+	}
+}
+
+func TestModeIsResolved(t *testing.T) {
+	for _, m := range []Mode{ModeBuild, ModeAsk, ModePlan} {
+		if !m.IsResolved() {
+			t.Fatalf("%q should be resolved", m)
+		}
+	}
+	for _, m := range []Mode{ModeAuto, "", "wat"} {
+		if m.IsResolved() {
+			t.Fatalf("%q should not be resolved", m)
+		}
 	}
 }

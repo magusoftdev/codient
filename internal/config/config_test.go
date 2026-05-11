@@ -61,6 +61,9 @@ func TestLoad_Defaults(t *testing.T) {
 	if !c.PlanTot {
 		t.Fatal("expected PlanTot true by default")
 	}
+	if !c.MouseEnabled {
+		t.Fatal("expected MouseEnabled true by default")
+	}
 	if c.AutoCompactPct != defaultAutoCompactPct {
 		t.Fatalf("AutoCompactPct: got %d", c.AutoCompactPct)
 	}
@@ -481,6 +484,36 @@ func TestLoad_DesignSaveExplicitFalse(t *testing.T) {
 	}
 }
 
+func TestLoad_MouseEnabledExplicitFalse(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CODIENT_STATE_DIR", dir)
+
+	f := false
+	pc := &PersistentConfig{MouseEnabled: &f}
+	if err := SavePersistentConfig(pc); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.MouseEnabled {
+		t.Fatal("expected MouseEnabled false when explicitly set")
+	}
+
+	cfgCopy := *c
+	rt := ConfigToPersistent(&cfgCopy)
+	if rt.MouseEnabled == nil || *rt.MouseEnabled != false {
+		t.Fatalf("expected MouseEnabled to be persisted as false; got %+v", rt.MouseEnabled)
+	}
+
+	cfgCopy.MouseEnabled = true
+	rt = ConfigToPersistent(&cfgCopy)
+	if rt.MouseEnabled != nil {
+		t.Fatalf("expected default MouseEnabled (true) to be omitted from persisted config; got %+v", *rt.MouseEnabled)
+	}
+}
+
 func TestLoad_PlanTotExplicitFalse(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("CODIENT_STATE_DIR", dir)
@@ -667,23 +700,124 @@ func TestSchemaVersionAlwaysStamped(t *testing.T) {
 	}
 }
 
-func TestLastMode_SaveAndLoad(t *testing.T) {
+func TestEmbeddingConnection_InheritsChatByDefault(t *testing.T) {
+	c := &Config{
+		BaseURL: "http://chat/v1",
+		APIKey:  "chat-key",
+	}
+	base, key := c.EmbeddingConnection()
+	if base != "http://chat/v1" {
+		t.Fatalf("base: got %q want chat base_url", base)
+	}
+	if key != "chat-key" {
+		t.Fatalf("key: got %q want chat api_key", key)
+	}
+}
+
+func TestEmbeddingConnection_OverrideBaseAndKey(t *testing.T) {
+	c := &Config{
+		BaseURL:          "http://chat/v1",
+		APIKey:           "chat-key",
+		EmbeddingBaseURL: "http://emb/v1",
+		EmbeddingAPIKey:  "emb-key",
+	}
+	base, key := c.EmbeddingConnection()
+	if base != "http://emb/v1" {
+		t.Fatalf("base: got %q want emb override", base)
+	}
+	if key != "emb-key" {
+		t.Fatalf("key: got %q want emb override", key)
+	}
+}
+
+func TestEmbeddingConnection_OverrideBaseInheritsKey(t *testing.T) {
+	c := &Config{
+		BaseURL:          "http://chat/v1",
+		APIKey:           "chat-key",
+		EmbeddingBaseURL: "http://emb/v1",
+	}
+	base, key := c.EmbeddingConnection()
+	if base != "http://emb/v1" {
+		t.Fatalf("base: got %q want emb override", base)
+	}
+	if key != "chat-key" {
+		t.Fatalf("key should inherit chat api_key when emb api key empty: got %q", key)
+	}
+}
+
+func TestEmbeddingConnection_KeyOverrideWithoutBaseIgnored(t *testing.T) {
+	// A custom embedding api_key without a custom base_url makes no sense:
+	// the chat api_key is reused so the request still goes to the chat server.
+	c := &Config{
+		BaseURL:         "http://chat/v1",
+		APIKey:          "chat-key",
+		EmbeddingAPIKey: "should-be-ignored",
+	}
+	base, key := c.EmbeddingConnection()
+	if base != "http://chat/v1" {
+		t.Fatalf("base: got %q want chat", base)
+	}
+	if key != "chat-key" {
+		t.Fatalf("key: got %q want chat-key (emb key should be ignored without emb base_url)", key)
+	}
+}
+
+func TestLoad_EmbeddingFromConfigFile(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CODIENT_STATE_DIR", dir)
+	pc := &PersistentConfig{
+		BaseURL:          "http://chat/v1",
+		APIKey:           "chat-key",
+		Model:            "claude-style-model",
+		EmbeddingModel:   "nomic-embed-text",
+		EmbeddingBaseURL: "http://127.0.0.1:1234/v1/",
+		EmbeddingAPIKey:  "local-key",
+	}
+	if err := SavePersistentConfig(pc); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.EmbeddingModel != "nomic-embed-text" {
+		t.Fatalf("EmbeddingModel: got %q", c.EmbeddingModel)
+	}
+	if c.EmbeddingBaseURL != "http://127.0.0.1:1234/v1" {
+		t.Fatalf("EmbeddingBaseURL trim: got %q", c.EmbeddingBaseURL)
+	}
+	if c.EmbeddingAPIKey != "local-key" {
+		t.Fatalf("EmbeddingAPIKey: got %q", c.EmbeddingAPIKey)
+	}
+	base, key := c.EmbeddingConnection()
+	if base != "http://127.0.0.1:1234/v1" || key != "local-key" {
+		t.Fatalf("EmbeddingConnection: got %q / %q", base, key)
+	}
+}
+
+func TestConfigToPersistent_EmbeddingRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("CODIENT_STATE_DIR", dir)
 
-	if g := LoadLastMode(); g != "" {
-		t.Fatalf("LoadLastMode before save: want empty, got %q", g)
+	cfg := &Config{
+		BaseURL:          "http://chat/v1",
+		APIKey:           "chat-key",
+		Model:            "m",
+		MaxConcurrent:    1,
+		EmbeddingModel:   "nomic-embed",
+		EmbeddingBaseURL: "http://emb/v1",
+		EmbeddingAPIKey:  "emb-key",
 	}
-	SaveLastMode("plan")
-	if g := LoadLastMode(); g != "plan" {
-		t.Fatalf("LoadLastMode after SaveLastMode(plan): got %q", g)
+	pc := ConfigToPersistent(cfg)
+	if err := SavePersistentConfig(pc); err != nil {
+		t.Fatal(err)
 	}
-	SaveLastMode("design") // alias → plan
-	if g := LoadLastMode(); g != "plan" {
-		t.Fatalf("LoadLastMode after SaveLastMode(design): got %q", g)
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
 	}
-	SaveLastMode("bogus")
-	if g := LoadLastMode(); g != "plan" {
-		t.Fatalf("invalid save should not clobber: got %q", g)
+	if c.EmbeddingModel != "nomic-embed" || c.EmbeddingBaseURL != "http://emb/v1" || c.EmbeddingAPIKey != "emb-key" {
+		t.Fatalf("round-trip failed: %+v", c)
 	}
 }
+

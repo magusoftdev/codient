@@ -10,14 +10,18 @@ import (
 	"codient/internal/sessionstore"
 )
 
-func TestApplyStoredSessionState_LoadsHistoryAndSwitchesMode(t *testing.T) {
+// TestApplyStoredSessionState_LoadsHistoryIgnoresPersistedMode verifies that
+// resuming a session restores history but ignores the persisted Mode field —
+// the runtime mode is always ModeAuto and the orchestrator picks the internal
+// mode per turn.
+func TestApplyStoredSessionState_LoadsHistoryIgnoresPersistedMode(t *testing.T) {
 	tmp := t.TempDir()
 	cfg := &config.Config{Workspace: tmp, Model: "gpt-4o-mini"}
-	s := &session{cfg: cfg, mode: prompt.ModeBuild}
+	s := &session{cfg: cfg, mode: prompt.ModeAuto}
 	st := &sessionstore.SessionState{
 		ID:        "tst_20260101_000000",
 		Workspace: tmp,
-		Mode:      "ask",
+		Mode:      "ask", // persisted but no longer authoritative.
 		Model:     "gpt-4o-mini",
 		Messages: sessionstore.FromOpenAI([]openai.ChatCompletionMessageParamUnion{
 			openai.UserMessage("prev"),
@@ -34,8 +38,8 @@ func TestApplyStoredSessionState_LoadsHistoryAndSwitchesMode(t *testing.T) {
 	if err := s.applyStoredSessionState(loaded); err != nil {
 		t.Fatal(err)
 	}
-	if s.mode != prompt.ModeAsk {
-		t.Fatalf("mode: %v", s.mode)
+	if s.mode != prompt.ModeAuto {
+		t.Fatalf("session should remain in ModeAuto after resume; got %v", s.mode)
 	}
 	if len(s.history) != 2 {
 		t.Fatalf("history len: %d", len(s.history))
@@ -48,7 +52,7 @@ func TestApplyStoredSessionState_LoadsHistoryAndSwitchesMode(t *testing.T) {
 func TestApplyStoredSessionState_WorkspaceMismatch(t *testing.T) {
 	tmp := t.TempDir()
 	cfg := &config.Config{Workspace: tmp}
-	s := &session{cfg: cfg, mode: prompt.ModeBuild}
+	s := &session{cfg: cfg, mode: prompt.ModeAuto}
 	st := &sessionstore.SessionState{
 		ID:        "x",
 		Workspace: "/other/root",

@@ -24,8 +24,10 @@ import (
 	"codient/internal/agentlog"
 	"codient/internal/assistout"
 	"codient/internal/config"
+	"codient/internal/intent"
 	"codient/internal/mcpclient"
 	"codient/internal/openaiclient"
+	"codient/internal/planstore"
 	"codient/internal/projectinfo"
 	"codient/internal/prompt"
 	"codient/internal/repomap"
@@ -83,7 +85,7 @@ func validateACPFlags(printMode, repl, stream, ping, listModels, listTools, a2a,
 }
 
 // runACPServer runs the Agent Client Protocol (ACP) over NDJSON JSON-RPC on stdin/stdout.
-func runACPServer(ctx context.Context, cfg *config.Config, agentMode prompt.Mode, client *openaiclient.Client, mcpMgr *mcpclient.Manager, agentLog *agentlog.Logger, maxTurns int, maxCostUSD float64) int {
+func runACPServer(ctx context.Context, cfg *config.Config, client *openaiclient.Client, mcpMgr *mcpclient.Manager, agentLog *agentlog.Logger, maxTurns int, maxCostUSD float64) int {
 	if err := cfg.RequireModel(); err != nil {
 		fmt.Fprintf(os.Stderr, "config: %v\n", err)
 		return 2
@@ -149,10 +151,11 @@ func runACPServer(ctx context.Context, cfg *config.Config, agentMode prompt.Mode
 		return tr.CallClient(ctx, method, params)
 	}
 	registryReady := make(chan struct{})
+	unityACP := projectinfo.LooksLikeUnityEditorProject(cfg.EffectiveWorkspace())
 	srv := &acpServer{
 		tr:             tr,
 		cfg:            cfg,
-		mode:           agentMode,
+		mode:           prompt.ModeAuto,
 		client:         client,
 		agentLog:       agentLog,
 		version:        Version,
@@ -162,6 +165,9 @@ func runACPServer(ctx context.Context, cfg *config.Config, agentMode prompt.Mode
 		projectCtx:     projectCtx,
 		memory:         mem,
 		memOpts:        memOpts,
+		skillsCat:      skillsCat,
+		repoMap:        rm,
+		unityACPEditor: unityACP,
 		stub:           stub,
 		initialized:    false,
 		sessions:       make(map[string]*acpChatSession),
@@ -169,9 +175,8 @@ func runACPServer(ctx context.Context, cfg *config.Config, agentMode prompt.Mode
 		tokenTracker:   tracker,
 		registryReady:  registryReady,
 	}
-	if agentMode == prompt.ModeAsk {
-		srv.postReplyCheck = BuildPostReplyCheckForACP(cfg, client, tracker, agentMode, progressOut)
-	}
+	// PostReplyCheck is built once and only attached to runners in Ask mode (per-session).
+	srv.postReplyCheck = BuildPostReplyCheckForACP(cfg, client, tracker, prompt.ModeAsk, progressOut)
 
 	// Process session/cancel in the read loop so cancellation reaches the active turn while
 	// session/prompt is still blocked on the main handler goroutine.
@@ -188,9 +193,11 @@ func runACPServer(ctx context.Context, cfg *config.Config, agentMode prompt.Mode
 	// Build tool registry off the hot path: stdin must be drained (ReadLoop) while buildRegistry scans the workspace.
 	go func() {
 		defer close(registryReady)
-		stub.registry = buildRegistry(cfg, agentMode, stub, memOpts)
-		unityACP := projectinfo.LooksLikeUnityEditorProject(cfg.EffectiveWorkspace())
-		stub.systemPrompt = buildAgentSystemPromptEx(cfg, stub.registry, agentMode, "", repoInstr, projectCtx, mem, skillsCat, rm, unityACP)
+		reg, sp := srv.buildModeArtifacts(prompt.ModeAuto)
+		stub.acpRegistryMu.Lock()
+		stub.registry = reg
+		stub.systemPrompt = sp
+		stub.acpRegistryMu.Unlock()
 
 		if stub.mcpMgr != nil && len(cfg.MCPServers) > 0 {
 			mgr := stub.mcpMgr
@@ -201,9 +208,10 @@ func runACPServer(ctx context.Context, cfg *config.Config, agentMode prompt.Mode
 				for _, w := range warns {
 					fmt.Fprintf(os.Stderr, "codient: %s\n", w)
 				}
+				reg2, sp2 := srv.buildModeArtifacts(prompt.ModeAuto)
 				stub.acpRegistryMu.Lock()
-				stub.registry = buildRegistry(cfg, agentMode, stub, memOpts)
-				stub.systemPrompt = buildAgentSystemPromptEx(cfg, stub.registry, agentMode, "", repoInstr, projectCtx, mem, skillsCat, rm, unityACP)
+				stub.registry = reg2
+				stub.systemPrompt = sp2
 				stub.acpRegistryMu.Unlock()
 			}()
 		}
@@ -235,19 +243,22 @@ func runACPServer(ctx context.Context, cfg *config.Config, agentMode prompt.Mode
 }
 
 type acpServer struct {
-	tr         *acpserver.Transport
-	cfg        *config.Config
-	mode       prompt.Mode
-	client     *openaiclient.Client
-	agentLog   *agentlog.Logger
-	version    string
-	maxTurns   int
-	maxCostUSD float64
-	repoInstr  string
-	projectCtx string
-	memory     string
-	memOpts    *tools.MemoryOptions
-	stub       *session
+	tr             *acpserver.Transport
+	cfg            *config.Config
+	mode           prompt.Mode
+	client         *openaiclient.Client
+	agentLog       *agentlog.Logger
+	version        string
+	maxTurns       int
+	maxCostUSD     float64
+	repoInstr      string
+	projectCtx     string
+	memory         string
+	memOpts        *tools.MemoryOptions
+	skillsCat      string
+	repoMap        *repomap.Map
+	unityACPEditor bool
+	stub           *session
 	// registryReady is closed after the first buildRegistry + systemPrompt (session/* needs a populated stub).
 	registryReady    <-chan struct{}
 	initialized      bool
@@ -264,11 +275,17 @@ type acpChatSession struct {
 	id            string
 	history       []openai.ChatCompletionMessageParamUnion
 	systemPrompt  string
+	registry      *tools.Registry
+	mode          prompt.Mode
+	currentPlan   *planstore.Plan
 	workspaceRoot string
 	modelID       string
 	lastPlanReply string // last assistant text in plan mode (for ToT heuristic)
-	cancelMu      sync.Mutex
-	cancelTurn    context.CancelFunc
+	// lastIntent records the most recent supervisor classification for this
+	// session (auto-mode telemetry). Nil until the orchestrator runs a turn.
+	lastIntent *intent.Identification
+	cancelMu   sync.Mutex
+	cancelTurn context.CancelFunc
 	// setModelMu serializes session/set_model (including preload) per session.
 	setModelMu sync.Mutex
 }
@@ -473,6 +490,10 @@ func (s *acpServer) handleSessionNew(ctx context.Context, params json.RawMessage
 	var p struct {
 		Cwd   string `json:"cwd"`
 		Model string `json:"model"`
+		// Mode is accepted but ignored: every session is auto-mode and the
+		// orchestrator picks an internal mode per session/prompt. Older clients
+		// that still send "mode" keep working.
+		Mode string `json:"mode"`
 	}
 	if err := json.Unmarshal(params, &p); err != nil {
 		_ = s.tr.WriteError(id, -32602, "invalid params")
@@ -490,20 +511,44 @@ func (s *acpServer) handleSessionNew(ctx context.Context, params json.RawMessage
 		return
 	}
 	sid := newSessionID()
-	s.stub.acpRegistryMu.RLock()
-	sp := s.stub.systemPrompt
-	s.stub.acpRegistryMu.RUnlock()
+	reg, sp := s.modeArtifactsFor(prompt.ModeAuto)
 	sess := &acpChatSession{
 		id:            sid,
 		history:       nil,
 		systemPrompt:  sp,
+		registry:      reg,
+		mode:          prompt.ModeAuto,
 		workspaceRoot: cwd,
 		modelID:       strings.TrimSpace(p.Model),
 	}
 	s.mu.Lock()
 	s.sessions[sid] = sess
 	s.mu.Unlock()
-	_ = s.tr.WriteResult(id, map[string]any{"sessionId": sid})
+	_ = s.tr.WriteResult(id, map[string]any{"sessionId": sid, "mode": string(prompt.ModeAuto)})
+}
+
+// modeArtifactsFor returns the registry and system prompt to use for the given mode.
+// The default-mode artifacts are cached on stub (built off the hot path); other modes
+// are built on demand. Callers should treat the returned registry as immutable.
+func (s *acpServer) modeArtifactsFor(mode prompt.Mode) (*tools.Registry, string) {
+	if mode == s.mode {
+		s.stub.acpRegistryMu.RLock()
+		reg := s.stub.registry
+		sp := s.stub.systemPrompt
+		s.stub.acpRegistryMu.RUnlock()
+		if reg != nil && sp != "" {
+			return reg, sp
+		}
+	}
+	return s.buildModeArtifacts(mode)
+}
+
+// buildModeArtifacts constructs a fresh registry + system prompt for the requested mode,
+// using the server-level project context, repo map, skills, and Unity ACP heuristic.
+func (s *acpServer) buildModeArtifacts(mode prompt.Mode) (*tools.Registry, string) {
+	reg := buildRegistry(s.cfg, mode, s.stub, s.memOpts)
+	sp := buildAgentSystemPromptEx(s.cfg, reg, mode, "", s.repoInstr, s.projectCtx, s.memory, s.skillsCat, s.repoMap, s.unityACPEditor)
+	return reg, sp
 }
 
 // handleSessionSetModel updates the per-session model id without clearing history (Codient Unity model picker).
@@ -684,30 +729,17 @@ func (s *acpServer) handleSessionPrompt(ctx context.Context, params json.RawMess
 	}()
 
 	cw := &acpChunkWriter{tr: s.tr, sessionID: p.SessionID}
-	r := s.newACPRunnerLocked(sess)
 
 	userMsg := openai.UserMessage(userText)
 
-	var reply string
-	var newHist []openai.ChatCompletionMessageParamUnion
-	var runErr error
+	defer func() {
+		// Restore the auto sentinel so the next session/prompt re-classifies.
+		sess.cancelMu.Lock()
+		sess.mode = prompt.ModeAuto
+		sess.cancelMu.Unlock()
+	}()
 
-	usePlanTot := s.mode == prompt.ModePlan && s.cfg.PlanTot &&
-		(len(sess.history) == 0 || assistout.ReplySignalsPlanWait(sess.lastPlanReply))
-	if usePlanTot {
-		totClient := agent.NewPlanTotOpenAIClient(s.cfg)
-		var used bool
-		reply, newHist, _, used, runErr = agent.RunPlanModeTot(promptCtx, r, totClient, sess.systemPrompt, sess.history, userMsg, cw)
-		if runErr == nil && !used {
-			reply, newHist, _, runErr = r.RunConversation(promptCtx, sess.systemPrompt, sess.history, userMsg, cw)
-		}
-	} else {
-		reply, newHist, _, runErr = r.RunConversation(promptCtx, sess.systemPrompt, sess.history, userMsg, cw)
-	}
-	sess.history = newHist
-	if s.mode == prompt.ModePlan && runErr == nil {
-		sess.lastPlanReply = assistout.PrepareAssistantText(reply, true)
-	}
+	reply, runErr := s.orchestrateACPTurn(promptCtx, sess, p.SessionID, userText, userMsg, cw)
 
 	if errors.Is(runErr, context.Canceled) {
 		_ = s.tr.WriteResult(id, map[string]any{"stopReason": "cancelled"})
@@ -738,6 +770,152 @@ func (s *acpServer) handleSessionPrompt(ctx context.Context, params json.RawMess
 		})
 	}
 	_ = s.tr.WriteResult(id, map[string]any{"stopReason": "end_turn", "reply": reply})
+}
+
+// runACPTurn runs one logical turn against sess (with PlanTot fallback when in
+// plan mode) and returns the assistant reply. Updates sess.history,
+// sess.lastPlanReply, and sess.currentPlan as side-effects so subsequent calls
+// see the latest state. userText is used to seed plan parsing; pass "" for
+// synthetic continuations (e.g. the plan->build handoff message).
+func (s *acpServer) runACPTurn(ctx context.Context, sess *acpChatSession, userMsg openai.ChatCompletionMessageParamUnion, userText string, cw *acpChunkWriter) (string, error) {
+	r := s.newACPRunnerLocked(sess)
+	var reply string
+	var newHist []openai.ChatCompletionMessageParamUnion
+	var runErr error
+	usePlanTot := sess.mode == prompt.ModePlan && s.cfg.PlanTot &&
+		(len(sess.history) == 0 || assistout.ReplySignalsPlanWait(sess.lastPlanReply))
+	if usePlanTot {
+		totClient := agent.NewPlanTotOpenAIClient(s.cfg)
+		var used bool
+		reply, newHist, _, used, runErr = agent.RunPlanModeTot(ctx, r, totClient, sess.systemPrompt, sess.history, userMsg, cw)
+		if runErr == nil && !used {
+			reply, newHist, _, runErr = r.RunConversation(ctx, sess.systemPrompt, sess.history, userMsg, cw)
+		}
+	} else {
+		reply, newHist, _, runErr = r.RunConversation(ctx, sess.systemPrompt, sess.history, userMsg, cw)
+	}
+	if runErr != nil {
+		return reply, runErr
+	}
+	sess.history = newHist
+	if sess.mode == prompt.ModePlan {
+		designText := assistout.PrepareAssistantText(reply, true)
+		sess.lastPlanReply = designText
+		// Keep sess.currentPlan in sync so the orchestrator's auto-build phase
+		// can inject a structured handoff. Skip parsing for synthetic
+		// continuations (userText empty) — they are implementation directives,
+		// not new plan requests.
+		if userText != "" {
+			if parsed := planstore.ParseFromMarkdown(designText, userText); parsed != nil && len(parsed.Steps) > 0 {
+				parsed.SessionID = sess.id
+				parsed.Workspace = sess.workspaceRoot
+				if sess.currentPlan == nil {
+					parsed.Revision = 1
+				} else {
+					parsed.Revision = sess.currentPlan.Revision + 1
+				}
+				sess.currentPlan = parsed
+			}
+		}
+	}
+	return reply, nil
+}
+
+// orchestrateACPTurn classifies userText with the low-tier supervisor, swaps
+// sess artifacts to the chosen target mode, runs the turn, and (for
+// COMPLEX_TASK whose plan triggers handoff) chains a build phase. The
+// build-mode transition is performed FIRST so the handoff user message is
+// built against the build-mode tool registry, then runACPTurn drives the
+// implementation turn with that synthetic message. Notifications surface each
+// transition so Codient Unity can render the orchestrator activity.
+func (s *acpServer) orchestrateACPTurn(ctx context.Context, sess *acpChatSession, sessionID, userText string, userMsg openai.ChatCompletionMessageParamUnion, cw *acpChunkWriter) (string, error) {
+	id := s.classifyACPIntent(ctx, userText)
+	sess.lastIntent = &id
+	s.emitIntentNotification(sessionID, id)
+
+	target := mapCategoryToMode(id.Category)
+	s.applyACPMode(sess, target)
+	s.emitModeStatusChanged(sessionID, target, false)
+
+	reply, err := s.runACPTurn(ctx, sess, userMsg, userText, cw)
+	if err != nil {
+		return reply, err
+	}
+	if id.Category != intent.CategoryComplexTask || sess.mode != prompt.ModePlan {
+		return reply, nil
+	}
+	if !planHandoffApplies(sess.currentPlan, sess.lastPlanReply) {
+		return reply, nil
+	}
+
+	// Plan ready — emit the plan_ready notification (so editors can render the
+	// pause point), then auto-handoff and run the build phase. The orchestrator
+	// always chains plan->build for COMPLEX_TASK; clients that want to inspect
+	// or edit the plan first can do so between the plan_ready and the next
+	// session/prompt notification.
+	_ = s.tr.SendNotification("session/mode_status", map[string]any{
+		"sessionId": sessionID,
+		"phase":     "plan_ready",
+		"mode":      string(prompt.ModePlan),
+		"handoff":   false,
+	})
+
+	if sess.currentPlan != nil {
+		sess.currentPlan.Phase = planstore.PhaseApproved
+		if sess.currentPlan.Approval == nil {
+			recordApproval(sess.currentPlan, "approve", "approved by orchestrator (auto)")
+		}
+	}
+	// Swap to build first so the handoff message references the build-mode
+	// tool registry, not the plan-mode one.
+	s.applyACPMode(sess, prompt.ModeBuild)
+	s.emitModeStatusChanged(sessionID, prompt.ModeBuild, true)
+	handoffText := buildPlanHandoffMessage(sess.currentPlan, sess.lastPlanReply, sess.registry.Names())
+	return s.runACPTurn(ctx, sess, openai.UserMessage(handoffText), "", cw)
+}
+
+// applyACPMode swaps sess.mode and the resolved registry / system prompt for
+// the target mode without persisting the change. The orchestrator wraps each
+// turn with this helper so the next turn re-classifies (sess.mode is restored
+// to ModeAuto by handleSessionPrompt's deferred restore).
+func (s *acpServer) applyACPMode(sess *acpChatSession, target prompt.Mode) {
+	reg, sp := s.modeArtifactsFor(target)
+	sess.cancelMu.Lock()
+	sess.mode = target
+	sess.registry = reg
+	sess.systemPrompt = sp
+	sess.cancelMu.Unlock()
+}
+
+// classifyACPIntent runs the supervisor on userText using the low-tier client.
+// Errors are folded into the returned Identification (fallback path = QUERY).
+func (s *acpServer) classifyACPIntent(ctx context.Context, userText string) intent.Identification {
+	cli := openaiclient.NewForTier(s.cfg, config.TierLow)
+	id, _ := intent.IdentifyIntent(ctx, cli, userText, intent.Options{Tracker: s.tokenTracker})
+	return id
+}
+
+// emitIntentNotification fires the session/intent_identified notification so
+// Codient Unity can show the orchestrator's decision in its transcript.
+func (s *acpServer) emitIntentNotification(sessionID string, id intent.Identification) {
+	_ = s.tr.SendNotification("session/intent_identified", map[string]any{
+		"sessionId": sessionID,
+		"category":  string(id.Category),
+		"reasoning": id.Reasoning,
+		"fallback":  id.Fallback,
+	})
+}
+
+// emitModeStatusChanged notifies the client that the orchestrator switched
+// the active mode for the upcoming turn (auto -> resolved). handoff is true
+// when the change carried a plan->build implementation directive.
+func (s *acpServer) emitModeStatusChanged(sessionID string, target prompt.Mode, handoff bool) {
+	_ = s.tr.SendNotification("session/mode_status", map[string]any{
+		"sessionId": sessionID,
+		"phase":     "changed",
+		"mode":      string(target),
+		"handoff":   handoff,
+	})
 }
 
 func (sess *acpChatSession) setCancel(c context.CancelFunc) {
@@ -848,29 +1026,34 @@ func (w *acpChunkWriter) Write(p []byte) (int, error) {
 }
 
 func (s *acpServer) newACPRunnerLocked(sess *acpChatSession) *agent.Runner {
-	s.stub.acpRegistryMu.RLock()
-	reg := s.stub.registry
-	s.stub.acpRegistryMu.RUnlock()
+	reg := sess.registry
+	if reg == nil {
+		s.stub.acpRegistryMu.RLock()
+		reg = s.stub.registry
+		s.stub.acpRegistryMu.RUnlock()
+	}
 	llm := s.acpSessionChatClient(sess)
 	r := &agent.Runner{
-		LLM:            llm,
-		Cfg:            s.cfg,
-		Tools:          reg,
-		Log:            s.agentLog,
-		Progress:       s.progressWriter,
-		ProgressPlain:  s.cfg.Plain,
-		ProgressMode:   string(s.mode),
-		Tracker:        s.tokenTracker,
-		PostReplyCheck: s.postReplyCheck,
-		MaxTurns:       s.maxTurns,
-		MaxCostUSD:     s.maxCostUSD,
+		LLM:           llm,
+		Cfg:           s.cfg,
+		Tools:         reg,
+		Log:           s.agentLog,
+		Progress:      s.progressWriter,
+		ProgressPlain: s.cfg.Plain,
+		ProgressMode:  string(sess.mode),
+		Tracker:       s.tokenTracker,
+		MaxTurns:      s.maxTurns,
+		MaxCostUSD:    s.maxCostUSD,
+	}
+	if sess.mode == prompt.ModeAsk {
+		r.PostReplyCheck = s.postReplyCheck
 	}
 	if s.maxCostUSD > 0 {
 		r.EstimateSessionCost = func(u tokentracker.Usage) (float64, bool) {
 			return s.stub.estimateCostForUsage(u)
 		}
 	}
-	if s.mode == prompt.ModeBuild {
+	if sess.mode == prompt.ModeBuild {
 		steps := buildAutoCheckSteps(s.cfg)
 		if len(steps) > 0 {
 			sec := autoCheckTimeoutSec(s.cfg)

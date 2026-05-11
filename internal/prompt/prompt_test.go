@@ -75,6 +75,31 @@ func TestBuild_ModePlan_IncludesPlanSection(t *testing.T) {
 	}
 }
 
+// TestBuild_NoLegacyModeBuildReferences guards against regressions that
+// reintroduce the long-removed `-mode build` / `--mode build` flag or the
+// `/build` slash command into the system prompt. The orchestrator now drives
+// plan -> build transitions implicitly; both surfaces have been removed.
+func TestBuild_NoLegacyModeBuildReferences(t *testing.T) {
+	cfg := &config.Config{Workspace: "/tmp/w"}
+	for _, m := range []Mode{ModeAsk, ModePlan, ModeBuild} {
+		var reg *tools.Registry
+		switch m {
+		case ModeAsk:
+			reg = tools.DefaultReadOnly("/tmp/w", "", nil, nil, "", nil, nil)
+		case ModePlan:
+			reg = tools.DefaultReadOnlyPlan("/tmp/w", "", nil, nil, "", nil, nil)
+		default:
+			reg = tools.Default("/tmp/w", "", nil, nil, nil, "", nil, nil, nil)
+		}
+		s := Build(Params{Cfg: cfg, Reg: reg, Mode: m})
+		for _, banned := range []string{"-mode build", "--mode build", "`/build`", "/build to "} {
+			if strings.Contains(s, banned) {
+				t.Errorf("mode=%s: system prompt should not reference %q", m, banned)
+			}
+		}
+	}
+}
+
 func TestBuild_ModeAsk_ReadOnlySections(t *testing.T) {
 	cfg := &config.Config{Workspace: "/tmp/w"}
 	reg := tools.DefaultReadOnly("/tmp/w", "", nil, nil, "", nil, nil)

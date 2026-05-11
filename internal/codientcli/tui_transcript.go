@@ -53,7 +53,7 @@ func (m *tuiModel) appendUserPromptBlock(text string) {
 	}
 	if m.plain {
 		m.content.WriteString("\n")
-		m.content.WriteString(assistout.SessionPrompt(true, m.mode))
+		m.content.WriteString(assistout.UserPrompt(true))
 		m.content.WriteString(text)
 		m.content.WriteString("\n")
 		return
@@ -71,7 +71,7 @@ func (m *tuiModel) appendUserPromptBlock(text string) {
 	}
 	wrapped := wordwrapUserInput(text, innerW)
 
-	accent := assistout.ModeAccentColor(m.mode)
+	accent := assistout.UserMessageAccentColor()
 	innerFg := lipgloss.AdaptiveColor{Light: "#18181B", Dark: "#FAFAFA"}
 	innerBg := lipgloss.AdaptiveColor{Light: "#F4F4F5", Dark: "#27272A"}
 	borderFg := lipgloss.AdaptiveColor{Light: "#A1A1AA", Dark: "#52525B"}
@@ -491,6 +491,33 @@ func isJoinable(line string) bool {
 	return !strings.HasPrefix(visible, "  ")
 }
 
+// endsWithParagraphTerminator reports whether the visible content of line
+// ends with punctuation that signals the end of a logical message or
+// paragraph: ".", "!", "?", or ")". The check ignores trailing whitespace
+// and ANSI escape codes so styled status lines are treated the same as
+// raw ones.
+func endsWithParagraphTerminator(line string) bool {
+	visible := strings.TrimRight(reAnsiCSI.ReplaceAllString(line, ""), " \t")
+	if visible == "" {
+		return false
+	}
+	last := visible[len(visible)-1]
+	switch last {
+	case '.', '!', '?', ')':
+		return true
+	}
+	return false
+}
+
+// looksLikeStatusMessage reports whether the visible content of line begins
+// with a known status prefix that always identifies a discrete CLI message
+// (today: "codient:"). Such lines should never be joined with whatever
+// preceded them in the viewport.
+func looksLikeStatusMessage(line string) bool {
+	visible := strings.TrimLeft(reAnsiCSI.ReplaceAllString(line, ""), " \t")
+	return strings.HasPrefix(visible, "codient:")
+}
+
 // joinProseLines merges adjacent joinable lines that are shorter than width
 // into a single line so that a subsequent wrap pass can re-flow them at the
 // current terminal width. This is the inverse of word-wrapping: it undoes
@@ -542,18 +569,30 @@ func joinProseLines(lines []string, width int) []string {
 		// Plain prose: join with previous accumulator if both are short
 		// enough that they came from a previous wrap pass (heuristic:
 		// the accumulated line is shorter than width-1).
+		//
+		// Skip the join when:
+		//   - acc ends with sentence-terminating or closing punctuation
+		//     (".", "!", "?", ")"). Word-wrapped continuations of a
+		//     single paragraph almost never end that way (wraps break at
+		//     inter-word spaces, not after sentence-final punctuation),
+		//     but mode hints and most "codient:" status lines do.
+		//   - line is a status message (starts with "codient:"). These are
+		//     always discrete CLI events and must not be glued onto a
+		//     previous line.
+		// Both signals keep distinct stderr writes on distinct lines while
+		// still allowing genuine wrap continuations to re-flow.
 		if acc == "" {
 			acc = line
+		} else if endsWithParagraphTerminator(acc) || looksLikeStatusMessage(line) {
+			flush()
+			acc = line
 		} else if lipgloss.Width(acc) < width-1 {
-			// Join: separate with a space only if acc doesn't already end
-			// with a space and line doesn't start with a space.
 			sep := " "
 			if strings.HasSuffix(acc, " ") || strings.HasPrefix(line, " ") {
 				sep = ""
 			}
 			acc = acc + sep + line
 		} else {
-			// acc is already wide enough — flush and start a new run.
 			flush()
 			acc = line
 		}

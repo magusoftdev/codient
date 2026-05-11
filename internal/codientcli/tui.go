@@ -105,6 +105,7 @@ type tuiModel struct {
 	todos             []tools.TodoItem
 	inReasoningStream bool
 	thinkingCompact   bool // toggled with ctrl+t: shorter Thinking blocks
+	mouseEnabled      bool // mirrors cfg.MouseEnabled; shown in the hint bar
 	onInterrupt       func() bool // returns true if a turn was cancelled
 
 	chromeModel            string
@@ -137,7 +138,7 @@ const (
 // surrounding lipgloss wrapper in sync.
 var tuiPanelBg = lipgloss.AdaptiveColor{Light: "#EEEEEE", Dark: "#1A1A1A"}
 
-func newTUIModel(ic *inputCloser, mode string, plain bool) tuiModel {
+func newTUIModel(ic *inputCloser, mode string, plain, mouseEnabled bool) tuiModel {
 	ti := textarea.New()
 	ti.CharLimit = 0
 	ti.MaxHeight = tuiInputMaxRows
@@ -156,12 +157,13 @@ func newTUIModel(ic *inputCloser, mode string, plain bool) tuiModel {
 	ti.Focus()
 
 	m := tuiModel{
-		input:       ti,
-		inputCloser: ic,
-		content:     &strings.Builder{},
-		mode:        mode,
-		plain:       plain,
-		inputHeight: tuiInputMinRows,
+		input:        ti,
+		inputCloser:  ic,
+		content:      &strings.Builder{},
+		mode:         mode,
+		plain:        plain,
+		mouseEnabled: mouseEnabled,
+		inputHeight:  tuiInputMinRows,
 	}
 	m.applyInputPrompt()
 	m.applyInputStyle()
@@ -171,14 +173,9 @@ func newTUIModel(ic *inputCloser, mode string, plain bool) tuiModel {
 func (m *tuiModel) applyInputPrompt() {
 	var rendered string
 	if m.plain {
-		rendered = assistout.SessionPrompt(true, m.mode)
+		rendered = assistout.UserPrompt(true)
 	} else {
-		mode := strings.ToLower(strings.TrimSpace(m.mode))
-		if mode == "" {
-			mode = "build"
-		}
-		accent := assistout.ModeAccentColor(m.mode)
-		dim := lipgloss.AdaptiveColor{Light: "#525252", Dark: "#A3A3A3"}
+		accent := assistout.UserMessageAccentColor()
 		// Bake the panel background into each segment so the rendered prompt
 		// does not contain a mid-string SGR reset that would clear the panel
 		// colour. Without this, the area "behind" the prompt characters
@@ -188,11 +185,7 @@ func (m *tuiModel) applyInputPrompt() {
 			Foreground(accent).
 			Background(tuiPanelBg).
 			Bold(true).
-			Render(mode) +
-			lipgloss.NewStyle().
-				Foreground(dim).
-				Background(tuiPanelBg).
-				Render(" > ")
+			Render("> ")
 	}
 	m.input.Prompt = rendered
 	promptW := lipgloss.Width(rendered)
@@ -484,7 +477,7 @@ func (m *tuiModel) inputFooterView() string {
 
 	innerCol := lipgloss.JoinVertical(lipgloss.Left, inputLine, spacer, metaLine)
 	h := max(1, lipgloss.Height(innerCol))
-	accentColor := assistout.ModeAccentColor(m.mode)
+	accentColor := assistout.UserMessageAccentColor()
 	accentCell := lipgloss.NewStyle().
 		Background(accentColor).
 		Foreground(accentColor).
@@ -504,11 +497,15 @@ func (m *tuiModel) inputFooterView() string {
 	if m.chromeContextEstimated && ctxHint != "—" {
 		ctxHint = "~" + ctxHint
 	}
+	hintText := ctxHint + "  ·  type / for commands  ·  ctrl+j newline"
+	if m.mouseEnabled {
+		hintText += "  ·  shift+drag to select"
+	}
 	ctxLine := lipgloss.NewStyle().
 		Width(m.width).
 		Align(lipgloss.Right).
 		Foreground(lipgloss.AdaptiveColor{Light: "#737373", Dark: "#888888"}).
-		Render(ctxHint + "  ·  type / for commands  ·  ctrl+j newline")
+		Render(hintText)
 
 	return panel + "\n" + ctxLine
 }
@@ -953,8 +950,11 @@ type tuiSetup struct {
 // The caller must run the returned setup's start method in a goroutine to pump
 // pipe output into the TUI, then call prog.Run() on the main goroutine.
 // onInterrupt is called when Ctrl+C is pressed while the agent is working;
-// it should return true if a turn was successfully cancelled.
-func initTUI(mode string, plain bool, onInterrupt func() bool) (*tuiSetup, error) {
+// it should return true if a turn was successfully cancelled. mouseEnabled
+// toggles whether Bubble Tea captures mouse events: disabling it leaves wheel
+// scrolling to the keyboard shortcuts but lets the terminal handle native
+// click-and-drag text selection.
+func initTUI(mode string, plain, mouseEnabled bool, onInterrupt func() bool) (*tuiSetup, error) {
 	origOut := os.Stdout
 	origErr := os.Stderr
 
@@ -995,17 +995,28 @@ func initTUI(mode string, plain bool, onInterrupt func() bool) (*tuiSetup, error
 		done:    make(chan struct{}),
 	}
 
-	model := newTUIModel(ic, mode, plain)
+	model := newTUIModel(ic, mode, plain, mouseEnabled)
 	model.onInterrupt = onInterrupt
 	model.tuiOwner = ts
-	prog := tea.NewProgram(model,
-		tea.WithAltScreen(),
-		tea.WithMouseCellMotion(),
-		tea.WithOutput(origErr),
-	)
+	prog := tea.NewProgram(model, tuiProgramOptions(mouseEnabled, origErr)...)
 	ts.prog = prog
 
 	return ts, nil
+}
+
+// tuiProgramOptions builds the Bubble Tea option list for the TUI session.
+// Mouse cell-motion capture is included only when mouseEnabled is true so
+// terminals can fall back to their native click-and-drag text selection when
+// users prefer copy/paste over wheel scrolling.
+func tuiProgramOptions(mouseEnabled bool, out *os.File) []tea.ProgramOption {
+	opts := []tea.ProgramOption{
+		tea.WithAltScreen(),
+		tea.WithOutput(out),
+	}
+	if mouseEnabled {
+		opts = append(opts, tea.WithMouseCellMotion())
+	}
+	return opts
 }
 
 // checkClipboardCmd returns a Bubble Tea command that asynchronously checks

@@ -7,47 +7,76 @@ import (
 
 	"github.com/openai/openai-go/v3"
 
-	"codient/internal/assistout"
 	"codient/internal/config"
 	"codient/internal/openaiclient"
+	"codient/internal/planstore"
 	"codient/internal/prompt"
 	"codient/internal/sessionstore"
 )
 
-// switchMode changes the session mode, filtering history to keep only text messages
-// and injecting a transition note. The system prompt and tool registry are rebuilt.
-func (s *session) switchMode(newMode prompt.Mode) {
+// tierForResolvedMode maps a resolved internal mode (build / ask / plan) to
+// the reasoning tier the orchestrator wants to drive that mode with. Plan
+// (architectural design) uses the high-reasoning model; build / ask / auto
+// fallthrough use the low-reasoning model.
+func tierForResolvedMode(m prompt.Mode) string {
+	switch m {
+	case prompt.ModePlan:
+		return config.TierHigh
+	default:
+		return config.TierLow
+	}
+}
+
+// transitionToInternalMode rebuilds session state (client, registry, system
+// prompt) for a new internal mode label without touching conversation
+// history. This is a pure swap of runtime artifacts so the next turn runs
+// against the correct tool registry, reasoning tier, and system prompt. The
+// user-facing mode is always ModeAuto and we never print "switched to X
+// mode" chatter. Callers (the orchestrator, structured plan execution, plan
+// resume) use this between turns; the orchestrator restores ModeAuto after
+// each turn so the next user prompt is re-classified.
+//
+// The plan -> build handoff (injecting a synthetic implementation directive)
+// is the caller's responsibility — keeping it out of this helper avoids
+// double-handoff bugs when the caller also wants to drive the next turn with
+// its own synthetic user message.
+func (s *session) transitionToInternalMode(newMode prompt.Mode) {
 	if s.mode == newMode {
-		fmt.Fprintf(os.Stderr, "codient: already in %s mode\n", newMode)
 		return
 	}
-	oldMode := s.mode
-
-	s.history = filterHistoryForModeSwitch(s.history)
-
-	note := fmt.Sprintf("[Mode switched from %s to %s. The conversation above is from the previous mode.]", oldMode, newMode)
-	s.history = append(s.history, openai.UserMessage(note))
-
-	var spinner *modelSpinner
-	if s.cfg.Model != "" && !s.cfg.Plain {
-		spinner = startModelSpinner(os.Stderr, s.cfg.Model)
-	}
-
 	s.setMode(newMode)
-	s.client = openaiclient.New(s.cfg)
+	s.client = openaiclient.NewForTier(s.cfg, tierForResolvedMode(newMode))
 	s.installRegistry(buildRegistry(s.cfg, newMode, s, s.memOpts))
-
-	if spinner != nil {
-		spinner.stop(fmt.Sprintf("codient: switched to %s mode (model: %s)", newMode, s.cfg.Model))
-	} else {
-		fmt.Fprintf(os.Stderr, "codient: switched to %s mode\n", newMode)
-	}
 
 	if newMode == prompt.ModeBuild {
 		s.warnIfNotGitRepo()
 	}
-	config.SaveLastMode(string(newMode))
-	fmt.Fprintf(os.Stderr, "%s\n", assistout.ModeHint(s.cfg.Plain, string(newMode)))
+}
+
+// resetForReplan rewinds the session to a fresh plan-mode draft for the
+// remaining work. Used by structured plan execution when the user asks to
+// re-plan mid-flow. Filters tool messages out of the history so the planner
+// sees a clean conversational record.
+func (s *session) resetForReplan() {
+	s.history = filterHistoryForModeSwitch(s.history)
+	s.transitionToInternalMode(prompt.ModePlan)
+}
+
+// markPlanApprovedForHandoff records that the user approved the active plan via a
+// plan->build mode switch. Persisted so /plan-status and resume reflect approval.
+func (s *session) markPlanApprovedForHandoff() {
+	plan := s.currentPlan
+	if plan == nil {
+		return
+	}
+	plan.Phase = planstore.PhaseApproved
+	s.planPhase = planstore.PhaseApproved
+	if plan.Approval == nil {
+		recordApproval(plan, "approve", "approved by switching to build mode")
+	}
+	if err := planstore.Save(plan); err != nil {
+		fmt.Fprintf(os.Stderr, "codient: plan save: %v\n", err)
+	}
 }
 
 // filterHistoryForModeSwitch keeps user and assistant text messages, dropping tool

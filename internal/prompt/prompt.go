@@ -31,9 +31,14 @@ type Params struct {
 }
 
 // Build returns the full system message: persona/rules, dynamic tools, repo notes, user -system.
+//
+// When Mode is empty or ModeAuto, the prompt is built as if for ModeBuild: the
+// orchestrator rebuilds per-turn for the chosen mode, but the bootstrap prompt
+// (used before the first prompt is classified, e.g. for context probing and
+// startup banners) is the most permissive read/write variant.
 func Build(p Params) string {
 	mode := p.Mode
-	if mode == "" {
+	if mode == "" || mode == ModeAuto {
 		mode = ModeBuild
 	}
 	var b strings.Builder
@@ -195,7 +200,7 @@ func sectionPlanMode() string {
 ### When the design is done
 
 - When nothing blocking remains, end with a section titled **Ready to implement** (exact title) containing a concise checklist or bullets.
-- That final message must **not** include **Waiting for your answer**, must **not** add a Question heading, and must **not** end with questions or invitations to reply—only the handoff: run **codient** with **-mode build** (or default build) and the same workspace.
+- That final message must **not** include **Waiting for your answer**, must **not** add a Question heading, and must **not** end with questions or invitations to reply. Codient's orchestrator will auto-route the user's next prompt (typically a short confirmation like "go" or "implement it") into build mode to carry out the plan — no manual mode switch is required.
 - The **echo** tool is not available in Plan mode; write the design in assistant text only.
 
 ### After the user answers a blocking question
@@ -232,6 +237,7 @@ func sectionToolUsage() string {
 
 - Follow each tool's JSON schema exactly; **only call tools listed in this session**. Calling a tool that does not exist (e.g. todo_write, TodoWrite, create_plan) wastes a turn. If you are unsure whether a tool exists, check the list below.
 - Prefer **gathering context** (list, search, read) before editing.
+- **Approved plan in context**: If the recent conversation contains an **approved plan** (a prior assistant turn with sections like ` + "`" + `## Implementation steps` + "`" + ` / ` + "`" + `## Files to modify` + "`" + `, a ` + "`" + `# Approved plan` + "`" + ` heading, or a ` + "`" + `Ready to implement` + "`" + ` design followed by a build-mode handoff message), treat the listed scope as **user-approved**. Verify each step's premise with focused reads or greps before editing, but **skip broad exploratory research** that the plan already covers, and start using write tools (write_file, str_replace, patch_file, insert_lines) on the first turn rather than treating it as another research turn.
 - If unsure, use more tools rather than guessing; only ask the user when the repository cannot answer.
 - Use normal tool-calling channels—do not paste fake tool calls as plain text in the assistant message.
 - **Parallel tool calls**: When multiple tool calls are **independent** (none needs another's output), call them **all in the same response** so they run concurrently. Typical batches: reading several files at once, grepping for different patterns, running tests after writing multiple files, searching before and after a change. Only sequence calls when one genuinely depends on the result of another.`

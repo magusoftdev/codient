@@ -8,10 +8,10 @@ The `web_search` tool is always enabled. It uses an embedded metasearch engine (
 
 When **`embedding_model`** is set in config, codient indexes text files in the workspace and registers the **`semantic_search`** tool (all modes). The agent can find files by meaning (e.g. “authentication”, “migrations”) instead of relying only on exact-string `grep`.
 
-- **API:** Embeddings use the same **`base_url`** and **`api_key`** as chat completions (`POST /v1/embeddings`). Your server must expose that endpoint for the chosen model (e.g. OpenAI `text-embedding-3-small`, or a local embedding model in LM Studio / Ollama).
+- **API:** Embeddings default to the same **`base_url`** and **`api_key`** as chat completions (`POST /v1/embeddings`). When chat targets a server that does not implement that endpoint (Anthropic / Claude is the common case — you'll see `stream error: stream ID 1; INTERNAL_ERROR; received from peer` instead of vectors), set **`embedding_base_url`** (and optionally **`embedding_api_key`**) to route embeddings to a different server such as a local LM Studio or Ollama instance.
 - **When indexing runs:** After you start an interactive session, indexing begins automatically in the background—no separate command. stderr shows progress and completion (or an error if embeddings fail).
 - **Persistence:** The index is stored under **`<workspace>/.codient/index/embeddings.gob`**. On later sessions, unchanged files reuse cached vectors; only new or modified files are re-embedded. If you change **`embedding_model`**, the stored index is invalidated and rebuilt.
-- **Configure:** `/config embedding_model <model-id>`, set `embedding_model` in `~/.codient/config.json`, or use **`/setup`** (optional prompt after chat model selection).
+- **Configure:** `/config embedding_model <model-id>` (and optionally `/config embedding_base_url <url>` / `/config embedding_api_key <key>`), set the same fields in `~/.codient/config.json`, or use **`/setup`** — after picking the embedding model the wizard asks whether to point embeddings at a different server.
 
 ## Repository map (structural overview)
 

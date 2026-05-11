@@ -68,6 +68,38 @@ func TestIntegration_ListModelsIncludesConfiguredModel(t *testing.T) {
 	t.Fatalf("model %q not found in /v1/models; got %v", want, ids)
 }
 
+func TestIntegration_CreateEmbeddingNonEmpty(t *testing.T) {
+	if os.Getenv("CODIENT_INTEGRATION") != "1" {
+		t.Skip("set CODIENT_INTEGRATION=1 to run live API tests")
+	}
+	if testing.Short() {
+		t.Skip("skipping live LLM call in -short mode")
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(cfg.EmbeddingModel) == "" {
+		t.Skip("set embedding_model in ~/.codient/config.json (or via /config) to run this live test")
+	}
+	c := openaiclient.NewForEmbedding(cfg)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	vecs, err := c.CreateEmbedding(ctx, cfg.EmbeddingModel, []string{"semantic search smoke test"})
+	if err != nil {
+		t.Fatalf("CreateEmbedding: %v (check embedding_base_url/embedding_api_key if your chat server does not expose /v1/embeddings)", err)
+	}
+	if len(vecs) != 1 || len(vecs[0]) == 0 {
+		t.Fatalf("expected one non-empty vector, got %d / dim %d", len(vecs), func() int {
+			if len(vecs) > 0 {
+				return len(vecs[0])
+			}
+			return 0
+		}())
+	}
+	t.Logf("embedding model %q returned vector of dimension %d", cfg.EmbeddingModel, len(vecs[0]))
+}
+
 func TestIntegration_ChatCompletionNonEmpty(t *testing.T) {
 	if os.Getenv("CODIENT_INTEGRATION") != "1" {
 		t.Skip("set CODIENT_INTEGRATION=1 to run live API tests")

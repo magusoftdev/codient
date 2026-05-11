@@ -13,16 +13,28 @@ import (
 	"github.com/muesli/termenv"
 )
 
+func TestTUIProgramOptions_MouseToggle(t *testing.T) {
+	withMouse := tuiProgramOptions(true, nil)
+	withoutMouse := tuiProgramOptions(false, nil)
+	if len(withMouse) != len(withoutMouse)+1 {
+		t.Fatalf("expected mouse-enabled option list to have exactly one extra option; got %d vs %d",
+			len(withMouse), len(withoutMouse))
+	}
+	if len(withoutMouse) < 2 {
+		t.Fatalf("expected at least AltScreen + Output options when mouse is disabled; got %d", len(withoutMouse))
+	}
+}
+
 func TestTUIModel_UserPromptBlockPlain(t *testing.T) {
 	ic := newInputCloser()
-	m := newTUIModel(ic, "ask", true)
+	m := newTUIModel(ic, "auto", true, true)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	m = updated.(tuiModel)
 	updated, _ = m.Update(tuiUserPromptMsg("hello"))
 	m = updated.(tuiModel)
 	s := m.content.String()
-	if !strings.Contains(s, "hello") || !strings.Contains(s, "[ask]") {
-		t.Fatalf("expected plain transcript echo, got %q", s)
+	if !strings.Contains(s, "hello") || !strings.Contains(s, "> ") {
+		t.Fatalf("expected plain transcript echo with > prompt, got %q", s)
 	}
 }
 
@@ -32,7 +44,7 @@ func TestTUIModel_UserPromptBlockBorderWidth(t *testing.T) {
 	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
 
 	ic := newInputCloser()
-	m := newTUIModel(ic, "build", false)
+	m := newTUIModel(ic, "build", false, true)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	m = updated.(tuiModel)
 
@@ -66,7 +78,7 @@ func TestTUIModel_UserPromptBlockBorderWidth(t *testing.T) {
 
 func TestTUIModel_OutputAppendsToViewport(t *testing.T) {
 	ic := newInputCloser()
-	m := newTUIModel(ic, "ask", true)
+	m := newTUIModel(ic, "ask", true, true)
 
 	// Simulate window size (makes model ready).
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
@@ -86,7 +98,7 @@ func TestTUIModel_OutputAppendsToViewport(t *testing.T) {
 
 func TestTUIModel_TranscriptThinkingBlock(t *testing.T) {
 	ic := newInputCloser()
-	m := newTUIModel(ic, "build", true)
+	m := newTUIModel(ic, "build", true, true)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	m = updated.(tuiModel)
 	updated, _ = m.Update(tuiTranscriptMsg{ev: agent.TranscriptEvent{
@@ -106,7 +118,7 @@ func TestTUIModel_TranscriptThinkingBlock(t *testing.T) {
 
 func TestTUIModel_TodoSidebarNarrowsViewport(t *testing.T) {
 	ic := newInputCloser()
-	m := newTUIModel(ic, "build", true)
+	m := newTUIModel(ic, "build", true, true)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
 	m = updated.(tuiModel)
 	updated, _ = m.Update(tuiTodosMsg{items: []tools.TodoItem{{Content: "A", Status: "pending"}}})
@@ -119,9 +131,12 @@ func TestTUIModel_TodoSidebarNarrowsViewport(t *testing.T) {
 	}
 }
 
-func TestTUIModel_ModeChange(t *testing.T) {
+// TestTUIModel_ChromeMessageUpdatesMode verifies the chrome message still
+// updates the model.mode field (used by the footer / progress styling) even
+// though the input prompt itself no longer surfaces the mode label.
+func TestTUIModel_ChromeMessageUpdatesMode(t *testing.T) {
 	ic := newInputCloser()
-	m := newTUIModel(ic, "ask", true)
+	m := newTUIModel(ic, "auto", true, true)
 
 	updated, _ := m.Update(tuiChromeMsg{
 		Mode: "build", Model: "m", BackendLabel: "local", ContextWindow: 128000, LastPromptTokens: 0,
@@ -131,25 +146,22 @@ func TestTUIModel_ModeChange(t *testing.T) {
 	if m.mode != "build" {
 		t.Fatalf("mode should be build, got %q", m.mode)
 	}
-	if !strings.Contains(m.input.Prompt, "build") {
-		t.Fatalf("prompt should contain build, got %q", m.input.Prompt)
+	if !strings.Contains(m.input.Prompt, "> ") {
+		t.Fatalf("input prompt should still render the orchestrator chevron, got %q", m.input.Prompt)
 	}
 }
 
 func TestTUIModel_ChromeFooterShowsModelAndContext(t *testing.T) {
 	ic := newInputCloser()
-	m := newTUIModel(ic, "build", false)
+	m := newTUIModel(ic, "auto", false, true)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
 	m = updated.(tuiModel)
 	updated, _ = m.Update(tuiChromeMsg{
-		Mode: "build", Model: "test-model-x", BackendLabel: "local",
+		Mode: "auto", Model: "test-model-x", BackendLabel: "local",
 		ContextWindow: 100000, LastPromptTokens: 169800,
 	})
 	m = updated.(tuiModel)
 	view := m.View()
-	if !strings.Contains(view, "build") {
-		t.Fatalf("view should include mode before prompt, got:\n%s", view)
-	}
 	if !strings.Contains(view, "test-model-x") {
 		t.Fatalf("view should list model, got:\n%s", view)
 	}
@@ -169,11 +181,25 @@ func TestTUIModel_ChromeFooterShowsModelAndContext(t *testing.T) {
 	if !strings.Contains(view, "type / for commands") {
 		t.Fatalf("view should list slash hint, got:\n%s", view)
 	}
+	if !strings.Contains(view, "shift+drag to select") {
+		t.Fatalf("view should show shift+drag hint when mouseEnabled=true, got:\n%s", view)
+	}
+}
+
+func TestTUIModel_MouseDisabledHint(t *testing.T) {
+	ic := newInputCloser()
+	m := newTUIModel(ic, "auto", false, false) // mouseEnabled = false
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
+	m = updated.(tuiModel)
+	view := m.View()
+	if strings.Contains(view, "shift+drag to select") {
+		t.Fatalf("view should NOT show shift+drag hint when mouseEnabled=false, got:\n%s", view)
+	}
 }
 
 func TestTUIModel_WorkingStatus(t *testing.T) {
 	ic := newInputCloser()
-	m := newTUIModel(ic, "ask", true)
+	m := newTUIModel(ic, "ask", true, true)
 
 	// Make model ready so the spinner renders in the viewport.
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
@@ -209,7 +235,7 @@ func TestTUIModel_WorkingStatus(t *testing.T) {
 
 func TestTUIModel_EnterSendsInput(t *testing.T) {
 	ic := newInputCloser()
-	m := newTUIModel(ic, "ask", true)
+	m := newTUIModel(ic, "ask", true, true)
 
 	// Type some text then press Enter.
 	m.input.SetValue("test input")
@@ -232,7 +258,7 @@ func TestTUIModel_EnterSendsInput(t *testing.T) {
 
 func TestTUIModel_QuitMessage(t *testing.T) {
 	ic := newInputCloser()
-	m := newTUIModel(ic, "ask", true)
+	m := newTUIModel(ic, "ask", true, true)
 
 	updated, cmd := m.Update(tuiQuitMsg{exitCode: 0})
 	m = updated.(tuiModel)
@@ -258,7 +284,7 @@ func TestTUIWriter_SendsOutput(t *testing.T) {
 
 func TestTUIModel_SpinnerTickAdvancesFrame(t *testing.T) {
 	ic := newInputCloser()
-	m := newTUIModel(ic, "ask", true)
+	m := newTUIModel(ic, "ask", true, true)
 
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	m = updated.(tuiModel)
@@ -343,14 +369,14 @@ func TestSanitizePipeOutput(t *testing.T) {
 
 func TestTUIModel_ViewContainsInput(t *testing.T) {
 	ic := newInputCloser()
-	m := newTUIModel(ic, "build", true)
+	m := newTUIModel(ic, "auto", true, true)
 
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	m = updated.(tuiModel)
 
 	view := m.View()
-	if !strings.Contains(view, "[build] > ") {
-		t.Fatalf("view should contain prompt, got:\n%s", view)
+	if !strings.Contains(view, "> ") {
+		t.Fatalf("view should contain orchestrator chevron prompt, got:\n%s", view)
 	}
 }
 
@@ -359,7 +385,7 @@ func TestTUIModel_ViewContainsInput(t *testing.T) {
 // shrinks back to a single row after the message is submitted.
 func TestTUIModel_InputGrowsWithMultilineText(t *testing.T) {
 	ic := newInputCloser()
-	m := newTUIModel(ic, "build", false)
+	m := newTUIModel(ic, "build", false, true)
 
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 60, Height: 24})
 	m = updated.(tuiModel)
@@ -413,7 +439,7 @@ func TestTUIModel_InputGrowsWithMultilineText(t *testing.T) {
 // inside the textarea and grows the input panel without submitting.
 func TestTUIModel_InsertNewlineWithCtrlJ(t *testing.T) {
 	ic := newInputCloser()
-	m := newTUIModel(ic, "build", false)
+	m := newTUIModel(ic, "build", false, true)
 
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 60, Height: 24})
 	m = updated.(tuiModel)
@@ -451,7 +477,7 @@ func TestTUIModel_InputBackgroundUniform(t *testing.T) {
 	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
 
 	ic := newInputCloser()
-	m := newTUIModel(ic, "build", false)
+	m := newTUIModel(ic, "build", false, true)
 
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 60, Height: 24})
 	m = updated.(tuiModel)
@@ -520,7 +546,7 @@ func TestWrappedRowCount(t *testing.T) {
 
 func TestTUIModel_ViewportContentWrapsLongLines(t *testing.T) {
 	ic := newInputCloser()
-	m := newTUIModel(ic, "ask", true)
+	m := newTUIModel(ic, "ask", true, true)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 40, Height: 24})
 	m = updated.(tuiModel)
 
@@ -539,7 +565,7 @@ func TestTUIModel_ViewportContentWrapsLongLines(t *testing.T) {
 
 func TestTUIModel_ViewportContentWordWrapsAtBoundaries(t *testing.T) {
 	ic := newInputCloser()
-	m := newTUIModel(ic, "ask", true)
+	m := newTUIModel(ic, "ask", true, true)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 20, Height: 24})
 	m = updated.(tuiModel)
 
@@ -561,7 +587,7 @@ func TestTUIModel_ViewportContentWordWrapsAtBoundaries(t *testing.T) {
 
 func TestTUIModel_ScrollUpPreservesPosition(t *testing.T) {
 	ic := newInputCloser()
-	m := newTUIModel(ic, "ask", true)
+	m := newTUIModel(ic, "ask", true, true)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 6})
 	m = updated.(tuiModel)
 
@@ -650,6 +676,122 @@ func TestIndentAwareWrap_ShortLineUnchanged(t *testing.T) {
 	s := "  ▸ short"
 	if got := indentAwareWrap(s, 80); got != s {
 		t.Fatalf("short line should be unchanged, got %q", got)
+	}
+}
+
+// TestIndentAwareWrap_PreservesStatusMessages verifies that distinct
+// stderr writes (mode hints, "codient: ..." status lines) are not glued
+// onto a single line by the re-flow pre-pass. Each message should occupy
+// its own visible line.
+func TestIndentAwareWrap_PreservesStatusMessages(t *testing.T) {
+	input := strings.Join([]string{
+		"Ask mode — read-only tools. Ask questions about your codebase, libraries, or concepts.",
+		"codient: type /help for commands, /exit to quit",
+		"codient: indexing workspace for semantic search...",
+		"codient: building repository map...",
+		"codient: repo map ready (239 files, 2211 symbols)",
+		"codient: semantic index ready (202 files)",
+		"Build mode — full read/write tools. Ask the agent to implement, refactor, or fix code.",
+		"Plan mode — read-only tools. Describe what you want built and the agent will draft an implementation design, asking clarifying questions along the way.",
+		"Build mode — full read/write tools. Ask the agent to implement, refactor, or fix code.",
+	}, "\n")
+
+	wrapped := indentAwareWrap(input, 200)
+	lines := strings.Split(wrapped, "\n")
+
+	// The first occurrence of each distinct prefix must show up on a line
+	// that does NOT also contain the next message's prefix.
+	for _, pair := range [][2]string{
+		{"Ask mode —", "codient: type /help"},
+		{"codient: type /help", "codient: indexing"},
+		{"codient: indexing", "codient: building"},
+		{"codient: building", "codient: repo map ready"},
+		{"codient: repo map ready", "codient: semantic index ready"},
+		{"codient: semantic index ready", "Build mode —"},
+		{"Build mode —", "Plan mode —"},
+		{"Plan mode —", "Build mode —"},
+	} {
+		first, next := pair[0], pair[1]
+		var found bool
+		for _, line := range lines {
+			if strings.Contains(line, first) {
+				found = true
+				if strings.Contains(line, next) {
+					t.Fatalf("messages were glued together — %q and %q share a line:\n%s",
+						first, next, wrapped)
+				}
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("expected to find a line containing %q in:\n%s", first, wrapped)
+		}
+	}
+}
+
+// TestIndentAwareWrap_ReflowsWrappedParagraph confirms that a paragraph
+// previously hard-wrapped at a narrow width is re-flowed onto fewer lines
+// when re-rendered at a wider width. This is the original use case for
+// joinProseLines and must keep working alongside the status-message fix.
+func TestIndentAwareWrap_ReflowsWrappedParagraph(t *testing.T) {
+	narrow := strings.Join([]string{
+		"This is a long sentence",
+		"that was previously wrapped",
+		"at a narrow width and",
+		"should re-flow when widened.",
+	}, "\n")
+
+	wrapped := indentAwareWrap(narrow, 200)
+	lines := strings.Split(strings.TrimRight(wrapped, "\n"), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("expected a single re-flowed line at width 200, got %d:\n%s",
+			len(lines), wrapped)
+	}
+	want := "This is a long sentence that was previously wrapped at a narrow width and should re-flow when widened."
+	if lines[0] != want {
+		t.Fatalf("re-flowed line mismatch:\nwant: %q\n got: %q", want, lines[0])
+	}
+}
+
+func TestEndsWithParagraphTerminator(t *testing.T) {
+	tests := []struct {
+		line string
+		want bool
+	}{
+		{"", false},
+		{"hello", false},
+		{"hello.", true},
+		{"hello!", true},
+		{"hello?", true},
+		{"(202 files)", true},
+		{"trailing space.   ", true},
+		{"\x1b[31mstyled.\x1b[0m", true},
+		{"mid-sentence,", false},
+		{"colon:", false},
+	}
+	for _, tt := range tests {
+		if got := endsWithParagraphTerminator(tt.line); got != tt.want {
+			t.Errorf("endsWithParagraphTerminator(%q) = %v, want %v", tt.line, got, tt.want)
+		}
+	}
+}
+
+func TestLooksLikeStatusMessage(t *testing.T) {
+	tests := []struct {
+		line string
+		want bool
+	}{
+		{"", false},
+		{"codient: hello", true},
+		{"  codient: hello", true},
+		{"\x1b[31mcodient: hello\x1b[0m", true},
+		{"agent: hello", false},
+		{"hello codient: x", false},
+	}
+	for _, tt := range tests {
+		if got := looksLikeStatusMessage(tt.line); got != tt.want {
+			t.Errorf("looksLikeStatusMessage(%q) = %v, want %v", tt.line, got, tt.want)
+		}
 	}
 }
 
@@ -784,26 +926,25 @@ func TestSlashPicker_OffsetUnchangedOnRepeatShow(t *testing.T) {
 
 func TestTUIModel_SlashPickerEnterSelects(t *testing.T) {
 	ic := newInputCloser()
-	m := newTUIModel(ic, "ask", true)
+	m := newTUIModel(ic, "auto", true, true)
 
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	m = updated.(tuiModel)
 
 	// Set slash commands
 	cmds := &slashcmd.Registry{}
-	cmds.Register(slashcmd.Command{Name: "build", Description: "switch to build mode"})
-	cmds.Register(slashcmd.Command{Name: "plan", Description: "switch to plan mode"})
+	cmds.Register(slashcmd.Command{Name: "tools", Description: "list registered tools"})
+	cmds.Register(slashcmd.Command{Name: "status", Description: "show current session state"})
 	m.slashCmds = cmds
 
-	// Type /b to trigger picker
+	// Type /t to trigger picker (matches /tools).
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'/'}})
 	m = updated.(tuiModel)
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'b'}})
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'t'}})
 	m = updated.(tuiModel)
 
-	// Picker should be visible after typing /b
 	if !m.picker.visible {
-		t.Fatal("picker should be visible after typing /b")
+		t.Fatal("picker should be visible after typing /t")
 	}
 
 	// Press Enter to complete and submit
@@ -813,8 +954,8 @@ func TestTUIModel_SlashPickerEnterSelects(t *testing.T) {
 	// The command should have been submitted to the channel.
 	select {
 	case got := <-ic.ch:
-		if !strings.HasPrefix(got, "/build ") {
-			t.Fatalf("channel should have '/build ...', got %q", got)
+		if !strings.HasPrefix(got, "/tools ") {
+			t.Fatalf("channel should have '/tools ...', got %q", got)
 		}
 	default:
 		t.Fatal("expected input on channel")
@@ -823,14 +964,14 @@ func TestTUIModel_SlashPickerEnterSelects(t *testing.T) {
 
 func TestTUIModel_SlashPickerEscapeDismisses(t *testing.T) {
 	ic := newInputCloser()
-	m := newTUIModel(ic, "ask", true)
+	m := newTUIModel(ic, "ask", true, true)
 
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	m = updated.(tuiModel)
 
 	// Set slash commands
 	cmds := &slashcmd.Registry{}
-	cmds.Register(slashcmd.Command{Name: "build", Description: "switch to build mode"})
+	cmds.Register(slashcmd.Command{Name: "tools", Description: "list registered tools"})
 	m.slashCmds = cmds
 
 	// Type / to show picker (via textinput update)
@@ -852,7 +993,7 @@ func TestTUIModel_SlashPickerEscapeDismisses(t *testing.T) {
 
 func TestTUIModel_CtrlC_InterruptsWhileWorking(t *testing.T) {
 	ic := newInputCloser()
-	m := newTUIModel(ic, "build", true)
+	m := newTUIModel(ic, "build", true, true)
 
 	interrupted := false
 	m.onInterrupt = func() bool {
@@ -883,7 +1024,7 @@ func TestTUIModel_CtrlC_InterruptsWhileWorking(t *testing.T) {
 
 func TestTUIModel_CtrlC_QuitsWhenIdle(t *testing.T) {
 	ic := newInputCloser()
-	m := newTUIModel(ic, "build", true)
+	m := newTUIModel(ic, "build", true, true)
 
 	interrupted := false
 	m.onInterrupt = func() bool {
@@ -911,7 +1052,7 @@ func TestTUIModel_CtrlC_QuitsWhenIdle(t *testing.T) {
 
 func TestTUIModel_Escape_InterruptsWhileWorking(t *testing.T) {
 	ic := newInputCloser()
-	m := newTUIModel(ic, "build", true)
+	m := newTUIModel(ic, "build", true, true)
 
 	interrupted := false
 	m.onInterrupt = func() bool {
@@ -938,7 +1079,7 @@ func TestTUIModel_Escape_InterruptsWhileWorking(t *testing.T) {
 
 func TestTUIModel_Escape_NoopWhenIdle(t *testing.T) {
 	ic := newInputCloser()
-	m := newTUIModel(ic, "build", true)
+	m := newTUIModel(ic, "build", true, true)
 
 	interrupted := false
 	m.onInterrupt = func() bool {

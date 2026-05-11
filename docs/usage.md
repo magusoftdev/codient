@@ -11,14 +11,18 @@ codient -list-tools
 # Start an interactive session (default when stdin is a TTY)
 codient
 
+# Just describe what you want — the Intent-Driven Orchestrator picks the right path
+codient "How does the agent loop decide when to stop?"      # routed to ask
+codient "Design a plugin system for tools"                  # routed to plan
+codient "Fix the typo in README.md"                         # routed to build
+codient "Refactor session.go to split executeTurn"          # plan, then build
+codient -force "Refactor session.go to split executeTurn"   # plan, then build (no confirmation)
+
 # One-shot prompt (no interactive session)
 codient -prompt "Summarize README.md"
 
 # Start a session with an initial prompt
 codient -prompt "Help me understand the repo layout"
-
-# Start in plan mode
-codient -mode plan -prompt "Design a small Go CLI for managing todos"
 
 # Force a fresh session (skip resume)
 codient -new-session
@@ -31,22 +35,39 @@ codient -image ./screenshot.png -prompt "What error is this?"
 codient -image a.png,b.png -prompt "Compare these mockups"
 ```
 
+## Intent-Driven Orchestrator
+
+Codient runs the orchestrator on **every** turn — there are no manual mode flags or slash commands. Each user turn starts with a tiny supervisor LLM call (`internal/intent.IdentifyIntent`) that returns a JSON object such as `{"category":"COMPLEX_TASK","reasoning":"multi-file refactor"}` and uses it to pick the internal mode, tool registry, and reasoning tier:
+
+| Category | Internal mode | Notes |
+|----------|---------------|-------|
+| **QUERY** | ask path (low tier) | Read-only Q&A, no write tools. |
+| **DESIGN** | plan path (high tier) | Structured plan, no implementation. |
+| **SIMPLE_FIX** | build path (low tier) | Goes straight to write tools. |
+| **COMPLEX_TASK** | plan -> build | Plan first, then auto hand off into build (interactive prompt or **`-force`**; **`-print`** without **`-force`** stops at the plan). |
+
+The supervisor uses the **low** reasoning tier; planning and design use the **high** reasoning tier. Configure them with **`low_reasoning_model`** / **`high_reasoning_model`** (and optional `_base_url` / `_api_key` siblings) in [`config.json`](configuration.md). The classification is logged as `intent: <CATEGORY>` (or `intent (fallback): <CATEGORY>` when the supervisor reply could not be parsed and codient defaults to QUERY). In `-print` you also get a one-line `intent:` notice on stderr before the turn runs.
+
+There is no escape hatch: every REPL turn, every `-print` invocation, and every ACP **`session/prompt`** runs through the orchestrator. Use **`-force`** / **`-yes`** to auto-approve plan -> build hand-offs in non-interactive runs. Older configs that contained a top-level **`mode`** key (or per-mode **`models`** overrides) still load: codient logs a one-time deprecation notice, ignores the value, and uses the auto-only path.
+
 ## Split-screen TUI
 
 When stdin is a TTY and `-plain` is **not** set, codient launches a Bubble Tea split-screen interface: a scrollable output viewport on top and a fixed **input panel** at the bottom. This keeps the user's typing completely separate from agent output — background events like the semantic index completion will never corrupt the input line.
 
 | Area | Behaviour |
 |------|-----------|
-| **Viewport** (top) | Shows the full session: welcome banner, **boxed user messages** (rounded outline and mode-colored left accent), streamed assistant replies, and structured agent activity (intent lines, tool intents, per-tool results, round summaries). Slash commands (`/…`) stay as a simple echoed line without the box. All content is **word-wrapped** to the viewport width (with a hard-wrap fallback for very long tokens) so nothing overflows the terminal edge. |
+| **Viewport** (top) | Shows the full session, color-coded by speaker: **boxed user messages** (rounded outline with a **codient-blue** left accent — the leftmost stop of the welcome logo gradient), streamed assistant replies, and structured agent activity (intent lines, tool intents, per-tool results, round summaries) with **codient-purple** "● " bullets (the rightmost stop of the same gradient, matching the welcome banner's border). Slash commands (`/…`) stay as a simple echoed line without the box. All content is **word-wrapped** to the viewport width (with a hard-wrap fallback for very long tokens) so nothing overflows the terminal edge. |
 | **Todo column** (right) | When the model uses **todo_write**, a narrow **Todo** panel lists tasks and statuses (hidden if the terminal is very narrow). Todos are saved in the session JSON and restored on resume. |
 | **Status bar** | Displays "Agent is working…" during turns; a plain separator otherwise. |
-| **Input panel** (bottom) | Mode-colored accent strip, **`build > `**-style prompt (lowercase mode before `>`), a multi-line text area that wraps to the panel width and grows up to **8 visible rows** as you type (longer messages scroll inside the panel), a line with **model · backend**, then a right-aligned hint: **exact** prompt tokens and **context %** when the API returns `usage` and **`context_window`** is set; if the server omits usage, an **estimated** total (**`~`…**) from system + tools + history (same heuristic as `/compact`). **`—`** only when nothing can be computed. Press **Enter** to submit, **Ctrl+J** (or **Alt+Enter** / **Shift+Enter** on terminals that distinguish them) to insert a newline without submitting, **Ctrl+V** to paste a clipboard image (same as **`/paste`**; see [Images and vision](#images-and-vision)), **Ctrl+C** or **Escape** while the agent is working to **interrupt the current turn** (cancels the in-flight request and returns to the prompt), and **Ctrl+C** while idle to quit. |
+| **Input panel** (bottom) | Codient-blue accent strip and a simple **`> `** prompt in the same hue (the orchestrator picks the internal mode behind the scenes — there is no manual mode label, and the blue matches the user-message bubbles above). A multi-line text area that wraps to the panel width and grows up to **8 visible rows** as you type (longer messages scroll inside the panel), a line with **model · backend**, then a right-aligned hint: **exact** prompt tokens and **context %** when the API returns `usage` and **`context_window`** is set; if the server omits usage, an **estimated** total (**`~`…**) from system + tools + history (same heuristic as `/compact`). **`—`** only when nothing can be computed. Press **Enter** to submit, **Ctrl+J** (or **Alt+Enter** / **Shift+Enter** on terminals that distinguish them) to insert a newline without submitting, **Ctrl+V** to paste a clipboard image (same as **`/paste`**; see [Images and vision](#images-and-vision)), **Ctrl+C** or **Escape** while the agent is working to **interrupt the current turn** (cancels the in-flight request and returns to the prompt), and **Ctrl+C** while idle to quit. |
 
-**Assistant intent:** model pre-tool prose and streaming **reasoning** / **reasoning_content** deltas appear as **mode-colored ● intent lines** (same accent palette as the input panel). **Ctrl+T** toggles a shorter extract when a block would be very long (compact vs fuller wrap).
+**Assistant intent:** model pre-tool prose and streaming **reasoning** / **reasoning_content** deltas appear as **codient-purple ● intent lines** — the same agent accent used by the welcome banner border, regardless of which internal mode the orchestrator picked for the turn. **Ctrl+T** toggles a shorter extract when a block would be very long (compact vs fuller wrap).
 
 **Editing the input:** the input panel is a true multi-line editor. **Up/Down** move the cursor between lines, **Home/End** jump to the start or end of the current line, and **Backspace/Delete**, **Ctrl+W** (delete word left), and **Ctrl+U** (delete to start of line) all work as in standard readline-style editors. Long lines word-wrap to the panel width — the box height grows automatically and shrinks back to one row after submission.
 
 **Scrolling:** the conversation viewport scrolls with **Page Up/Page Down** (half a page), **Alt+Up/Alt+Down** (three lines), or the mouse wheel. (Plain **Up/Down** and **Home/End** now belong to the input editor; use the modifier or paging keys for transcript navigation.)
+
+**Selecting text:** the TUI captures mouse events so wheel scrolling works, which prevents native click-and-drag selection. In most modern terminals (xterm, GNOME Terminal, Konsole, alacritty, kitty, wezterm, iTerm2) **hold Shift** while dragging to bypass the capture; Windows Terminal uses **Alt+drag**. If your terminal doesn't honor that, disable mouse capture entirely with **`-mouse=false`** (single run) or **`/config mouse_enabled false`** (persistent — see [configuration](configuration.md#config-reference-codientconfigjson)). Keyboard scrolling still works.
 
 **Slash command autocomplete:** type **`/`** at the start of a line to open a dropdown of available commands. Navigate with **Up/Down** arrows, press **Enter** to select (inserts the command name followed by a space), or **Escape** to dismiss. The list filters as you type.
 
@@ -86,11 +107,14 @@ Use **`-print`** (alias **`-p`**) for a **single non-interactive turn**: no REPL
 Examples:
 
 ```bash
-codient -print -prompt "List top-level files" -mode ask
+codient -print -prompt "List top-level files"
 
-codient -print -mode build -auto-approve all -output-format json -prompt "Run fmt" -max-turns 25
+codient -print -auto-approve all -output-format json -prompt "Run fmt" -max-turns 25
 
 echo "Fix the typo in README" | codient -print -output-format json
+
+# Force the plan -> build hand-off in -print so COMPLEX_TASK routes through to writes.
+codient -print -force -auto-approve all -output-format json -prompt "Refactor session.go"
 ```
 
 Chaining two CI steps on the same checkout (second run resumes the first):
@@ -114,6 +138,23 @@ Codient does not provide hosted infrastructure. You can still run it **in the cl
 
 To back up session files to object storage, use **[lifecycle hooks](context-and-integrations.md#lifecycle-hooks)** (e.g. **`SessionEnd`**) to run `rclone` or `aws s3 sync` on **`<workspace>/.codient/sessions/`** after a run.
 
+## File references (`@path`)
+
+Type **`@path/to/file.go`** in your message to inline that file's contents directly in the prompt the model sees — no tool call round-trip needed.
+
+- **Paths are relative to the workspace** root (or absolute). Quoted paths work for names with spaces: `@"my file.go"` or `@'my file.go'`.
+- **`@image:path`** is still handled as a vision image (not a text file reference).
+- **Escape with `\@`** to use a literal `@` that shouldn't be treated as a reference.
+- **Per-file limit:** 256 KiB (same as `read_file`). **Aggregate limit:** 1 MiB across all `@` references in a single message.
+- Binary / non-UTF-8 files are skipped with a warning.
+- Directories are not supported; use a file path.
+
+### Drag-and-drop
+
+When you **drag files onto the terminal** (or paste paths from your file manager), codient auto-detects that the submitted text consists entirely of file paths and rewrites them with `@` prefixes. This works in both the TUI and plain REPL.
+
+Example: dragging `main.go` and `util.go` into the terminal inserts their absolute paths; on submit, codient rewrites them to `@/full/path/main.go @/full/path/util.go` and loads both files as context.
+
 ## Images and vision
 
 Use a **vision-capable** model (e.g. GPT-4o, Claude 3.5+, many local multimodal servers). Codient sends images as base64 **data URIs** in the standard OpenAI chat format (`image_url` parts).
@@ -125,7 +166,7 @@ Use a **vision-capable** model (e.g. GPT-4o, Claude 3.5+, many local multimodal 
 
 Use `-help` for all flags. Notable options:
 
-- **`-mode`** — `build` (default), `ask`, or `plan`
+- **`-force`** (alias **`-yes`** / **`-y`**) — auto-approve the plan -> build hand-off for COMPLEX_TASK turns (used by `-print` and other non-interactive runs)
 - **`-workspace`** — workspace root (overrides config and cwd)
 - **`-sandbox`** — subprocess isolation mode (`off`, `native`, `container`, `auto`; overrides config); see [Subprocess sandboxing](configuration.md#subprocess-sandboxing)
 - **`-new-session`** — start fresh instead of resuming the latest session (REPL or single-shot / **`-print`**)
@@ -162,17 +203,20 @@ Use the same config (model, base URL, API key, workspace) as the CLI. See [`inte
 Editors such as **Codient Unity** spawn `codient` as a subprocess and speak the [Agent Client Protocol](https://agentclientprotocol.com/) on stdin/stdout (one UTF-8 JSON object per line). Typical launch:
 
 ```bash
-codient -plain -progress -acp -mode build -workspace /path/to/project
+codient -plain -progress -acp -workspace /path/to/project
 ```
 
-- **`-mode`** selects **build**, **ask**, or **plan** (same tool policies as the CLI).
-- **`initialize`** result includes **`defaultChatModel`**: the trimmed chat model id from the agent’s effective config for the current **`-mode`** (same default the OpenAI client uses when **`session/new`** omits **`model`**). Editors can align a model picker with this when the user has no saved preference or a stale id.
+- Every ACP session is auto-mode: there is no manual mode flag and no **`session/set_mode`** RPC. The orchestrator is invoked once per **`session/prompt`** to pick the internal mode (ask / plan / build / plan -> build) for that turn.
+- **`initialize`** result includes **`defaultChatModel`**: the trimmed chat model id from the agent’s effective config (same default the OpenAI client uses when **`session/new`** omits **`model`**). Editors can align a model picker with this when the user has no saved preference or a stale id.
 - **`initialize` params `clientInfo.codientUnityPackageVersion`** (optional strict semver): when present, codient rejects the handshake if the Codient Unity package is **older** than the minimum this binary supports (JSON-RPC **`-32602`**). Older clients that omit the field keep working.
-- **`session/new`** requires **`cwd`** to match the configured workspace (same rule as **`-workspace`**). Optional **`model`** selects a chat model id for that session (OpenAI-compatible API); omit it to use the configured default (same as the CLI).
+- **`session/new`** requires **`cwd`** to match the configured workspace (same rule as **`-workspace`**). Optional **`model`** selects a chat model id for that session (OpenAI-compatible API); omit it to use the configured default (same as the CLI). Any legacy **`mode`** field is accepted for backward compatibility but ignored — the result always echoes back **`"mode": "auto"`**.
 - **`session/set_model`** updates **`model`** for an existing **`sessionId`** without clearing server-side conversation history. Omit **`model`** or send an empty string to revert that session to the configured default. Returns **`{"model": "<trimmed id>"}`** (empty string means default). Fails with **`session_busy`** while a **`session/prompt`** turn is in progress on that session.
   - **Preload (default on):** unless disabled, the agent runs a **minimal non-streaming chat completion** (not added to conversation history) so local inference servers load the model **before** the RPC returns. On failure, the session’s previous model is restored and the RPC fails with **`preload:`** in the error message. Disable per request with **`"preload": false`**, or set **`acp_preload_model_on_set_model`** to **`false`** in **`config.json`** to skip preloads for all switches.
   - **Progress:** while switching models, the agent may emit JSON-RPC notifications **`session/model_status`** with **`params`**: **`sessionId`**, **`phase`** (`unloading` \| `loading` \| `ready` \| `error`), and optional **`message`**. On Ollama-compatible hosts (OpenAI base URL ending in **`/v1`**, not known cloud APIs), **`unloading`** precedes a best-effort **`POST …/api/generate`** unload (`keep_alive: 0`) for the previous model before the new one is warmed. Clients may show these in UI chrome without treating them as transcript content.
-- **`agent/list_models`** returns ids from **`GET …/models`** on the effective connection for the current **`codient -mode`** (top-level **`base_url`** plus any per-mode **`models`** overrides in **`config.json`**). Parsing accepts OpenAI **`data`** arrays, common alternate **`models`** arrays (including LM Studio-style objects with **`key`**), and object entries keyed by **`id`**, **`model`**, **`key`**, or **`name`** — same endpoint as **`codient -list-models`**.
+- **`agent/list_models`** returns ids from **`GET …/models`** on the effective connection for the agent (top-level **`base_url`** plus any **`low_reasoning_model`** / **`high_reasoning_model`** sibling overrides in **`config.json`**) — same endpoint as **`codient -list-models`**.
+- **`session/intent_identified`** is emitted on every **`session/prompt`** when the orchestrator classifies the user message. **`params`**: **`sessionId`**, **`category`** (`QUERY` \| `DESIGN` \| `SIMPLE_FIX` \| `COMPLEX_TASK`), **`reasoning`** (short string), **`fallback`** (boolean — `true` when the supervisor reply could not be parsed and codient defaulted to QUERY).
+- **`session/mode_status`** is emitted whenever the resolved internal mode changes during a turn (orchestrator routing decision, plan -> build hand-off). **`params`**: **`sessionId`**, **`mode`** (resolved mode for the rest of the turn), **`phase`** (`changed` \| `plan_ready`), and an optional **`handoff`** boolean (set when an automatic plan -> build hand-off occurred).
+- **`session/set_mode`** is no longer routed: codient responds with JSON-RPC **`-32601` "method not found"** so older clients can fall back gracefully.
 - **stderr** may carry human-readable progress; **stdout** is reserved for ACP messages only.
 - **`-max-turns`** and **`-max-cost`** apply per user prompt turn, like headless mode.
 - **Codient Unity / Editor-shaped workspaces:** When **`-workspace`** looks like a Unity project (**`Assets/`** plus **`ProjectSettings/ProjectVersion.txt`**), the agent system prompt includes **Unity ACP** guidance. In **`-acp`**, the agent registers **`unity_*`** tools that issue JSON-RPC **`unity/...`** requests on stdout; the editor client (Codient Unity) runs them on the **Unity main thread** and returns results on stdin—same transport as **`session/request_permission`**. Read tools (hierarchy, assets, prefabs, console snapshot, package/asmdef summary) work in **ask** / **plan** / **build**; **`unity_apply_actions`** is **build mode only** and requires a **user confirmation** dialog in Unity before applying structured edits (scene objects and **`create_prefab`** for new **`Assets/.../*.prefab`** assets). API keys and chat payloads still follow your **`config.json`** / provider rules; nothing is sent to Unity except what the model requests through those tools.
@@ -185,21 +229,19 @@ Inside a session you can use slash commands to control the agent:
 
 | Command | Description |
 |---------|-------------|
-| `/build` (or `/b`) | Switch to build mode (full write tools) |
-| `/plan` (or `/p`; also `/design`, `/d`) | Switch to plan mode (read-only, structured implementation design) |
-| `/ask` (or `/a`) | Switch to ask mode (read-only Q&A) |
-| `/config [key] [value]` | View or set any configuration key (no args = show all, key = show one, key value = set and save) |
-| `/setup` | Guided setup wizard for API connection, chat model selection, optional plan-mode model override, and optional embedding model for semantic search |
+| `/edit-plan` (or `/ep`) | Open the active plan in `$EDITOR`/`$VISUAL` (fallbacks: `vi`, `notepad`). On save, codient re-parses the markdown into the structured `plan.json` and bumps the revision. |
+| `/config [key] [value]` | View or set any configuration key (no args = show all, key = show one, key value = set and save). The reasoning-tier overrides live under `low_reasoning_*` and `high_reasoning_*` keys (e.g. `low_reasoning_model`, `high_reasoning_base_url`). |
+| `/setup` | Guided setup wizard for API connection, chat model selection, optional **low / high reasoning tier** model overrides used by the orchestrator, and optional embedding model for semantic search |
 | `/create-skill` | Guided wizard to author a **skill** (`SKILL.md` under user or workspace skills dirs); refreshes the in-session skill catalog |
 | `/create-rule` | Guided wizard to author a **Cursor-style rule** (`.mdc` under **`.cursor/rules/`** in the workspace; same frontmatter as Cursor). Codient does not load these into the CLI system prompt—they apply in Cursor and compatible editors |
 | `/skills` | List discovered skills (name, scope, `read_file` path) |
 | `/compact` | Summarize conversation history to save context space |
 | `/model <name>` | Switch to a different model (shortcut for `/config model`) |
 | `/workspace <path>` | Change the workspace directory |
-| `/tools` | List tools available in current mode |
+| `/tools` | List tools available to the current internal mode (orchestrator-resolved per turn) |
 | `/hooks` | List configured lifecycle hooks (requires `hooks_enabled`) |
 | `/mcp [server]` | List connected MCP servers and tool counts; with a server name, list that server's tools |
-| `/status` | Show session state (mode, model, turns, estimated context, API token totals, resolved **auto-check** build/lint/test commands, exec policy) |
+| `/status` | Show session state (orchestrator's resolved mode for the last turn, model, turns, estimated context, API token totals, resolved **auto-check** build/lint/test commands, exec policy) |
 | `/cost` (or `/tokens`) | Show session token counts (prompt/completion/total) and estimated cost |
 | `/log [path]` | Show logging status or enable JSONL logging to a file |
 | `/undo` | Undo the last build turn. With **`git_auto_commit`** (default): removes the last codient commit (`HEAD~1`). Otherwise: restores tracked files and deletes new files from that turn. `/undo all` resets the repo to the commit at session start (auto-commit) or reverts all working-tree changes (legacy). Requires a git repo. |
@@ -231,7 +273,7 @@ The **`create_pull_request`** tool (build mode only) and the **`/pr`** slash com
 
 ## Session persistence
 
-Session state (conversation history, mode, model) is saved under `<workspace>/.codient/sessions/` after each turn. Starting codient again in the same workspace resumes the latest session. Use `-new-session` to start fresh.
+Session state (conversation history, model, plan artifacts) is saved under `<workspace>/.codient/sessions/` after each turn. Starting codient again in the same workspace resumes the latest session. Use `-new-session` to start fresh. Older session files may include a top-level `mode` field; codient still loads them but ignores that field — every resumed session runs through the orchestrator just like a fresh one.
 
 **Checkpoints** (named snapshots for rollback and branching) are stored under `<workspace>/.codient/checkpoints/<sessionID>/` (one JSON file per checkpoint plus a `tree.json` index). The session file records **`current_checkpoint_id`** and **`current_branch`** so resume keeps your place in the checkpoint tree.
 
@@ -284,13 +326,44 @@ If the same **`name`** appears in both places, the **workspace** skill wins. The
 
 **ACP / Unity:** Slash commands run only in the interactive CLI REPL; editor sessions still receive the **Agent skills** section in the system prompt when codient starts.
 
-## Plan mode and saved plans
+## Plan path and saved plans
 
-In **plan** mode, when the assistant's reply includes a **Ready to implement** section, codient saves the markdown under the workspace (by default `.codient/plans/<sessionID>/`). Plans are scoped to the session that created them. Filenames are `{task-slug}_{date-time}_{nanoseconds}.md` so runs never collide. The task slug comes from `-goal`, else `-task-file` basename, else the first line of your first message.
+When the orchestrator routes a turn to the plan path (`DESIGN` or `COMPLEX_TASK`), and the assistant's reply includes a **Ready to implement** section, codient saves the markdown under the workspace (by default `.codient/plans/<sessionID>/`). Plans are scoped to the session that created them. Filenames are `{task-slug}_{date-time}_{nanoseconds}.md` so runs never collide. The task slug comes from `-goal`, else `-task-file` basename, else the first line of your first message. For `COMPLEX_TASK`, codient automatically transitions into the build path immediately after the plan reply (subject to the confirmation rules below) so the next user message implements the plan.
+
+### Plan -> build hand-off
+
+Codient never shows an `[a/r/e/c]` approval menu — the orchestrator decides when to hand off based on the plan structure and the run mode.
+
+- **REPL (interactive):** when a plan-path reply ends with **Ready to implement**, codient prompts you once before transitioning into the build path; press Enter or answer "yes" and the **next** message implements the plan. Pass **`-force`** / **`-yes`** at start-up to skip that prompt for every COMPLEX_TASK turn.
+- **Headless `-print`:** by default the run stops at the plan so CI can review or persist it. Pass **`-force`** to auto-approve the hand-off and let the same invocation continue into build. Resuming with **`-session-id <sid>`** re-enters auto mode, and the next prompt is routed by the orchestrator just like a fresh turn (it will see the saved plan in history and continue implementation if appropriate).
+- **ACP / Codient Unity:** the orchestrator runs on every **`session/prompt`**. When it hands off plan -> build mid-turn, codient emits a **`session/mode_status`** notification with **`mode: "build"`**, **`phase: "changed"`**, and **`handoff: true`** so the editor can reflect the transition in its UI. There is no **`session/set_mode`** RPC — the editor never has to drive the transition manually.
+
+The injected hand-off directive includes:
+
+- A clear "this session is already in build mode" line plus the available tool list for the build path.
+- Explicit instructions: "do not ask", "the user already confirmed", "start implementing now using tools".
+- A "verify each step's premise" reminder so the build agent reads the files the plan referenced before editing.
+- The structured plan (Implementation steps / Files to modify / Verification) when codient parsed one — otherwise the original plan markdown with any "run codient" / "switch modes" lines stripped (these are obsolete in the auto-only world).
+
+The build path prompt has a companion bullet that tells the model: when an approved plan or "Ready to implement" design is in context, treat the listed scope as user-approved and start using write tools (`write_file`, `str_replace`, `patch_file`, `insert_lines`) on the first turn rather than launching another research pass.
+
+### Editing the active plan
+
+Use **`/edit-plan`** (alias **`/ep`**) to open the active plan in **`$EDITOR`** (or **`$VISUAL`**, falling back to **`vi`** / **`notepad`**). On save, codient re-parses the markdown back into the structured plan and bumps the revision number. The structured artifact under **`.codient/plans/<sessionID>/plan.json`** is updated in place.
+
+### Chained CI
+
+```bash
+codient -print -force -prompt "design and implement feature X" > out.json
+SID=$(jq -r .session_id < out.json)
+codient -print -force -session-id "$SID" -prompt "now add tests for feature X"
+```
+
+A `COMPLEX_TASK` turn under **`-force`** plans **and** implements in one invocation; the resume picks up the saved plan and continues in the same auto-orchestrated way.
 
 ### Parallel plan generation (Tree of Thoughts)
 
-On selected plan-mode turns, codient runs **three** full read-only agent passes in parallel, each with a small extra system emphasis (performance, readability/maintainability, idiomatic Go architecture), then a **Senior Principal Engineer**–style evaluator completion picks the best draft and returns that text (plus a two-sentence justification). The heuristic matches the **first** plan-mode user message in a session and the first user message **after** a blocking plan **Question** (a reply that ends with **Waiting for your answer**). Further back-and-forth in plan mode uses the usual single agent path. If any branch or the evaluator fails, codient **falls back** to one normal plan-mode turn.
+On selected plan-path turns, codient runs **three** full read-only agent passes in parallel, each with a small extra system emphasis (performance, readability/maintainability, idiomatic Go architecture), then a **Senior Principal Engineer**–style evaluator completion picks the best draft and returns that text (plus a two-sentence justification). The heuristic matches the **first** plan-path user message in a session and the first user message **after** a blocking plan **Question** (a reply that ends with **Waiting for your answer**). Further back-and-forth in the plan path uses the usual single agent path. If any branch or the evaluator fails, codient **falls back** to one normal plan-path turn.
 
 - Set **`plan_tot`** to **`false`** in `~/.codient/config.json` (or run **`/config plan_tot false`** in the REPL) to disable this pipeline entirely.
 - Your global **`max_concurrent`** still applies to normal turns; the ToT fan-out uses a dedicated client with at least **four** concurrent in-flight requests so three branches can overlap with the evaluator. Raising **`max_concurrent`** in `~/.codient/config.json` is still recommended if you run other parallel work against the same server.
@@ -302,21 +375,23 @@ The agent has a **`delegate_task`** tool that spawns an isolated sub-agent to ha
 **How it works:**
 
 - The parent agent calls `delegate_task` with a **mode** (`build`, `ask`, or `plan`), a **task** description, and optional **context** snippets.
-- A fresh `agent.Runner` is created for the sub-agent with its own conversation history, tool registry matching the requested mode, and (optionally) a different model via [per-mode configuration](configuration.md#config-file-reference-codientconfigjson).
+- A fresh `agent.Runner` is created for the sub-agent with its own conversation history, tool registry matching the requested mode, and a model from the appropriate **reasoning tier** (low for `build` / `ask`, high for `plan`). Override **`low_reasoning_model`** / **`high_reasoning_model`** (and optional `_base_url` / `_api_key` siblings) in [config](configuration.md#config-file-reference-codientconfigjson) to route them to different backends.
 - The sub-agent runs to completion and its reply is returned to the parent as the tool result.
 - Sub-agents cannot spawn further sub-agents (recursion guard).
 
 **Mode restrictions (privilege escalation prevention):**
 
-| Parent mode | Allowed sub-agent modes |
-|-------------|------------------------|
-| **build** | `build`, `ask`, `plan` |
-| **ask** | `ask` only |
-| **plan** | `ask` only |
+`delegate_task` is the **only** place where the `build` / `ask` / `plan` names survive in user-visible code: they let the orchestrator-driven parent restrict what a sub-agent is allowed to do.
 
-Read-only parent modes (ask, plan) can only delegate to read-only sub-agents, preventing a plan/ask session from gaining write access through delegation.
+| Parent path (orchestrator-resolved) | Allowed sub-agent modes |
+|-------------------------------------|------------------------|
+| **build** (SIMPLE_FIX or post-handoff COMPLEX_TASK) | `build`, `ask`, `plan` |
+| **ask** (QUERY) | `ask` only |
+| **plan** (DESIGN or pre-handoff COMPLEX_TASK) | `ask` only |
 
-**Per-mode models** let you route sub-agents to different LLM backends. For example, a local model for build-mode edits and a remote API for ask-mode research — see the `models` key in config.
+Read-only parent paths (ask, plan) can only delegate to read-only sub-agents, preventing a plan/ask turn from gaining write access through delegation.
+
+**Reasoning-tier routing:** sub-agents in `build` / `ask` modes use the **low** tier model; `plan` sub-agents use the **high** tier model. Configure them with **`low_reasoning_model`** / **`high_reasoning_model`** in config to route, for example, build-mode edits at a fast local model and design work at a remote frontier model.
 
 **Git worktree isolation (optional):** Set **`delegate_git_worktrees`** to **`true`** in [config](configuration.md#config-file-reference-codientconfigjson) (or **`/config delegate_git_worktrees true`**) so each **`delegate_task`** runs with its tools rooted in a **separate detached worktree** at the same commit as **`HEAD`**, under **`~/.codient/delegate-worktrees/`**. Use this when parallel **`delegate_task`** calls should not share the working tree (e.g. concurrent **build**-mode edits). Changes in that worktree are **discarded** when the sub-agent finishes — they are **not** applied to your main checkout. **`HEAD`** only: uncommitted edits in the parent workspace are **not** included. While this is enabled, delegated runs skip the **`repo_map`** tool (isolation MVP).
 
@@ -330,4 +405,4 @@ Use **`-plain`** if you want **live** assistant tokens as they arrive as raw tex
 
 **`-stream-reply`** (default on for TTYs) still applies to **plain** sessions: when plain and streaming is enabled, assistant text is written to stdout as it streams.
 
-Plan mode with a blocking **Question** already buffered the next turn so the full design could be markdown-rendered; non-blocking turns now use the same “render once” path whenever styled output is on.
+Plan-path turns with a blocking **Question** already buffered the next turn so the full design could be markdown-rendered; non-blocking turns now use the same “render once” path whenever styled output is on.

@@ -53,8 +53,10 @@ func Run() int {
 		sessionIDFlag = flag.String("session-id", "", "resume a persisted session by id under the workspace (single-shot/-print; default: latest when -new-session is false)")
 		logPath       = flag.String("log", "", "append JSONL agent events to this file")
 		progress      = flag.Bool("progress", false, "print agent progress to stderr")
-		modeFlag      = flag.String("mode", "", "build|ask|plan: tool + prompt policy (default: last REPL mode, else config, else build)")
+		forceFlag     = flag.Bool("force", false, "auto-approve plan->build transitions for COMPLEX_TASK turns (also: -yes)")
+		forceYesAlias = flag.Bool("yes", false, "alias for -force")
 		plainOut      = flag.Bool("plain", false, "print assistant replies as raw text (no markdown/ANSI)")
+		mouseFlag     = flag.Bool("mouse", true, "TUI mouse capture (wheel scroll); set false so the terminal can handle native text selection")
 		streamReply   = flag.Bool("stream-reply", true, "stream assistant tokens to stdout")
 		designSaveDir = flag.String("design-save-dir", "", "directory for saved implementation plans (default: <workspace>/.codient/plans)")
 		workspace     = flag.String("workspace", "", "root directory for workspace tools (overrides config and cwd default)")
@@ -109,13 +111,12 @@ func Run() int {
 	if explicit["workspace"] {
 		cfg.Workspace = strings.TrimSpace(*workspace)
 	}
-	if explicit["mode"] {
-		cfg.Mode = *modeFlag
-	} else if lm := config.LoadLastMode(); lm != "" {
-		cfg.Mode = lm
-	}
+	orchestratorForce := *forceFlag || *forceYesAlias
 	if explicit["plain"] {
 		cfg.Plain = *plainOut
+	}
+	if explicit["mouse"] {
+		cfg.MouseEnabled = *mouseFlag
 	}
 	if explicit["progress"] {
 		cfg.Progress = *progress
@@ -134,12 +135,6 @@ func Run() int {
 	}
 	if err := config.ValidateSandbox(cfg); err != nil {
 		fmt.Fprintf(os.Stderr, "config: %v\n", err)
-		return 2
-	}
-
-	agentMode, err := prompt.ParseMode(cfg.Mode)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "mode: %v\n", err)
 		return 2
 	}
 
@@ -163,7 +158,7 @@ func Run() int {
 	ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 	defer cancel()
 
-	client := openaiclient.NewForMode(cfg, string(agentMode))
+	client := openaiclient.NewForTier(cfg, config.TierLow)
 
 	// Quick commands that don't need a full session.
 	if *ping {
@@ -186,7 +181,7 @@ func Run() int {
 		return 0
 	}
 	if *listTools {
-		reg := buildRegistry(cfg, agentMode, nil, nil)
+		reg := buildRegistry(cfg, prompt.ModeAuto, nil, nil)
 		for _, n := range reg.Names() {
 			fmt.Println(n)
 		}
@@ -232,7 +227,7 @@ func Run() int {
 		if len(cfg.MCPServers) > 0 {
 			mcpMgr = mcpclient.NewManager(Version)
 		}
-		return runACPServer(acpCtx, cfg, agentMode, client, mcpMgr, agentLog, *maxTurns, *maxCostUSD)
+		return runACPServer(acpCtx, cfg, client, mcpMgr, agentLog, *maxTurns, *maxCostUSD)
 	}
 
 	if *stream {
@@ -312,7 +307,7 @@ func Run() int {
 		cfg:                         cfg,
 		agentLog:                    agentLog,
 		progressOut:                 progressOut,
-		mode:                        agentMode,
+		mode:                        prompt.ModeAuto,
 		richOutput:                  assistantOutputRich(cfg.Plain),
 		streamReply:                 cfg.StreamReply,
 		designSaveDir:               cfg.DesignSaveDir,
@@ -333,6 +328,7 @@ func Run() int {
 		maxCostUSD:                  *maxCostUSD,
 		singleTurnForceNew:          *newSession,
 		singleTurnExplicitSessionID: strings.TrimSpace(*sessionIDFlag),
+		orchestratorForce:           orchestratorForce,
 	}
 	if len(cfg.MCPServers) > 0 {
 		mgr := mcpclient.NewManager(Version)
@@ -356,9 +352,9 @@ func Run() int {
 		}
 	}
 
-	s.client = openaiclient.NewForMode(cfg, string(agentMode))
-	s.registry = buildRegistry(cfg, agentMode, s, memOpts)
-	s.systemPrompt = buildAgentSystemPrompt(cfg, s.registry, agentMode, *system, repoInstr, projectCtx, mem, skillsCat, s.repoMap)
+	s.client = openaiclient.NewForTier(cfg, config.TierLow)
+	s.registry = buildRegistry(cfg, prompt.ModeAuto, s, memOpts)
+	s.systemPrompt = buildAgentSystemPrompt(cfg, s.registry, prompt.ModeAuto, *system, repoInstr, projectCtx, mem, skillsCat, s.repoMap)
 
 	attached, err := loadImagePaths(imageFlagPaths)
 	if err != nil {
@@ -382,7 +378,7 @@ func Run() int {
 			tuiCtx, tuiCancel := context.WithCancel(context.Background())
 			defer tuiCancel()
 
-			ts, err := initTUI(string(agentMode), cfg.Plain, s.interruptTurn)
+			ts, err := initTUI(string(prompt.ModeAuto), cfg.Plain, cfg.MouseEnabled, s.interruptTurn)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "tui: %v\n", err)
 				fbCtx, fbCancel := context.WithCancel(context.Background())

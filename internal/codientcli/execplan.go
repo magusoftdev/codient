@@ -24,7 +24,7 @@ func (s *session) executeFromPlan(ctx context.Context, plan *planstore.Plan) err
 		fmt.Fprintf(os.Stderr, "codient: plan save: %v\n", err)
 	}
 
-	s.switchMode(prompt.ModeBuild)
+	s.transitionToInternalMode(prompt.ModeBuild)
 	s.history = nil
 
 	groups := planstore.StepsByPhaseGroup(plan)
@@ -85,8 +85,8 @@ func (s *session) executeFromPlan(ctx context.Context, plan *planstore.Plan) err
 				if err := planstore.Save(plan); err != nil {
 					fmt.Fprintf(os.Stderr, "codient: plan save: %v\n", err)
 				}
-				s.switchMode(prompt.ModePlan)
-				fmt.Fprintf(os.Stderr, "codient: switched to plan mode to revise remaining steps\n")
+				s.resetForReplan()
+				fmt.Fprintf(os.Stderr, "codient: re-planning remaining steps\n")
 				return nil
 			default:
 				// continue to next group

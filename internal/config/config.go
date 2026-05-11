@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 
 	"codient/internal/sandbox"
 )
@@ -99,14 +100,20 @@ type Config struct {
 	// Empty triggers auto-detection; "off" disables.
 	TestCmd string
 
-	// Mode is the default mode from config (build|ask|plan). In main, last REPL mode overrides when -mode is not set; CLI flag overrides both.
-	Mode string
+	// LegacyMode preserves a `mode` field from older config.json files so we
+	// can warn the user that it is no longer honored. The runtime mode is
+	// always ModeAuto (Intent-Driven Orchestrator).
+	LegacyMode string
 	// Plain disables markdown/ANSI output.
 	Plain bool
 	// Quiet suppresses the welcome banner.
 	Quiet bool
 	// Verbose enables extra diagnostics.
 	Verbose bool
+	// MouseEnabled controls whether the TUI captures mouse events (wheel
+	// scrolling). When false, the terminal handles mouse events itself so
+	// native click-and-drag text selection works. Defaults to true.
+	MouseEnabled bool
 	// LogPath is the default JSONL log path (overridden by -log flag).
 	LogPath string
 	// StreamReply controls assistant token streaming (nil pointer in PersistentConfig = default true).
@@ -127,13 +134,26 @@ type Config struct {
 	AstGrep string
 	// EmbeddingModel is the model name for /v1/embeddings (e.g. "text-embedding-3-small"). Empty disables semantic search.
 	EmbeddingModel string
+	// EmbeddingBaseURL routes /v1/embeddings to a different server than chat (e.g. local
+	// embedding model while chat uses a hosted API that does not implement /v1/embeddings).
+	// Empty inherits BaseURL.
+	EmbeddingBaseURL string
+	// EmbeddingAPIKey is the API key for EmbeddingBaseURL. Empty inherits APIKey.
+	// Only consulted when EmbeddingBaseURL is non-empty (otherwise the chat APIKey is reused).
+	EmbeddingAPIKey string
 	// RepoMapTokens caps the structural repo map injected into the system prompt (estimated tokens).
 	// 0 selects a budget from workspace size (see repomap.AutoTokens). -1 disables the repo map and the repo_map tool.
 	RepoMapTokens int
 	// UpdateNotify controls whether the interactive update prompt is shown on REPL startup (default true).
 	UpdateNotify bool
-	// ModeModels holds per-mode connection overrides (build, ask, plan). Empty fields inherit top-level.
-	ModeModels map[string]ModeConnectionOverride
+	// LowReasoning is the inference connection used for the supervisor (intent
+	// classification), QUERY answers, and SIMPLE_FIX / build-mode implementation.
+	// Empty fields inherit the top-level connection.
+	LowReasoning ReasoningTier
+	// HighReasoning is the inference connection used for DESIGN advice and
+	// COMPLEX_TASK plan generation. Empty fields inherit the top-level
+	// connection (so a user with one model still works without extra config).
+	HighReasoning ReasoningTier
 	// MCPServers maps server IDs to their connection config. Nil/empty means no MCP servers.
 	MCPServers map[string]MCPServerConfig
 	// GitProtectedBranches lists short branch names that trigger lazy auto-branch to codient/<slug> in build mode (default main, master, develop).
@@ -158,14 +178,35 @@ type CostPerMTok struct {
 	Output float64 `json:"output,omitempty"`
 }
 
-// ConnectionForMode returns the effective base URL, API key, and model for the given mode.
-// Per-mode overrides take precedence; empty fields fall back to the top-level defaults.
-func (c *Config) ConnectionForMode(mode string) (baseURL, apiKey, model string) {
-	if ov, ok := c.ModeModels[mode]; ok {
-		baseURL = strings.TrimSpace(ov.BaseURL)
-		apiKey = strings.TrimSpace(ov.APIKey)
-		model = strings.TrimSpace(ov.Model)
+// ReasoningTier holds an optional connection override for one of the two
+// reasoning tiers consulted by the Intent-Driven Orchestrator. Empty fields
+// inherit the top-level Config connection.
+type ReasoningTier struct {
+	BaseURL string
+	APIKey  string
+	Model   string
+}
+
+// Reasoning tier identifiers accepted by ConnectionForTier.
+const (
+	TierLow  = "low"
+	TierHigh = "high"
+)
+
+// ConnectionForTier returns the effective base URL, API key, and model for the
+// given reasoning tier ("low" or "high"). Empty fields fall back to the
+// top-level connection. Unknown tiers fall through to the defaults.
+func (c *Config) ConnectionForTier(tier string) (baseURL, apiKey, model string) {
+	var ov ReasoningTier
+	switch strings.ToLower(strings.TrimSpace(tier)) {
+	case TierLow:
+		ov = c.LowReasoning
+	case TierHigh:
+		ov = c.HighReasoning
 	}
+	baseURL = strings.TrimSpace(ov.BaseURL)
+	apiKey = strings.TrimSpace(ov.APIKey)
+	model = strings.TrimSpace(ov.Model)
 	if baseURL == "" {
 		baseURL = c.BaseURL
 	}
@@ -174,6 +215,50 @@ func (c *Config) ConnectionForMode(mode string) (baseURL, apiKey, model string) 
 	}
 	if model == "" {
 		model = c.Model
+	}
+	return
+}
+
+// ConnectionForMode returns the effective base URL, API key, and model for the
+// given internal mode. The orchestrator picks the mode per turn (build / ask /
+// plan); this helper maps that choice onto the matching reasoning tier
+// (build / ask -> low, plan -> high) and returns the resolved connection.
+// Unknown modes fall back to the top-level defaults.
+func (c *Config) ConnectionForMode(mode string) (baseURL, apiKey, model string) {
+	tier := tierForMode(mode)
+	if tier != "" {
+		return c.ConnectionForTier(tier)
+	}
+	return c.BaseURL, c.APIKey, c.Model
+}
+
+// tierForMode maps a mode string onto the supervisor / implementation reasoning
+// tier. Returns "" for unrecognized modes so ConnectionForMode falls through to
+// the top-level defaults.
+func tierForMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "build", "ask", "":
+		return TierLow
+	case "plan", "design":
+		return TierHigh
+	default:
+		return ""
+	}
+}
+
+// EmbeddingConnection returns the effective base URL and API key for /v1/embeddings.
+// EmbeddingBaseURL overrides BaseURL when set; EmbeddingAPIKey overrides APIKey only when
+// EmbeddingBaseURL is also set (so a custom key without a custom base URL is ignored — the
+// chat key is reused). When neither override is configured the chat connection is used,
+// preserving the historical behavior.
+func (c *Config) EmbeddingConnection() (baseURL, apiKey string) {
+	baseURL = strings.TrimRight(strings.TrimSpace(c.EmbeddingBaseURL), "/")
+	if baseURL == "" {
+		return c.BaseURL, c.APIKey
+	}
+	apiKey = strings.TrimSpace(c.EmbeddingAPIKey)
+	if apiKey == "" {
+		apiKey = c.APIKey
 	}
 	return
 }
@@ -282,7 +367,7 @@ func Load() (*Config, error) {
 	}
 
 	autoCompactPct := pc.AutoCompactPct
-	if autoCompactPct == 0 && pc.AutoCompactPct == 0 {
+	if autoCompactPct == 0 {
 		autoCompactPct = defaultAutoCompactPct
 	}
 
@@ -310,6 +395,10 @@ func Load() (*Config, error) {
 	planTot := true
 	if pc.PlanTot != nil {
 		planTot = *pc.PlanTot
+	}
+	mouseEnabled := true
+	if pc.MouseEnabled != nil {
+		mouseEnabled = *pc.MouseEnabled
 	}
 	protectedBranches := ParseGitProtectedBranches(pc.GitProtectedBranches)
 	if len(protectedBranches) == 0 {
@@ -363,10 +452,11 @@ func Load() (*Config, error) {
 		AutoCheckCmd:              strings.TrimSpace(pc.AutoCheckCmd),
 		LintCmd:                   strings.TrimSpace(pc.LintCmd),
 		TestCmd:                   strings.TrimSpace(pc.TestCmd),
-		Mode:                      strings.TrimSpace(pc.Mode),
+		LegacyMode:                strings.TrimSpace(pc.Mode),
 		Plain:                     pc.Plain,
 		Quiet:                     pc.Quiet,
 		Verbose:                   pc.Verbose,
+		MouseEnabled:              mouseEnabled,
 		LogPath:                   strings.TrimSpace(pc.LogPath),
 		StreamReply:               streamReply,
 		Progress:                  pc.Progress,
@@ -377,10 +467,21 @@ func Load() (*Config, error) {
 		ProjectContext:            strings.TrimSpace(pc.ProjectContext),
 		AstGrep:                   strings.TrimSpace(pc.AstGrep),
 		EmbeddingModel:            strings.TrimSpace(pc.EmbeddingModel),
+		EmbeddingBaseURL:          strings.TrimRight(strings.TrimSpace(pc.EmbeddingBaseURL), "/"),
+		EmbeddingAPIKey:           strings.TrimSpace(pc.EmbeddingAPIKey),
 		RepoMapTokens:             pc.RepoMapTokens,
 		UpdateNotify:              updateNotify,
-		ModeModels:                pc.Models,
-		MCPServers:                pc.MCPServers,
+		LowReasoning: ReasoningTier{
+			BaseURL: strings.TrimSpace(pc.LowReasoningBaseURL),
+			APIKey:  strings.TrimSpace(pc.LowReasoningAPIKey),
+			Model:   strings.TrimSpace(pc.LowReasoningModel),
+		},
+		HighReasoning: ReasoningTier{
+			BaseURL: strings.TrimSpace(pc.HighReasoningBaseURL),
+			APIKey:  strings.TrimSpace(pc.HighReasoningAPIKey),
+			Model:   strings.TrimSpace(pc.HighReasoningModel),
+		},
+		MCPServers: pc.MCPServers,
 		GitProtectedBranches:      protectedBranches,
 		GitAutoCommit:             gitAutoCommit,
 		CheckpointAuto:            checkpointAuto,
@@ -447,7 +548,39 @@ func Load() (*Config, error) {
 	if c.RepoMapTokens < -1 {
 		c.RepoMapTokens = 0
 	}
+	c.maybeWarnDeprecatedModeModels(pc)
+	c.maybeWarnDeprecatedMode()
 	return c, nil
+}
+
+var (
+	deprecatedModeModelsWarnOnce sync.Once
+	deprecatedModeWarnOnce       sync.Once
+)
+
+// maybeWarnDeprecatedModeModels emits a one-shot stderr warning when an old
+// config.json still has a `models` block (per-mode connection overrides).
+// The runtime no longer honors per-mode model overrides — every turn picks
+// `low_reasoning_model` or `high_reasoning_model` based on the orchestrator's
+// classification — but we keep the deprecation note so users notice that
+// their override is silently ignored.
+func (c *Config) maybeWarnDeprecatedModeModels(pc *PersistentConfig) {
+	if pc == nil || len(pc.Models) == 0 {
+		return
+	}
+	deprecatedModeModelsWarnOnce.Do(func() {
+		fmt.Fprintln(os.Stderr, "codient: 'models' (per-mode model overrides) is no longer honored; configure 'low_reasoning_model' and 'high_reasoning_model' instead.")
+	})
+}
+
+func (c *Config) maybeWarnDeprecatedMode() {
+	m := strings.ToLower(strings.TrimSpace(c.LegacyMode))
+	if m == "" || m == "auto" {
+		return
+	}
+	deprecatedModeWarnOnce.Do(func() {
+		fmt.Fprintf(os.Stderr, "codient: 'mode': %q is no longer honored — every session runs the Intent-Driven Orchestrator. Remove the field from config.json to silence this warning.\n", c.LegacyMode)
+	})
 }
 
 // RequireModel returns an error if no model is configured.

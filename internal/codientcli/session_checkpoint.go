@@ -216,17 +216,12 @@ func (s *session) rollbackToCheckpoint(cp *checkpoint.Checkpoint) error {
 	if m := strings.TrimSpace(cp.Model); m != "" {
 		s.cfg.Model = m
 	}
-	mode := s.mode
-	if m, err := prompt.ParseMode(cp.Mode); err == nil {
-		mode = m
-	}
-	s.setMode(mode)
-	s.client = openaiclient.New(s.cfg)
+	// Checkpoints captured during transient internal modes (build/ask/plan)
+	// are restored as ModeAuto so the orchestrator re-classifies the next
+	// user prompt rather than locking the session into the captured mode.
+	s.setMode(prompt.ModeAuto)
+	s.client = openaiclient.NewForTier(s.cfg, config.TierLow)
 	s.installRegistry(buildRegistry(s.cfg, s.mode, s, s.memOpts))
-	config.SaveLastMode(string(s.mode))
-	if s.mode == prompt.ModeBuild {
-		s.warnIfNotGitRepo()
-	}
 	s.turn = cp.Turn
 	if cp.PlanPhase != "" {
 		s.planPhase = planstore.Phase(cp.PlanPhase)

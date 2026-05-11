@@ -84,6 +84,19 @@ func startACP(t *testing.T, workspace string) *acpHarness {
 
 func startACPWithEnv(t *testing.T, workspace string, env []string) *acpHarness {
 	t.Helper()
+	return startACPWithEnvMode(t, workspace, env, "")
+}
+
+func startACPWithMode(t *testing.T, workspace, _ string) *acpHarness {
+	t.Helper()
+	return startACPWithEnvMode(t, workspace, os.Environ(), "")
+}
+
+// startACPWithEnvMode is kept for source compatibility with older harness
+// callers but now ignores the mode argument: every ACP session runs the
+// orchestrator and there is no -mode flag on the binary anymore.
+func startACPWithEnvMode(t *testing.T, workspace string, env []string, _ string) *acpHarness {
+	t.Helper()
 	h := &acpHarness{t: t}
 	bin := buildCodientBinary(t)
 	root := moduleRoot(t)
@@ -91,7 +104,7 @@ func startACPWithEnv(t *testing.T, workspace string, env []string) *acpHarness {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h.cmd = exec.Command(bin, "-acp", "-plain", "-workspace", ws, "-mode", "build", "-stream-reply=true")
+	h.cmd = exec.Command(bin, "-acp", "-plain", "-workspace", ws, "-stream-reply=true")
 	h.cmd.Dir = root
 	h.cmd.Env = append([]string(nil), env...)
 	h.cmd.Stderr = io.Discard
@@ -305,16 +318,26 @@ func runACPAgentListModelsSmoke(t *testing.T, cfg map[string]any, want []string)
 }
 
 func (h *acpHarness) sessionNew(cwd string) string {
+	return h.sessionNewWithMode(cwd, "")
+}
+
+// sessionNewWithMode creates a session with an explicit mode (e.g. "auto") in
+// the params. Returns the new session id; fails the test on any RPC error.
+func (h *acpHarness) sessionNewWithMode(cwd, mode string) string {
 	h.t.Helper()
 	id := h.nextRPCID()
+	params := map[string]any{
+		"cwd":        cwd,
+		"mcpServers": []any{},
+	}
+	if mode != "" {
+		params["mode"] = mode
+	}
 	h.writeJSON(map[string]any{
 		"jsonrpc": "2.0",
 		"id":      id,
 		"method":  "session/new",
-		"params": map[string]any{
-			"cwd":        cwd,
-			"mcpServers": []any{},
-		},
+		"params":  params,
 	})
 	res, errObj, _ := h.readUntilRPCResult(id, 5*time.Minute)
 	if errObj != nil {
@@ -322,12 +345,16 @@ func (h *acpHarness) sessionNew(cwd string) string {
 	}
 	var out struct {
 		SessionID string `json:"sessionId"`
+		Mode      string `json:"mode"`
 	}
 	if err := json.Unmarshal(res, &out); err != nil {
 		h.t.Fatal(err)
 	}
 	if out.SessionID == "" {
 		h.t.Fatalf("session/new: missing sessionId in %s", string(res))
+	}
+	if mode != "" && out.Mode != mode {
+		h.t.Fatalf("session/new: requested mode %q but server echoed %q", mode, out.Mode)
 	}
 	return out.SessionID
 }
@@ -1025,4 +1052,283 @@ func replyACPClientRequest(h *acpHarness, method string, id int) bool {
 	}
 	h.writeJSON(map[string]any{"jsonrpc": "2.0", "id": id, "result": res})
 	return true
+}
+
+// TestACPIntegration_SessionNewAcceptsAutoMode is a mock-server check that
+// session/new accepts mode="auto" (the only externally-visible mode) and
+// echoes it back. Validates the auto-only wiring without exercising the LLM.
+func TestACPIntegration_SessionNewAcceptsAutoMode(t *testing.T) {
+	skipUnlessIntegrationACP(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v1/models" && r.Method == http.MethodGet:
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"mock-openai-model"}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	stateDir := t.TempDir()
+	writeACPIntegrationConfigJSON(t, stateDir, map[string]any{
+		"base_url": srv.URL + "/v1",
+		"api_key":  "integration-test",
+		"model":    "mock-openai-model",
+	})
+	dir := t.TempDir()
+	h := startACPWithEnvMode(t, dir, append(os.Environ(), "CODIENT_STATE_DIR="+stateDir), "auto")
+	h.handshake()
+	ws, _ := filepath.Abs(dir)
+	// session/new with explicit mode=auto must round-trip.
+	_ = h.sessionNewWithMode(ws, "auto")
+}
+
+// TestACPIntegration_SessionSetModeRemoved verifies the session/set_mode RPC is
+// no longer routed (every session is auto-mode and the orchestrator picks an
+// internal mode per turn). Older Codient Unity builds that still send the RPC
+// must receive a clear "method not found" response so they can fall back.
+func TestACPIntegration_SessionSetModeRemoved(t *testing.T) {
+	skipUnlessIntegrationACP(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v1/models" && r.Method == http.MethodGet:
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"mock-openai-model"}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	stateDir := t.TempDir()
+	writeACPIntegrationConfigJSON(t, stateDir, map[string]any{
+		"base_url": srv.URL + "/v1",
+		"api_key":  "integration-test",
+		"model":    "mock-openai-model",
+	})
+	dir := t.TempDir()
+	h := startACPWithEnv(t, dir, append(os.Environ(), "CODIENT_STATE_DIR="+stateDir))
+	h.handshake()
+	ws, _ := filepath.Abs(dir)
+	sid := h.sessionNew(ws)
+
+	id := h.nextRPCID()
+	h.writeJSON(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      id,
+		"method":  "session/set_mode",
+		"params":  map[string]any{"sessionId": sid, "mode": "ask"},
+	})
+	_, errObj, _ := h.readUntilRPCResult(id, 30*time.Second)
+	if errObj == nil {
+		t.Fatal("session/set_mode should be rejected with method not found")
+	}
+	if errObj.Code != -32601 {
+		t.Fatalf("expected -32601 method not found, got %d %q", errObj.Code, errObj.Message)
+	}
+	if !strings.Contains(strings.ToLower(errObj.Message), "method not found") {
+		t.Fatalf("expected 'method not found' in error message, got %q", errObj.Message)
+	}
+}
+
+// TestACPIntegration_AutoModeEmitsIntentNotification drives a single
+// session/prompt in auto mode against a mock server that classifies as
+// SIMPLE_FIX. Asserts session/intent_identified and session/mode_status
+// notifications are emitted before the assistant reply.
+func TestACPIntegration_AutoModeEmitsIntentNotification(t *testing.T) {
+	skipUnlessIntegrationACP(t)
+	var chatCount atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v1/models" && r.Method == http.MethodGet:
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"mock-openai-model"}]}`))
+		case r.URL.Path == "/v1/chat/completions" && r.Method == http.MethodPost:
+			n := chatCount.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			// First call = supervisor (returns JSON classification).
+			// Subsequent calls = the actual agent turn (returns plain text).
+			if n == 1 {
+				_, _ = io.WriteString(w, `{"id":"mock","object":"chat.completion","model":"mock-openai-model","choices":[{"index":0,"message":{"role":"assistant","content":"{\"category\":\"SIMPLE_FIX\",\"reasoning\":\"tiny tweak\"}"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}`)
+			} else {
+				_, _ = io.WriteString(w, `{"id":"mock","object":"chat.completion","model":"mock-openai-model","choices":[{"index":0,"message":{"role":"assistant","content":"done"},"finish_reason":"stop"}],"usage":{"prompt_tokens":20,"completion_tokens":2,"total_tokens":22}}`)
+			}
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	stateDir := t.TempDir()
+	writeACPIntegrationConfigJSON(t, stateDir, map[string]any{
+		"base_url": srv.URL + "/v1",
+		"api_key":  "integration-test",
+		"model":    "mock-openai-model",
+	})
+	dir := t.TempDir()
+	h := startACPWithEnvMode(t, dir, append(os.Environ(), "CODIENT_STATE_DIR="+stateDir), "auto")
+	h.handshake()
+	ws, _ := filepath.Abs(dir)
+	sid := h.sessionNewWithMode(ws, "auto")
+
+	id := h.nextRPCID()
+	h.writeJSON(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      id,
+		"method":  "session/prompt",
+		"params": map[string]any{
+			"sessionId": sid,
+			"prompt":    []map[string]any{{"type": "text", "text": "Fix the typo in the README."}},
+		},
+	})
+
+	deadline := time.Now().Add(2 * time.Minute)
+	var sawIntent, sawModeChanged bool
+	var intentCategory, intentReason string
+	var modeChangedTo string
+	for time.Now().Before(deadline) && (!sawIntent || !sawModeChanged) {
+		line := h.readLine(30 * time.Second)
+		if line == "" {
+			continue
+		}
+		var wrap rpcLine
+		if err := json.Unmarshal([]byte(line), &wrap); err != nil {
+			continue
+		}
+		switch wrap.Method {
+		case "session/intent_identified":
+			var p struct {
+				Category  string `json:"category"`
+				Reasoning string `json:"reasoning"`
+				Fallback  bool   `json:"fallback"`
+			}
+			if err := json.Unmarshal(wrap.Params, &p); err == nil {
+				sawIntent = true
+				intentCategory = p.Category
+				intentReason = p.Reasoning
+			}
+		case "session/mode_status":
+			var p struct {
+				Phase string `json:"phase"`
+				Mode  string `json:"mode"`
+			}
+			if err := json.Unmarshal(wrap.Params, &p); err == nil && p.Phase == "changed" {
+				sawModeChanged = true
+				modeChangedTo = p.Mode
+			}
+		}
+		if wrap.ID != nil && *wrap.ID == id {
+			break
+		}
+	}
+	if !sawIntent {
+		t.Fatalf("expected session/intent_identified notification before reply")
+	}
+	if intentCategory != "SIMPLE_FIX" {
+		t.Fatalf("intent category: got %q want SIMPLE_FIX", intentCategory)
+	}
+	if intentReason == "" {
+		t.Fatalf("intent reasoning was empty")
+	}
+	if !sawModeChanged {
+		t.Fatalf("expected session/mode_status phase=changed notification")
+	}
+	if modeChangedTo != "build" {
+		t.Fatalf("orchestrator should map SIMPLE_FIX to build; got %q", modeChangedTo)
+	}
+	// Drain the final RPC response so the harness shutdown is clean.
+	_, errObj, _ := h.readUntilRPCResult(id, 30*time.Second)
+	if errObj != nil {
+		t.Fatalf("session/prompt error: %d %s", errObj.Code, errObj.Message)
+	}
+}
+
+// TestACPIntegration_AutoModeComplexTaskHandsOffToBuild is a live LLM
+// end-to-end check: a COMPLEX_TASK prompt in auto mode should produce a plan,
+// emit session/mode_status phase=plan_ready, then auto-handoff and emit
+// phase=changed mode=build with handoff=true. The build phase must call a
+// write tool.
+func TestACPIntegration_AutoModeComplexTaskHandsOffToBuild(t *testing.T) {
+	skipUnlessIntegrationACP(t)
+	skipUnlessStrictToolsACP(t)
+	if testing.Short() {
+		t.Skip("skipping live LLM round in -short mode")
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("# project\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h := startACPWithMode(t, dir, "auto")
+	h.handshake()
+	ws, _ := filepath.Abs(dir)
+	sid := h.sessionNewWithMode(ws, "auto")
+
+	user := "Refactor this small project across files: add a new module file, a tests file, and update the README. Provide a structured plan first (Implementation steps, Files to modify, Verification, ending with `Ready to implement`). Then implement the plan creating any required files via tools."
+	stop, reply, notes := h.sessionPrompt(sid, user)
+	if stop != "" && stop != "end_turn" {
+		t.Fatalf("auto complex stop=%q reply=%q", stop, reply)
+	}
+	var sawIntentComplex, sawPlanReady, sawHandoffChanged, sawWriteTool bool
+	for _, raw := range notes {
+		var wrap rpcLine
+		if err := json.Unmarshal([]byte(raw), &wrap); err != nil {
+			continue
+		}
+		switch wrap.Method {
+		case "session/intent_identified":
+			var p struct {
+				Category string `json:"category"`
+			}
+			_ = json.Unmarshal(wrap.Params, &p)
+			if p.Category == "COMPLEX_TASK" {
+				sawIntentComplex = true
+			}
+		case "session/mode_status":
+			var p struct {
+				Phase   string `json:"phase"`
+				Mode    string `json:"mode"`
+				Handoff bool   `json:"handoff"`
+			}
+			_ = json.Unmarshal(wrap.Params, &p)
+			if p.Phase == "plan_ready" {
+				sawPlanReady = true
+			}
+			if p.Phase == "changed" && p.Mode == "build" && p.Handoff {
+				sawHandoffChanged = true
+			}
+		}
+		if wrap.Method == "session/update" {
+			var u struct {
+				Params struct {
+					Update struct {
+						SessionUpdate string `json:"sessionUpdate"`
+						Title         string `json:"title"`
+					} `json:"update"`
+				} `json:"params"`
+			}
+			if err := json.Unmarshal([]byte(raw), &u); err != nil {
+				continue
+			}
+			if u.Params.Update.SessionUpdate == "tool_call" {
+				head := u.Params.Update.Title
+				if i := strings.IndexAny(head, " \t"); i > 0 {
+					head = head[:i]
+				}
+				switch head {
+				case "write_file", "str_replace", "patch_file", "insert_lines":
+					sawWriteTool = true
+				}
+			}
+		}
+	}
+	if !sawIntentComplex {
+		t.Fatalf("expected supervisor to classify as COMPLEX_TASK; saw notifications=%d", len(notes))
+	}
+	if !sawPlanReady {
+		t.Fatalf("expected session/mode_status phase=plan_ready before handoff")
+	}
+	if !sawHandoffChanged {
+		t.Fatalf("expected session/mode_status phase=changed mode=build handoff=true after plan")
+	}
+	if !sawWriteTool {
+		t.Fatalf("expected at least one write tool call after auto plan->build handoff")
+	}
 }

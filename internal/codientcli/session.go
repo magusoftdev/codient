@@ -29,6 +29,7 @@ import (
 	"codient/internal/codeindex"
 	"codient/internal/config"
 	"codient/internal/designstore"
+	"codient/internal/fileref"
 	"codient/internal/gitutil"
 	"codient/internal/hooks"
 	"codient/internal/imageutil"
@@ -162,9 +163,27 @@ type session struct {
 	// and user input arrives through tui.inputCh instead of os.Stdin.
 	tui *tuiSetup
 
+	// chromeSink, when non-nil, replaces the default *tea.Program.Send for
+	// chrome updates. Production code leaves this nil so messages flow into
+	// the live TUI; tests inject a sink to observe footer refreshes without
+	// running a Bubble Tea program.
+	chromeSink func(tuiChromeMsg)
+
 	// todos are session-scoped rows updated via todo_write (see sessionstore persistence).
 	todos   []tools.TodoItem
 	todosMu sync.Mutex
+
+	// orchestratorForce auto-approves plan->build transitions for COMPLEX_TASK
+	// turns when -force/-yes is set on the CLI.
+	orchestratorForce bool
+
+	// lastTurnMode is the resolved internal mode the most recent turn ran in
+	// (build / ask / plan). The orchestrator restores s.mode = ModeAuto after
+	// each turn so the next prompt is re-classified, but post-turn helpers
+	// (design saving, plan parsing, "Ready to implement" detection) still
+	// need to know which path the turn took. Set inside orchestratedTurn /
+	// transitionToInternalMode; defaults to ModeBuild.
+	lastTurnMode prompt.Mode
 }
 
 type undoEntry struct {
@@ -181,9 +200,26 @@ func (s *session) setMode(m prompt.Mode) {
 	s.sendTUIChrome()
 }
 
+// applyPostSetupReload re-derives runtime state after the interactive setup
+// wizard (`/setup`) mutates s.cfg. It rebuilds the OpenAI client, reloads the
+// skills catalog and tool registry against the (potentially new) workspace
+// model, re-probes the context window, and pushes a fresh chrome message so
+// the TUI footer below the input box reflects the updated model name and
+// backend label. Without the final sendTUIChrome the footer would stay
+// stale until something else (a turn completion, mode change, etc.) happened
+// to push a new chrome update.
+func (s *session) applyPostSetupReload(ctx context.Context) {
+	s.client = openaiclient.New(s.cfg)
+	s.loadSkillsCatalog()
+	s.installRegistry(buildRegistry(s.cfg, s.mode, s, s.memOpts))
+	s.cfg.ContextWindowTokens = 0
+	s.probeAndSetContext(ctx)
+	s.sendTUIChrome()
+}
+
 // sendTUIChrome pushes model, backend, and context usage into the TUI footer.
 func (s *session) sendTUIChrome() {
-	if s.tui == nil || s.tui.prog == nil {
+	if s.chromeSink == nil && (s.tui == nil || s.tui.prog == nil) {
 		return
 	}
 	base, _, model := s.cfg.ConnectionForMode(string(s.mode))
@@ -195,6 +231,10 @@ func (s *session) sendTUIChrome() {
 		ContextWindow:    s.cfg.ContextWindowTokens,
 		LastPromptTokens: tok,
 		ContextEstimated: est,
+	}
+	if s.chromeSink != nil {
+		s.chromeSink(msg)
+		return
 	}
 	s.tui.prog.Send(msg)
 }
@@ -240,11 +280,6 @@ func (s *session) installRegistry(reg *tools.Registry) {
 	s.setRegistryAndPrompt(reg, s.mode, s.repoMap)
 }
 
-// installRegistryForMode is like installRegistry but uses an explicit mode (e.g. before s.mode is updated).
-func (s *session) installRegistryForMode(reg *tools.Registry, mode prompt.Mode) {
-	s.setRegistryAndPrompt(reg, mode, s.repoMap)
-}
-
 func (s *session) rebuildSystemPromptWithRepoMap(rm *repomap.Map) {
 	s.promptMu.Lock()
 	defer s.promptMu.Unlock()
@@ -261,7 +296,7 @@ func (s *session) refreshSkillsCatalog() {
 }
 
 func (s *session) newRunner() *agent.Runner {
-	s.client = openaiclient.NewForMode(s.cfg, string(s.mode))
+	s.client = openaiclient.NewForTier(s.cfg, tierForResolvedMode(s.mode))
 	r := &agent.Runner{
 		LLM: s.client, Cfg: s.cfg, Tools: s.registry,
 		Log: s.agentLog, Progress: s.progressOut,
@@ -391,6 +426,16 @@ func (s *session) isRunning() bool {
 	s.turnCancelMu.Lock()
 	defer s.turnCancelMu.Unlock()
 	return s.turnCancel != nil
+}
+
+// runTurn dispatches every user message through the Intent-Driven Orchestrator.
+// userText is the raw prompt text used for supervisor classification.
+//
+// runner is unused today (the orchestrator builds its own runner per turn after
+// resolving the mode) but is kept in the signature to mirror executeTurn so
+// future plumbing (e.g. shared progress sinks) can be threaded uniformly.
+func (s *session) runTurn(ctx context.Context, _ *agent.Runner, user openai.ChatCompletionMessageParamUnion, userText string) (string, error) {
+	return s.orchestratedTurn(ctx, user, userText)
 }
 
 func (s *session) executeTurn(ctx context.Context, runner *agent.Runner, user openai.ChatCompletionMessageParamUnion) (reply string, err error) {
@@ -827,9 +872,9 @@ func (s *session) applyStoredSessionState(existing *sessionstore.SessionState) e
 	}
 	s.history = msgs
 	s.sessionID = existing.ID
-	if mode, modeErr := prompt.ParseMode(existing.Mode); modeErr == nil && mode != s.mode {
-		s.setMode(mode)
-	}
+	// existing.Mode is retained in the persisted JSON for backwards
+	// compatibility but is no longer authoritative: every session runs in
+	// ModeAuto and the orchestrator decides per turn.
 	if existing.PlanPhase != "" {
 		s.planPhase = planstore.Phase(existing.PlanPhase)
 	}
@@ -953,7 +998,6 @@ func (s *session) runSingleTurn(ctx context.Context, user string, extra []imageu
 			Plain:               s.cfg.Plain,
 			Quiet:               s.cfg.Quiet,
 			Repl:                false,
-			Mode:                string(s.mode),
 			Workspace:           s.cfg.EffectiveWorkspace(),
 			Model:               s.cfg.Model,
 			Version:             Version,
@@ -987,11 +1031,11 @@ func (s *session) runSingleTurn(ctx context.Context, user string, extra []imageu
 		return 2
 	}
 	runner := s.newRunner()
-	reply, err := s.executeTurn(ctx, runner, msg)
+	reply, err := s.runTurn(ctx, runner, msg, user)
 	s.autoSave()
 	if s.printMode {
 		if err == nil {
-			maybeSaveDesign(os.Stderr, s.cfg.EffectiveWorkspace(), s.designSaveDir, s.sessionID, s.mode, reply, designstore.TaskSlug(s.goal, s.taskFile, rawUser), s.cfg.DesignSave)
+			maybeSaveDesign(os.Stderr, s.cfg.EffectiveWorkspace(), s.designSaveDir, s.sessionID, s.lastTurnMode, reply, designstore.TaskSlug(s.goal, s.taskFile, rawUser), s.cfg.DesignSave)
 			s.showGitDiffIfBuild()
 		}
 		return s.finishHeadlessTurn(reply, err)
@@ -1000,7 +1044,7 @@ func (s *session) runSingleTurn(ctx context.Context, user string, extra []imageu
 		fmt.Fprintf(os.Stderr, "agent: %v\n", err)
 		return 1
 	}
-	maybeSaveDesign(os.Stderr, s.cfg.EffectiveWorkspace(), s.designSaveDir, s.sessionID, s.mode, reply, designstore.TaskSlug(s.goal, s.taskFile, rawUser), s.cfg.DesignSave)
+	maybeSaveDesign(os.Stderr, s.cfg.EffectiveWorkspace(), s.designSaveDir, s.sessionID, s.lastTurnMode, reply, designstore.TaskSlug(s.goal, s.taskFile, rawUser), s.cfg.DesignSave)
 	s.showGitDiffIfBuild()
 	return 0
 }
@@ -1049,18 +1093,16 @@ func (s *session) runSession(ctx context.Context, initialPrompt string, newSessi
 	ws := s.cfg.EffectiveWorkspace()
 
 	var resumeSummary string
-	// Load or create session.
+	// Load or create session. Persisted `Mode` is intentionally ignored — every
+	// session runs the Intent-Driven Orchestrator (ModeAuto) and the supervisor
+	// picks an internal mode per turn. The field is kept in the JSON for
+	// backwards compatibility with older session files.
 	if !newSession && ws != "" {
 		if existing, err := sessionstore.LoadLatest(ws); err == nil && existing != nil {
 			msgs, err := sessionstore.ToOpenAI(existing.Messages)
 			if err == nil {
 				s.history = msgs
 				s.sessionID = existing.ID
-				mode, modeErr := prompt.ParseMode(existing.Mode)
-				if modeErr == nil && mode != s.mode {
-					s.setMode(mode)
-					s.installRegistryForMode(buildRegistry(s.cfg, mode, s, s.memOpts), mode)
-				}
 				if existing.PlanPhase != "" {
 					s.planPhase = planstore.Phase(existing.PlanPhase)
 				}
@@ -1097,8 +1139,6 @@ func (s *session) runSession(ctx context.Context, initialPrompt string, newSessi
 			s.hooksMgr.RunSessionEnd(context.Background())
 		}
 	}()
-
-	config.SaveLastMode(string(s.mode))
 
 	// Clean up stale clipboard temp images from previous sessions.
 	go clipboard.Cleanup(clipboard.ClipboardDir(ws), 1*time.Hour)
@@ -1148,7 +1188,6 @@ func (s *session) runSession(ctx context.Context, initialPrompt string, newSessi
 		Plain:               s.cfg.Plain,
 		Quiet:               s.cfg.Quiet,
 		Repl:                true,
-		Mode:                string(s.mode),
 		Workspace:           ws,
 		Model:               s.cfg.Model,
 		ResumeSummary:       resumeSummary,
@@ -1157,9 +1196,8 @@ func (s *session) runSession(ctx context.Context, initialPrompt string, newSessi
 		EmbeddingModel:      s.cfg.EmbeddingModel,
 	})
 	if s.cfg.Verbose {
-		fmt.Fprintf(os.Stderr, "codient: workspace=%q mode=%s tools=%s\n", ws, s.mode, strings.Join(s.registry.Names(), ", "))
+		fmt.Fprintf(os.Stderr, "codient: workspace=%q tools=%s\n", ws, strings.Join(s.registry.Names(), ", "))
 	}
-	fmt.Fprintf(os.Stderr, "%s\n", assistout.ModeHint(s.cfg.Plain, string(s.mode)))
 
 	if s.mcpMgr != nil {
 		defer s.mcpMgr.Close()
@@ -1208,7 +1246,7 @@ func (s *session) runSession(ctx context.Context, initialPrompt string, newSessi
 		preModified, preUntracked := s.captureSnapshot()
 		histLen := len(s.history)
 		s.turn++
-		reply, err := s.executeTurn(ctx, runner, userMsg)
+		reply, err := s.runTurn(ctx, runner, userMsg, user)
 		if err != nil {
 			if isInterruptErr(err) {
 				fmt.Fprintf(os.Stderr, "\ncodient: interrupted\n")
@@ -1219,8 +1257,8 @@ func (s *session) runSession(ctx context.Context, initialPrompt string, newSessi
 		}
 		if err == nil {
 			s.pushUndoIfChanged(preModified, preUntracked, histLen, commitLine)
-			maybeSaveDesign(os.Stderr, ws, s.designSaveDir, s.sessionID, s.mode, reply, s.taskSlug, s.cfg.DesignSave)
-			s.lastReply = assistout.PrepareAssistantText(reply, s.mode == prompt.ModePlan)
+			maybeSaveDesign(os.Stderr, ws, s.designSaveDir, s.sessionID, s.lastTurnMode, reply, s.taskSlug, s.cfg.DesignSave)
+			s.lastReply = assistout.PrepareAssistantText(reply, s.lastTurnMode == prompt.ModePlan)
 		}
 		s.autoSave()
 		s.maybeAutoCompact(ctx)
@@ -1241,18 +1279,14 @@ func (s *session) runSession(ctx context.Context, initialPrompt string, newSessi
 		if !ok {
 			break
 		}
-		if s.tui != nil && line != "" {
-			if trimmed := strings.TrimSpace(line); strings.HasPrefix(trimmed, "/") {
-				fmt.Fprintf(os.Stderr, "\n%s%s\n", assistout.SessionPrompt(s.cfg.Plain, string(s.mode)), line)
-			} else {
-				s.tui.prog.Send(tuiUserPromptMsg(line))
-			}
-		}
 		if line == "" {
 			continue
 		}
 
-		// Check for slash command.
+		// Check for slash command. Slash commands are not echoed into the
+		// transcript: they take an action (mode switch, new session, model
+		// change, …) and any user-facing feedback comes from the command
+		// itself, not from showing the typed input back to the user.
 		if cmd, args, ok := cmds.Parse(line); ok {
 			if cmd == nil {
 				fmt.Fprintf(os.Stderr, "codient: unknown command %q — type /help for available commands\n", strings.SplitN(line, " ", 2)[0])
@@ -1267,6 +1301,16 @@ func (s *session) runSession(ctx context.Context, initialPrompt string, newSessi
 				done = true
 			}
 			continue
+		}
+
+		// Auto-detect dragged/pasted file paths and rewrite with @ prefixes.
+		if rewritten, ok := fileref.DetectPastedPaths(line); ok {
+			fmt.Fprintf(os.Stderr, "codient: detected file path(s), loading as context\n")
+			line = rewritten
+		}
+
+		if s.tui != nil {
+			s.tui.prog.Send(tuiUserPromptMsg(line))
 		}
 
 		// Normal user message -> execute turn.
@@ -1286,7 +1330,7 @@ func (s *session) runSession(ctx context.Context, initialPrompt string, newSessi
 		preModified, preUntracked := s.captureSnapshot()
 		histLen := len(s.history)
 		s.turn++
-		reply, err := s.executeTurn(ctx, runner, userMsg)
+		reply, err := s.runTurn(ctx, runner, userMsg, user)
 		if err != nil {
 			if isInterruptErr(err) {
 				fmt.Fprintf(os.Stderr, "\ncodient: interrupted\n")
@@ -1300,19 +1344,16 @@ func (s *session) runSession(ctx context.Context, initialPrompt string, newSessi
 		}
 		if err == nil {
 			s.pushUndoIfChanged(preModified, preUntracked, histLen, commitLine)
-			maybeSaveDesign(os.Stderr, ws, s.designSaveDir, s.sessionID, s.mode, reply, s.taskSlug, s.cfg.DesignSave)
-			s.lastReply = assistout.PrepareAssistantText(reply, s.mode == prompt.ModePlan)
+			maybeSaveDesign(os.Stderr, ws, s.designSaveDir, s.sessionID, s.lastTurnMode, reply, s.taskSlug, s.cfg.DesignSave)
+			s.lastReply = assistout.PrepareAssistantText(reply, s.lastTurnMode == prompt.ModePlan)
 		}
 		s.autoSave()
 		s.maybeAutoCompact(ctx)
 		s.showGitDiffIfBuild()
 
-		if err == nil && s.mode == prompt.ModePlan {
+		if err == nil && s.lastTurnMode == prompt.ModePlan {
 			designText := assistout.PrepareAssistantText(reply, true)
 			s.updatePlanFromReply(designText, line)
-			if designstore.LooksLikeReadyToImplement(designText) {
-				runner = s.offerPlanHandoff(ctx, sc, runner, designText)
-			}
 		}
 	}
 
@@ -1326,10 +1367,10 @@ func (s *session) runSession(ctx context.Context, initialPrompt string, newSessi
 // writeREPLPromptUnlocked writes the current REPL prompt (or plan answer prefix) to stderr.
 // Caller must hold replPromptMu when used together with replAsyncStderrNote.
 func (s *session) writeREPLPromptUnlocked() {
-	if s.mode == prompt.ModePlan && assistout.ReplySignalsPlanWait(s.lastReply) {
+	if s.lastTurnMode == prompt.ModePlan && assistout.ReplySignalsPlanWait(s.lastReply) {
 		fmt.Fprint(os.Stderr, assistout.PlanAnswerPrefix(s.cfg.Plain))
 	} else {
-		fmt.Fprint(os.Stderr, assistout.SessionPrompt(s.cfg.Plain, string(s.mode)))
+		fmt.Fprint(os.Stderr, assistout.UserPrompt(s.cfg.Plain))
 	}
 }
 
@@ -1405,69 +1446,6 @@ func (s *session) replFlushPendingNotes() {
 	s.pendingAsyncNotes = nil
 }
 
-// offerPlanHandoff prompts the user with a structured approval dialog after a plan
-// is finalized. On approval, it switches to build mode and executes from the
-// structured plan. On rejection, it injects feedback and continues planning.
-// Returns the updated runner.
-func (s *session) offerPlanHandoff(ctx context.Context, sc *bufio.Scanner, runner *agent.Runner, designText string) *agent.Runner {
-	if s.currentPlan == nil {
-		s.updatePlanFromReply(designText, "")
-	}
-	plan := s.currentPlan
-	plan.Phase = planstore.PhaseAwaitingApproval
-	s.planPhase = planstore.PhaseAwaitingApproval
-	if err := planstore.Save(plan); err != nil {
-		fmt.Fprintf(os.Stderr, "codient: plan save: %v\n", err)
-	}
-
-	decision := s.promptApproval(sc, plan)
-
-	switch decision.Action {
-	case "approve":
-		recordApproval(plan, "approve", decision.Feedback)
-		plan.Phase = planstore.PhaseApproved
-		s.planPhase = planstore.PhaseApproved
-		if err := planstore.Save(plan); err != nil {
-			fmt.Fprintf(os.Stderr, "codient: plan save: %v\n", err)
-		}
-		if err := s.executeFromPlan(ctx, plan); err != nil {
-			fmt.Fprintf(os.Stderr, "agent: %v\n", err)
-		}
-		return s.newRunner()
-
-	case "reject":
-		recordApproval(plan, "reject", decision.Feedback)
-		plan.Phase = planstore.PhaseDraft
-		s.planPhase = planstore.PhaseDraft
-		if err := planstore.Save(plan); err != nil {
-			fmt.Fprintf(os.Stderr, "codient: plan save: %v\n", err)
-		}
-		feedback := "[Plan rejected."
-		if decision.Feedback != "" {
-			feedback += " Feedback: " + decision.Feedback + "."
-		}
-		feedback += " Please revise the plan and address the feedback.]"
-		s.history = append(s.history, openai.UserMessage(feedback))
-		fmt.Fprintf(os.Stderr, "codient: plan rejected — continuing in plan mode\n")
-		return runner
-
-	case "edit":
-		plan.Phase = planstore.PhaseDraft
-		s.planPhase = planstore.PhaseDraft
-		fmt.Fprintf(os.Stderr, "codient: plan edited — continuing in plan mode\n")
-		return runner
-
-	default:
-		plan.Phase = planstore.PhaseDraft
-		s.planPhase = planstore.PhaseDraft
-		if err := planstore.Save(plan); err != nil {
-			fmt.Fprintf(os.Stderr, "codient: plan save: %v\n", err)
-		}
-		fmt.Fprintf(os.Stderr, "codient: continuing in plan mode\n")
-		return runner
-	}
-}
-
 func (s *session) autoSave() {
 	ws := s.cfg.EffectiveWorkspace()
 	if ws == "" {
@@ -1494,30 +1472,11 @@ func (s *session) autoSave() {
 	if err := sessionstore.Save(state); err != nil {
 		fmt.Fprintf(os.Stderr, "codient: session save: %v\n", err)
 	}
-	config.SaveLastMode(string(s.mode))
 }
 
 func (s *session) buildSlashCommands(ctx context.Context, sc *bufio.Scanner) *slashcmd.Registry {
 	cmds := &slashcmd.Registry{}
 
-	cmds.Register(slashcmd.Command{
-		Name:        "build",
-		Aliases:     []string{"b"},
-		Description: "switch to build mode (full write tools)",
-		Run:         func(string) error { s.switchMode(prompt.ModeBuild); return nil },
-	})
-	cmds.Register(slashcmd.Command{
-		Name:        "plan",
-		Aliases:     []string{"p", "design", "d"},
-		Description: "switch to plan mode (read-only, structured implementation design)",
-		Run:         func(string) error { s.switchMode(prompt.ModePlan); return nil },
-	})
-	cmds.Register(slashcmd.Command{
-		Name:        "ask",
-		Aliases:     []string{"a"},
-		Description: "switch to ask mode (read-only Q&A)",
-		Run:         func(string) error { s.switchMode(prompt.ModeAsk); return nil },
-	})
 	cmds.Register(slashcmd.Command{
 		Name:        "help",
 		Aliases:     []string{"h", "?"},
@@ -1526,7 +1485,7 @@ func (s *session) buildSlashCommands(ctx context.Context, sc *bufio.Scanner) *sl
 			fmt.Fprint(os.Stderr, cmds.Help())
 			fmt.Fprint(os.Stderr, "\nTip: end a line with \\ for multiline input. Pasting multiline text is also supported.\n")
 			fmt.Fprint(os.Stderr, "Ctrl+C while agent is working cancels the current turn; Ctrl+C at the prompt exits.\n")
-			fmt.Fprint(os.Stderr, "Images: /image path.png attaches to your next message; /paste attaches from clipboard; or use @image:path in text; or codient -image path.png …\n")
+			fmt.Fprint(os.Stderr, "Attachments: @path/to/file.go inlines a file's contents; /image path.png attaches an image; /paste attaches from clipboard; @image:path for inline image refs; drag files onto the terminal to auto-detect.\n")
 			return nil
 		},
 	})
@@ -1623,11 +1582,7 @@ func (s *session) buildSlashCommands(ctx context.Context, sc *bufio.Scanner) *sl
 		Description: "guided setup wizard for API connection, chat model, and optional embedding model for semantic search",
 		Run: func(string) error {
 			s.runSetupWizard(ctx, sc)
-			s.client = openaiclient.New(s.cfg)
-			s.loadSkillsCatalog()
-			s.installRegistry(buildRegistry(s.cfg, s.mode, s, s.memOpts))
-			s.cfg.ContextWindowTokens = 0
-			s.probeAndSetContext(ctx)
+			s.applyPostSetupReload(ctx)
 			return nil
 		},
 	})
@@ -1722,7 +1677,6 @@ func (s *session) buildSlashCommands(ctx context.Context, sc *bufio.Scanner) *sl
 			}
 			s.captureGitSessionState(s.cfg.EffectiveWorkspace())
 			fmt.Fprintf(os.Stderr, "codient: new session %s\n", s.sessionID)
-			fmt.Fprintf(os.Stderr, "%s\n", assistout.ModeHint(s.cfg.Plain, string(s.mode)))
 			s.sendTUIChrome()
 			s.autoSave()
 			return nil
@@ -1785,10 +1739,10 @@ func (s *session) buildSlashCommands(ctx context.Context, sc *bufio.Scanner) *sl
 	})
 	cmds.Register(slashcmd.Command{
 		Name:        "tools",
-		Description: "list tools available in current mode",
+		Description: "list tools currently registered with the agent",
 		Run: func(string) error {
 			names := s.registry.Names()
-			fmt.Fprintf(os.Stderr, "Tools (%s mode): %s\n", s.mode, strings.Join(names, ", "))
+			fmt.Fprintf(os.Stderr, "Tools: %s\n", strings.Join(names, ", "))
 			return nil
 		},
 	})
@@ -1837,6 +1791,26 @@ func (s *session) buildSlashCommands(ctx context.Context, sc *bufio.Scanner) *sl
 				return nil
 			}
 			fmt.Fprint(os.Stderr, planstore.RenderMarkdown(s.currentPlan))
+			return nil
+		},
+	})
+	cmds.Register(slashcmd.Command{
+		Name:        "edit-plan",
+		Aliases:     []string{"ep"},
+		Description: "open the active plan in $EDITOR (or $VISUAL); re-parses on save and bumps revision",
+		Run: func(string) error {
+			if s.currentPlan == nil {
+				return fmt.Errorf("no active plan to edit")
+			}
+			changed, err := s.editPlanInExternalEditor(s.currentPlan)
+			if err != nil {
+				return err
+			}
+			if !changed {
+				fmt.Fprintf(os.Stderr, "codient: no changes detected\n")
+				return nil
+			}
+			fmt.Fprintf(os.Stderr, "codient: plan updated to revision %d\n", s.currentPlan.Revision)
 			return nil
 		},
 	})
@@ -2190,7 +2164,7 @@ func (s *session) handleConfig(ctx context.Context, args string) error {
 		s.installRegistry(buildRegistry(s.cfg, s.mode, s, s.memOpts))
 	case "autocheck_cmd", "lint_cmd", "test_cmd":
 		s.rebuildSystemPrompt()
-	case "embedding_model":
+	case "embedding_model", "embedding_base_url", "embedding_api_key":
 		s.startCodeIndex(ctx)
 	case "repo_map_tokens":
 		s.startRepoMap(ctx)
@@ -2206,12 +2180,23 @@ func (s *session) handleConfig(ctx context.Context, args string) error {
 		}
 	}
 
-	if mode, _, ok := parseModeConfigKey(key); ok && mode == string(s.mode) {
-		s.client = openaiclient.NewForMode(s.cfg, mode)
+	if isReasoningTierConfigKey(key) {
+		s.client = openaiclient.NewForTier(s.cfg, config.TierLow)
 		s.rebuildSystemPrompt()
 	}
 	s.sendTUIChrome()
 	return nil
+}
+
+// isReasoningTierConfigKey reports whether key targets one of the
+// orchestrator's reasoning-tier connection settings.
+func isReasoningTierConfigKey(key string) bool {
+	switch key {
+	case "low_reasoning_base_url", "low_reasoning_api_key", "low_reasoning_model",
+		"high_reasoning_base_url", "high_reasoning_api_key", "high_reasoning_model":
+		return true
+	}
+	return false
 }
 
 func (s *session) printAllConfig() {
@@ -2224,8 +2209,13 @@ func (s *session) printAllConfig() {
 	fmt.Fprintf(w, "  base_url:              %s\n", s.cfg.BaseURL)
 	fmt.Fprintf(w, "  api_key:               %s\n", masked)
 	fmt.Fprintf(w, "  model:                 %s\n", s.cfg.Model)
+	if lr := strings.TrimSpace(s.cfg.LowReasoning.Model); lr != "" {
+		fmt.Fprintf(w, "  low_reasoning_model:   %s\n", lr)
+	}
+	if hr := strings.TrimSpace(s.cfg.HighReasoning.Model); hr != "" {
+		fmt.Fprintf(w, "  high_reasoning_model:  %s\n", hr)
+	}
 	fmt.Fprintf(w, "\n  -- Defaults --\n")
-	fmt.Fprintf(w, "  mode:                  %s\n", s.cfg.Mode)
 	fmt.Fprintf(w, "  workspace:             %s\n", s.cfg.Workspace)
 	fmt.Fprintf(w, "\n  -- Agent limits --\n")
 	fmt.Fprintf(w, "  max_concurrent:        %d\n", s.cfg.MaxConcurrent)
@@ -2266,6 +2256,7 @@ func (s *session) printAllConfig() {
 	fmt.Fprintf(w, "  plain:                 %v\n", s.cfg.Plain)
 	fmt.Fprintf(w, "  quiet:                 %v\n", s.cfg.Quiet)
 	fmt.Fprintf(w, "  verbose:               %v\n", s.cfg.Verbose)
+	fmt.Fprintf(w, "  mouse_enabled:         %v\n", s.cfg.MouseEnabled)
 	fmt.Fprintf(w, "  log:                   %s\n", s.cfg.LogPath)
 	fmt.Fprintf(w, "  stream_reply:          %v\n", s.cfg.StreamReply)
 	fmt.Fprintf(w, "  progress:              %v\n", s.cfg.Progress)
@@ -2286,6 +2277,18 @@ func (s *session) printAllConfig() {
 		embModel = "(not configured)"
 	}
 	fmt.Fprintf(w, "  embedding_model:       %s\n", embModel)
+	embBase := s.cfg.EmbeddingBaseURL
+	if embBase == "" {
+		embBase = "(inherit base_url)"
+	}
+	fmt.Fprintf(w, "  embedding_base_url:    %s\n", embBase)
+	embKey := s.cfg.EmbeddingAPIKey
+	if embKey == "" {
+		embKey = "(inherit api_key)"
+	} else if len(embKey) > 4 {
+		embKey = embKey[:4] + strings.Repeat("*", len(embKey)-4)
+	}
+	fmt.Fprintf(w, "  embedding_api_key:     %s\n", embKey)
 	fmt.Fprintf(w, "  hooks_enabled:         %v\n", s.cfg.HooksEnabled)
 	fmt.Fprintf(w, "\n  -- Cost estimate --\n")
 	if s.cfg.CostPerMTok != nil {
@@ -2293,30 +2296,16 @@ func (s *session) printAllConfig() {
 	} else {
 		fmt.Fprintf(w, "  cost_per_mtok:         (built-in table; set two numbers to override)\n")
 	}
-	fmt.Fprintf(w, "\n  -- Per-mode model overrides --\n")
-	for _, mode := range []string{"plan", "build", "ask"} {
-		ov := s.cfg.ModeModels[mode]
-		base, key, model := ov.BaseURL, ov.APIKey, ov.Model
-		if base == "" && key == "" && model == "" {
-			fmt.Fprintf(w, "  %s:                    (inherits top-level)\n", mode)
-			continue
-		}
-		if base == "" {
-			base = "(inherit)"
-		}
+	fmt.Fprintf(w, "\n  -- Reasoning tiers --\n")
+	for _, tier := range []struct{ label, name string }{{"low", config.TierLow}, {"high", config.TierHigh}} {
+		base, key, model := s.cfg.ConnectionForTier(tier.name)
 		maskedKey := key
 		if len(maskedKey) > 4 {
 			maskedKey = maskedKey[:4] + strings.Repeat("*", len(maskedKey)-4)
 		}
-		if maskedKey == "" {
-			maskedKey = "(inherit)"
-		}
-		if model == "" {
-			model = "(inherit)"
-		}
-		fmt.Fprintf(w, "  %s_base_url:           %s\n", mode, base)
-		fmt.Fprintf(w, "  %s_api_key:            %s\n", mode, maskedKey)
-		fmt.Fprintf(w, "  %s_model:              %s\n", mode, model)
+		fmt.Fprintf(w, "  %s_reasoning_base_url:  %s\n", tier.label, base)
+		fmt.Fprintf(w, "  %s_reasoning_api_key:   %s\n", tier.label, maskedKey)
+		fmt.Fprintf(w, "  %s_reasoning_model:     %s\n", tier.label, model)
 	}
 	fmt.Fprintf(w, "\nSet a value: /config <key> <value>\n")
 }
@@ -2342,8 +2331,6 @@ func (s *session) getConfigValue(key string) (string, bool) {
 		return masked, true
 	case "model":
 		return s.cfg.Model, true
-	case "mode":
-		return s.cfg.Mode, true
 	case "workspace":
 		return s.cfg.Workspace, true
 	case "max_concurrent":
@@ -2398,6 +2385,8 @@ func (s *session) getConfigValue(key string) (string, bool) {
 		return strconv.FormatBool(s.cfg.Quiet), true
 	case "verbose":
 		return strconv.FormatBool(s.cfg.Verbose), true
+	case "mouse_enabled":
+		return strconv.FormatBool(s.cfg.MouseEnabled), true
 	case "log":
 		return s.cfg.LogPath, true
 	case "stream_reply":
@@ -2416,6 +2405,14 @@ func (s *session) getConfigValue(key string) (string, bool) {
 		return s.cfg.AstGrep, true
 	case "embedding_model":
 		return s.cfg.EmbeddingModel, true
+	case "embedding_base_url":
+		return s.cfg.EmbeddingBaseURL, true
+	case "embedding_api_key":
+		masked := s.cfg.EmbeddingAPIKey
+		if len(masked) > 4 {
+			masked = masked[:4] + strings.Repeat("*", len(masked)-4)
+		}
+		return masked, true
 	case "hooks_enabled":
 		return strconv.FormatBool(s.cfg.HooksEnabled), true
 	case "cost_per_mtok":
@@ -2433,22 +2430,36 @@ func (s *session) getConfigValue(key string) (string, bool) {
 		return s.cfg.CheckpointAuto, true
 	}
 
-	if mode, field, ok := parseModeConfigKey(key); ok {
-		base, apiKey, model := s.cfg.ConnectionForMode(mode)
-		switch field {
-		case "base_url":
+	if base, apiKey, model, ok := s.reasoningTierConfigValue(key); ok {
+		switch {
+		case strings.HasSuffix(key, "_base_url"):
 			return base, true
-		case "api_key":
+		case strings.HasSuffix(key, "_api_key"):
 			masked := apiKey
 			if len(masked) > 4 {
 				masked = masked[:4] + strings.Repeat("*", len(masked)-4)
 			}
 			return masked, true
-		case "model":
+		case strings.HasSuffix(key, "_model"):
 			return model, true
 		}
 	}
 	return "", false
+}
+
+// reasoningTierConfigValue returns the resolved (base, key, model) for a
+// reasoning-tier config key like "low_reasoning_model" or
+// "high_reasoning_base_url". ok is false for keys that are not tier-prefixed.
+func (s *session) reasoningTierConfigValue(key string) (base, apiKey, model string, ok bool) {
+	switch {
+	case strings.HasPrefix(key, "low_reasoning_"):
+		base, apiKey, model = s.cfg.ConnectionForTier(config.TierLow)
+		return base, apiKey, model, true
+	case strings.HasPrefix(key, "high_reasoning_"):
+		base, apiKey, model = s.cfg.ConnectionForTier(config.TierHigh)
+		return base, apiKey, model, true
+	}
+	return "", "", "", false
 }
 
 func (s *session) setConfig(key, value string) error {
@@ -2462,8 +2473,6 @@ func (s *session) setConfig(key, value string) error {
 		s.cfg.APIKey = value
 	case "model":
 		s.cfg.Model = value
-	case "mode":
-		s.cfg.Mode = value
 	case "workspace":
 		s.cfg.Workspace = value
 	case "max_concurrent":
@@ -2607,6 +2616,12 @@ func (s *session) setConfig(key, value string) error {
 			return fmt.Errorf("verbose must be true or false")
 		}
 		s.cfg.Verbose = b
+	case "mouse_enabled":
+		b, err := parseBool(value)
+		if err != nil {
+			return fmt.Errorf("mouse_enabled must be true or false")
+		}
+		s.cfg.MouseEnabled = b
 	case "log":
 		s.cfg.LogPath = value
 	case "stream_reply":
@@ -2642,6 +2657,10 @@ func (s *session) setConfig(key, value string) error {
 		s.installRegistry(buildRegistry(s.cfg, s.mode, s, s.memOpts))
 	case "embedding_model":
 		s.cfg.EmbeddingModel = value
+	case "embedding_base_url":
+		s.cfg.EmbeddingBaseURL = strings.TrimRight(strings.TrimSpace(value), "/")
+	case "embedding_api_key":
+		s.cfg.EmbeddingAPIKey = strings.TrimSpace(value)
 	case "repo_map_tokens":
 		n, err := parseInt(value)
 		if err != nil || n < -1 {
@@ -2698,39 +2717,22 @@ func (s *session) setConfig(key, value string) error {
 			return fmt.Errorf("checkpoint_auto must be plan, all, or off")
 		}
 		s.cfg.CheckpointAuto = v
+	case "low_reasoning_base_url":
+		s.cfg.LowReasoning.BaseURL = strings.TrimRight(value, "/")
+	case "low_reasoning_api_key":
+		s.cfg.LowReasoning.APIKey = value
+	case "low_reasoning_model":
+		s.cfg.LowReasoning.Model = value
+	case "high_reasoning_base_url":
+		s.cfg.HighReasoning.BaseURL = strings.TrimRight(value, "/")
+	case "high_reasoning_api_key":
+		s.cfg.HighReasoning.APIKey = value
+	case "high_reasoning_model":
+		s.cfg.HighReasoning.Model = value
 	default:
-		if mode, field, ok := parseModeConfigKey(key); ok {
-			if s.cfg.ModeModels == nil {
-				s.cfg.ModeModels = make(map[string]config.ModeConnectionOverride)
-			}
-			ov := s.cfg.ModeModels[mode]
-			switch field {
-			case "base_url":
-				ov.BaseURL = strings.TrimRight(value, "/")
-			case "api_key":
-				ov.APIKey = value
-			case "model":
-				ov.Model = value
-			}
-			s.cfg.ModeModels[mode] = ov
-			return nil
-		}
 		return fmt.Errorf("unknown config key %q", key)
 	}
 	return nil
-}
-
-// parseModeConfigKey checks if key is a per-mode override like "plan_model" or "build_base_url".
-// Returns (mode, field, true) on match.
-func parseModeConfigKey(key string) (mode, field string, ok bool) {
-	for _, m := range []string{"plan", "build", "ask"} {
-		for _, f := range []string{"base_url", "api_key", "model"} {
-			if key == m+"_"+f {
-				return m, f, true
-			}
-		}
-	}
-	return "", "", false
 }
 
 // resolveAstGrep resolves the ast-grep binary path into cfg.AstGrep.
@@ -2830,13 +2832,18 @@ func computeUndoEntry(preModified, preUntracked, postModified, postUntracked []s
 
 // startCodeIndex launches background indexing if an embedding model is configured.
 // semantic_search is registered with the new index; Query blocks until the initial build finishes.
+//
+// Embedding requests use a dedicated client built from EmbeddingBaseURL / EmbeddingAPIKey
+// (falling back to the chat connection) so users can route /v1/embeddings to a local server
+// while chat targets a hosted API that does not implement embeddings.
 func (s *session) startCodeIndex(ctx context.Context) {
 	model := strings.TrimSpace(s.cfg.EmbeddingModel)
 	ws := s.cfg.EffectiveWorkspace()
 	if model == "" || ws == "" {
 		return
 	}
-	s.codeIndex = codeindex.New(ws, s.client, model)
+	embClient := openaiclient.NewForEmbedding(s.cfg)
+	s.codeIndex = codeindex.New(ws, embClient, model)
 	s.installRegistry(buildRegistry(s.cfg, s.mode, s, s.memOpts))
 	fmt.Fprintf(os.Stderr, "codient: indexing workspace for semantic search...\n")
 	go func() {
@@ -2946,14 +2953,11 @@ func (s *session) handlePlanResume(ctx context.Context, sc *bufio.Scanner) {
 
 	switch s.planPhase {
 	case planstore.PhaseDraft, planstore.PhaseAwaitingApproval:
-		fmt.Fprintf(os.Stderr, "codient: plan is in %s phase — continue in plan mode\n", s.planPhase)
-		if s.mode != prompt.ModePlan {
-			s.switchMode(prompt.ModePlan)
-		}
+		fmt.Fprintf(os.Stderr, "codient: plan is in %s phase — describe what you'd like to refine and the orchestrator will route to plan mode\n", s.planPhase)
 
 	case planstore.PhaseApproved, planstore.PhaseExecuting:
 		fmt.Fprintf(os.Stderr, "\n  [r] Resume execution from current step\n")
-		fmt.Fprintf(os.Stderr, "  [p] Re-plan (switch to plan mode)\n")
+		fmt.Fprintf(os.Stderr, "  [p] Re-plan (reset plan to draft)\n")
 		fmt.Fprintf(os.Stderr, "  [i] Ignore plan and start fresh\n")
 		fmt.Fprintf(os.Stderr, "\ncodient: choose action: ")
 		if !sc.Scan() {
@@ -2972,7 +2976,6 @@ func (s *session) handlePlanResume(ctx context.Context, sc *bufio.Scanner) {
 			if err := planstore.Save(plan); err != nil {
 				fmt.Fprintf(os.Stderr, "codient: plan save: %v\n", err)
 			}
-			s.switchMode(prompt.ModePlan)
 		default:
 			s.currentPlan = nil
 			s.planPhase = ""

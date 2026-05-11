@@ -7,18 +7,39 @@ import (
 
 	"github.com/openai/openai-go/v3"
 
+	"codient/internal/fileref"
 	"codient/internal/imageutil"
 )
 
 // buildUserMessage combines optional pre-attached images (CLI, /image, or prior loads) with
-// the user's text, parses @image:path references, and returns a Chat Completions user message.
+// the user's text, parses @image:path and @path references, and returns a Chat Completions user message.
 func buildUserMessage(workspace string, text string, preAttached []imageutil.ImageAttachment) (openai.ChatCompletionMessageParamUnion, error) {
 	text = strings.TrimSpace(text)
 	maxB := imageutil.DefaultMaxBytes
 
+	// First pass: extract @image: tokens.
 	clean, inline, err := imageutil.ParseInlineImages(text, workspace, maxB)
 	if err != nil {
 		return openai.ChatCompletionMessageParamUnion{}, err
+	}
+
+	// Second pass: extract @path file references from the remaining text.
+	clean, fileRefs, fileWarns, err := fileref.ParseAndLoad(clean, workspace, 0, 0)
+	if err != nil {
+		return openai.ChatCompletionMessageParamUnion{}, err
+	}
+	for _, w := range fileWarns {
+		fmt.Fprintf(os.Stderr, "codient: %s\n", w)
+	}
+	for _, r := range fileRefs {
+		if r.TruncatedBytes > 0 {
+			fmt.Fprintf(os.Stderr, "codient: loaded @%s (%d bytes, truncated %d)\n", r.Path, r.OrigBytes, r.TruncatedBytes)
+		} else {
+			fmt.Fprintf(os.Stderr, "codient: loaded @%s (%d bytes)\n", r.Path, r.OrigBytes)
+		}
+	}
+	if refBlock := fileref.FormatReferences(fileRefs); refBlock != "" {
+		clean = clean + refBlock
 	}
 
 	var imgs []imageutil.ImageAttachment
