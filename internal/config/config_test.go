@@ -749,8 +749,8 @@ func TestSchemaVersionMigration_Version0(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if pc.SchemaVersion != 1 {
-		t.Fatalf("expected migration to version 1, got %d", pc.SchemaVersion)
+	if pc.SchemaVersion != currentSchemaVersion {
+		t.Fatalf("expected migration to version %d, got %d", currentSchemaVersion, pc.SchemaVersion)
 	}
 	if pc.BaseURL != "http://old/v1" || pc.Model != "old-model" {
 		t.Fatalf("data should be preserved: base_url=%q model=%q", pc.BaseURL, pc.Model)
@@ -955,6 +955,53 @@ func TestConfigToPersistent_EmbeddingRoundTrip(t *testing.T) {
 	}
 	if c.EmbeddingModel != "nomic-embed" || c.EmbeddingBaseURL != "http://emb/v1" || c.EmbeddingAPIKey != "emb-key" {
 		t.Fatalf("round-trip failed: %+v", c)
+	}
+}
+
+func TestConfigToPersistent_AutoCheckFixLoop_RoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CODIENT_STATE_DIR", dir)
+
+	cfg := &Config{
+		BaseURL:                      "http://test/v1",
+		Model:                        "m",
+		AutoCheckFixMaxRetries:       3,
+		AutoCheckFixStopOnNoProgress: true,
+	}
+	pc := ConfigToPersistent(cfg)
+	if err := SavePersistentConfig(pc); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.AutoCheckFixMaxRetries != 3 {
+		t.Fatalf("expected AutoCheckFixMaxRetries=3, got %d", c.AutoCheckFixMaxRetries)
+	}
+	if !c.AutoCheckFixStopOnNoProgress {
+		t.Fatal("expected AutoCheckFixStopOnNoProgress=true")
+	}
+
+	cfg2 := &Config{
+		BaseURL:                      "http://test/v1",
+		Model:                        "m",
+		AutoCheckFixMaxRetries:       0,
+		AutoCheckFixStopOnNoProgress: false,
+	}
+	pc2 := ConfigToPersistent(cfg2)
+	if err := SavePersistentConfig(pc2); err != nil {
+		t.Fatal(err)
+	}
+	c2, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c2.AutoCheckFixMaxRetries != 0 {
+		t.Fatalf("expected AutoCheckFixMaxRetries=0, got %d", c2.AutoCheckFixMaxRetries)
+	}
+	if c2.AutoCheckFixStopOnNoProgress {
+		t.Fatal("expected AutoCheckFixStopOnNoProgress=false after explicit false")
 	}
 }
 

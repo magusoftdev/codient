@@ -270,7 +270,7 @@ func makeAutoCheck(workspace, cmdLine string, timeout time.Duration, maxOut int,
 func makeAutoCheckSequence(workspace string, steps []autoCheckStep, timeout time.Duration, maxOut int, progress io.Writer) func(context.Context) agent.AutoCheckOutcome {
 	return func(ctx context.Context) agent.AutoCheckOutcome {
 		if len(steps) == 0 {
-			return agent.AutoCheckOutcome{}
+			return agent.AutoCheckOutcome{Passed: true}
 		}
 		var progLines []string
 		for _, st := range steps {
@@ -284,10 +284,15 @@ func makeAutoCheckSequence(workspace string, steps []autoCheckStep, timeout time
 			}
 			if out.Inject != "" {
 				combinedProg := strings.Join(progLines, "\n")
-				return agent.AutoCheckOutcome{Inject: out.Inject, Progress: combinedProg}
+				return agent.AutoCheckOutcome{
+					Inject:      out.Inject,
+					Progress:    combinedProg,
+					Signature:   out.Signature,
+					FailingStep: out.FailingStep,
+				}
 			}
 		}
-		return agent.AutoCheckOutcome{Progress: strings.Join(progLines, "\n")}
+		return agent.AutoCheckOutcome{Passed: true, Progress: strings.Join(progLines, "\n")}
 	}
 }
 
@@ -340,9 +345,21 @@ func execOneAutoCheck(ctx context.Context, workspace, label, cmdLine string, tim
 	}
 	prog := fmt.Sprintf("auto-check [%s]: %s · %v exit=%d", label, cmdLine, dur.Round(time.Millisecond), exitCode)
 	if exitCode == 0 {
-		return agent.AutoCheckOutcome{Progress: prog}
+		return agent.AutoCheckOutcome{Passed: true, Progress: prog}
 	}
+
+	parser := selectParser(label, cmdLine)
+	pf := parser.Parse(label, cmdLine, body, exitCode)
+
 	inject := fmt.Sprintf("[auto-check] %s errors after file changes:\n\nexit_code: %d\ncmd: %s\ncwd: %s\n\n%s",
 		label, exitCode, cmdLine, workspace, body)
-	return agent.AutoCheckOutcome{Inject: inject, Progress: prog}
+	if len(pf.Highlights) > 0 {
+		inject += "\n\n[parsed failures]\n" + strings.Join(pf.Highlights, "\n")
+	}
+	return agent.AutoCheckOutcome{
+		Inject:      inject,
+		Progress:    prog,
+		Signature:   pf.Signature,
+		FailingStep: label,
+	}
 }

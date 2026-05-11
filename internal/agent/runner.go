@@ -41,8 +41,11 @@ type streamChatClient interface {
 // AutoCheckOutcome is returned by Runner.AutoCheck after file-mutating tools succeed.
 // Inject is a full user message to append (empty means nothing to inject). Progress is one line for Progress (empty to skip).
 type AutoCheckOutcome struct {
-	Inject   string
-	Progress string
+	Inject      string
+	Progress    string
+	Passed      bool   // all steps succeeded (when true, Inject is empty)
+	Signature   string // stable hash of parsed failures for no-progress detection
+	FailingStep string // "build" | "lint" | "test" | "" — which step failed
 }
 
 // mutatingTools lists tool names that change files on disk; used to trigger auto-check.
@@ -108,7 +111,17 @@ type Runner struct {
 	OnTranscriptEvent func(TranscriptEvent)
 	// StopHookActive is true when the next assistant text follows a Stop-hook continuation in this RunConversation.
 	StopHookActive bool
-	toolUseSeq     atomic.Uint64
+	// AutoCheckMaxFixes is the maximum fix-loop iterations after auto-check
+	// failures within a single user turn. 0 = single-shot (today's behaviour).
+	AutoCheckMaxFixes int
+	// AutoCheckStopOnNoProgress aborts the fix loop early when the failure
+	// Signature is unchanged between consecutive attempts.
+	AutoCheckStopOnNoProgress bool
+
+	toolUseSeq          atomic.Uint64
+	autoCheckAttempts   int
+	autoCheckLastSig    string
+	autoCheckExhausted  bool
 }
 
 // Run carries out one user turn (no prior conversation history).
@@ -127,6 +140,9 @@ func (r *Runner) Run(ctx context.Context, system string, user openai.ChatComplet
 func (r *Runner) RunConversation(ctx context.Context, system string, history []openai.ChatCompletionMessageParamUnion, user openai.ChatCompletionMessageParamUnion, streamTo io.Writer) (string, []openai.ChatCompletionMessageParamUnion, bool, error) {
 	r.StopHookActive = false
 	r.toolUseSeq.Store(0)
+	r.autoCheckAttempts = 0
+	r.autoCheckLastSig = ""
+	r.autoCheckExhausted = false
 	msgs := make([]openai.ChatCompletionMessageParamUnion, 0, len(history)+16)
 	sys := strings.TrimSpace(system)
 	sysOffset := 0
@@ -642,7 +658,51 @@ func (r *Runner) autoCheckAfterMutations(ctx context.Context, results []autoChec
 		return "", ""
 	}
 	out := r.AutoCheck(ctx)
-	return out.Inject, out.Progress
+
+	if out.Passed || out.Inject == "" {
+		r.autoCheckAttempts = 0
+		r.autoCheckLastSig = ""
+		r.autoCheckExhausted = false
+		return out.Inject, out.Progress
+	}
+
+	if r.autoCheckExhausted {
+		return "", out.Progress
+	}
+
+	maxFixes := r.AutoCheckMaxFixes
+	if maxFixes <= 0 {
+		return out.Inject, out.Progress
+	}
+
+	r.autoCheckAttempts++
+
+	if r.AutoCheckStopOnNoProgress && r.autoCheckLastSig != "" && out.Signature == r.autoCheckLastSig {
+		r.autoCheckExhausted = true
+		r.emitProgress(&TranscriptEvent{
+			Kind: TranscriptWarning,
+			Text: fmt.Sprintf("auto-check fix loop: no progress on %s (same failure signature) — stopping", out.FailingStep),
+		})
+		notice := fmt.Sprintf("[auto-check] fix loop stopped: identical %s failures after %d attempt(s) — no progress. "+
+			"Report what is still failing and stop editing files.", out.FailingStep, r.autoCheckAttempts)
+		return notice, out.Progress
+	}
+
+	if r.autoCheckAttempts >= maxFixes {
+		r.autoCheckExhausted = true
+		r.emitProgress(&TranscriptEvent{
+			Kind: TranscriptWarning,
+			Text: fmt.Sprintf("auto-check fix loop: max retries (%d) exhausted — stopping", maxFixes),
+		})
+		notice := fmt.Sprintf("[auto-check] fix loop stopped: max retries (%d) exhausted. "+
+			"Report what is still failing and stop editing files.\n\nLast failure:\n%s", maxFixes, out.Inject)
+		r.autoCheckLastSig = out.Signature
+		return notice, out.Progress
+	}
+
+	r.autoCheckLastSig = out.Signature
+	decorated := fmt.Sprintf("%s\n\n[auto-check fix attempt %d/%d]", out.Inject, r.autoCheckAttempts, maxFixes)
+	return decorated, out.Progress
 }
 
 func usageFromCompletionUsage(u openai.CompletionUsage) tokentracker.Usage {

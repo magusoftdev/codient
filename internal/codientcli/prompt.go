@@ -148,9 +148,10 @@ func buildAgentSystemPromptEx(cfg *config.Config, reg *tools.Registry, mode prom
 		RepoMap:                repoMapText,
 		Memory:                 memory,
 		SkillsCatalog:          skillsCatalog,
-		AutoCheckBuildResolved: effectiveAutoCheckCmd(cfg),
-		AutoCheckLintResolved:  effectiveLintCmd(cfg),
-		AutoCheckTestResolved:  effectiveTestCmd(cfg),
+		AutoCheckBuildResolved:  effectiveAutoCheckCmd(cfg),
+		AutoCheckLintResolved:   effectiveLintCmd(cfg),
+		AutoCheckTestResolved:   effectiveTestCmd(cfg),
+		AutoCheckFixMaxRetries:  cfg.AutoCheckFixMaxRetries,
 		UnityACPEditor:         unityACPEditor,
 	})
 }

@@ -100,6 +100,14 @@ type Config struct {
 	// TestCmd is the test command after file edits (build mode auto-check sequence).
 	// Empty triggers auto-detection; "off" disables.
 	TestCmd string
+	// AutoCheckFixMaxRetries is the maximum number of fix-loop iterations the
+	// runner performs after an auto-check failure within a single user turn.
+	// 0 (default) keeps today's single-shot behaviour; >0 enables the loop.
+	AutoCheckFixMaxRetries int
+	// AutoCheckFixStopOnNoProgress, when true, aborts the fix loop early if
+	// the failure signature is identical to the previous attempt (no progress).
+	// Defaults to true when the fix loop is active (AutoCheckFixMaxRetries>0).
+	AutoCheckFixStopOnNoProgress bool
 
 	// LegacyMode preserves a `mode` field from older config.json files so we
 	// can warn the user that it is no longer honored. The runtime mode is
@@ -177,6 +185,11 @@ type Config struct {
 	// DelegateSandboxDefault is the profile name applied when delegate_task omits sandbox_profile.
 	// Empty means fall back to the global SandboxMode / SandboxContainerImage.
 	DelegateSandboxDefault string
+
+	// ActiveProfile is the name of the currently selected named profile (empty = defaults).
+	ActiveProfile string
+	// Profiles is preserved from PersistentConfig so mid-session swaps can re-merge.
+	Profiles map[string]ProfileOverride
 }
 
 // DelegateSandboxProfile describes container isolation settings for a delegate_task invocation.
@@ -289,296 +302,40 @@ func (c *Config) EmbeddingConnection() (baseURL, apiKey string) {
 // All settings come from ~/.codient/config.json with built-in defaults.
 // CLI flags override config values (handled by the caller via flag.Visit).
 func Load() (*Config, error) {
+	return LoadWithProfile("")
+}
+
+// LoadWithProfile reads the persistent config and merges the named profile.
+// An empty profileOverride defers to CODIENT_PROFILE env, then active_profile
+// in config.json. A non-empty profileOverride is treated as an explicit
+// selection (errors on unknown names).
+func LoadWithProfile(profileOverride string) (*Config, error) {
 	pc, err := LoadPersistentConfig()
 	if err != nil {
 		pc = &PersistentConfig{}
 	}
 
-	baseURL := strings.TrimSpace(pc.BaseURL)
-	if baseURL == "" {
-		baseURL = defaultBaseURL
+	selectedProfile, merged, err := resolveAndMergeProfile(pc, profileOverride)
+	if err != nil {
+		return nil, err
 	}
-	apiKey := strings.TrimSpace(pc.APIKey)
-	if apiKey == "" {
-		apiKey = defaultAPIKey
-	}
-	model := strings.TrimSpace(pc.Model)
 
-	ws := strings.TrimSpace(pc.Workspace)
-	if ws == "" {
-		if wd, err := os.Getwd(); err == nil {
-			if abs, err := filepath.Abs(wd); err == nil {
-				ws = abs
+	c, err := buildConfigFromPersistent(merged, selectedProfile)
+	if err != nil {
+		return nil, err
+	}
+
+	// buildConfigFromPersistent leaves Workspace empty when pc.Workspace is
+	// empty; Load is the only entry that defaults to cwd.
+	if strings.TrimSpace(c.Workspace) == "" {
+		if wd, wdErr := os.Getwd(); wdErr == nil {
+			if abs, absErr := filepath.Abs(wd); absErr == nil {
+				c.Workspace = abs
 			} else {
-				ws = wd
+				c.Workspace = wd
 			}
 		}
 	}
-
-	execAllowlist := parseExecAllowlist(pc.ExecAllowlist)
-	if pc.ExecDisable {
-		execAllowlist = nil
-	} else if len(execAllowlist) == 0 {
-		execAllowlist = defaultExecAllowlist()
-	}
-
-	fetchHosts := parseFetchAllowHosts(pc.FetchAllowHosts)
-	fetchPreapproved := true
-	if pc.FetchPreapproved != nil {
-		fetchPreapproved = *pc.FetchPreapproved
-	}
-
-	maxConcurrent := pc.MaxConcurrent
-	if maxConcurrent == 0 {
-		maxConcurrent = defaultMaxConcurrent
-	}
-
-	execTimeout := pc.ExecTimeoutSec
-	if execTimeout == 0 {
-		execTimeout = defaultExecTimeoutSec
-	}
-	execMaxOut := pc.ExecMaxOutBytes
-	if execMaxOut == 0 {
-		execMaxOut = defaultExecMaxOutBytes
-	}
-
-	contextReserve := pc.ContextReserve
-	if contextReserve == 0 {
-		contextReserve = defaultContextReserve
-	}
-
-	maxLLMRetries := pc.MaxLLMRetries
-	if maxLLMRetries == 0 {
-		maxLLMRetries = defaultMaxLLMRetries
-	}
-
-	fetchMax := pc.FetchMaxBytes
-	if fetchMax == 0 {
-		fetchMax = defaultFetchMaxBytes
-	}
-	fetchTimeout := pc.FetchTimeoutSec
-	if fetchTimeout == 0 {
-		fetchTimeout = defaultFetchTimeoutSec
-	}
-
-	maxCompletion := pc.MaxCompletionSeconds
-	if maxCompletion == 0 {
-		maxCompletion = defaultMaxCompletionSeconds
-	}
-	searchMaxResults := pc.SearchMaxResults
-	if searchMaxResults == 0 {
-		searchMaxResults = defaultSearchMaxResults
-	}
-
-	fetchWebRate := pc.FetchWebRatePerSec
-	if fetchWebRate < 0 {
-		fetchWebRate = 0
-	}
-	if fetchWebRate > MaxFetchWebRatePerSec {
-		fetchWebRate = MaxFetchWebRatePerSec
-	}
-	fetchWebBurst := pc.FetchWebRateBurst
-	if fetchWebBurst < 0 {
-		fetchWebBurst = 0
-	}
-	if fetchWebRate > 0 && fetchWebBurst == 0 {
-		fetchWebBurst = fetchWebRate
-	}
-	if fetchWebBurst > MaxFetchWebRateBurst {
-		fetchWebBurst = MaxFetchWebRateBurst
-	}
-
-	autoCompactPct := pc.AutoCompactPct
-	if autoCompactPct == 0 {
-		autoCompactPct = defaultAutoCompactPct
-	}
-
-	streamReply := true
-	if pc.StreamReply != nil {
-		streamReply = *pc.StreamReply
-	}
-	designSave := true
-	if pc.DesignSave != nil {
-		designSave = *pc.DesignSave
-	}
-	updateNotify := true
-	if pc.UpdateNotify != nil {
-		updateNotify = *pc.UpdateNotify
-	}
-
-	gitAutoCommit := true
-	if pc.GitAutoCommit != nil {
-		gitAutoCommit = *pc.GitAutoCommit
-	}
-	acpPreloadModelOnSetModel := true
-	if pc.AcpPreloadModelOnSetModel != nil {
-		acpPreloadModelOnSetModel = *pc.AcpPreloadModelOnSetModel
-	}
-	planTot := true
-	if pc.PlanTot != nil {
-		planTot = *pc.PlanTot
-	}
-	mouseEnabled := true
-	if pc.MouseEnabled != nil {
-		mouseEnabled = *pc.MouseEnabled
-	}
-	protectedBranches := ParseGitProtectedBranches(pc.GitProtectedBranches)
-	if len(protectedBranches) == 0 {
-		protectedBranches = []string{"main", "master", "develop"}
-	}
-
-	checkpointAuto := strings.TrimSpace(strings.ToLower(pc.CheckpointAuto))
-	if checkpointAuto == "" {
-		checkpointAuto = "plan"
-	}
-	if checkpointAuto != "plan" && checkpointAuto != "all" && checkpointAuto != "off" {
-		checkpointAuto = "plan"
-	}
-
-	execEnvPassthrough := parseCommaListPreserveCase(pc.ExecEnvPassthrough)
-	sandboxRO := parseSandboxPaths(pc.SandboxReadOnlyPaths)
-	sandboxMode := strings.TrimSpace(strings.ToLower(pc.SandboxMode))
-	if sandboxMode == "" {
-		sandboxMode = "off"
-	}
-	sandboxImg := strings.TrimSpace(pc.SandboxContainerImage)
-
-	delegateProfiles, delegateDefault, delegateErr := parseDelegateSandboxProfiles(pc.DelegateSandboxProfiles, pc.DelegateSandboxDefault)
-	if delegateErr != nil {
-		return nil, delegateErr
-	}
-
-	c := &Config{
-		BaseURL:                   baseURL,
-		APIKey:                    apiKey,
-		Model:                     model,
-		MaxConcurrent:             maxConcurrent,
-		Workspace:                 ws,
-		HooksEnabled:              pc.HooksEnabled,
-		DelegateGitWorktrees:      pc.DelegateGitWorktrees,
-		DelegateSandboxProfiles:   delegateProfiles,
-		DelegateSandboxDefault:    delegateDefault,
-		ExecAllowlist:             execAllowlist,
-		ExecEnvPassthrough:        execEnvPassthrough,
-		ExecTimeoutSeconds:        execTimeout,
-		ExecMaxOutputBytes:        execMaxOut,
-		SandboxMode:               sandboxMode,
-		SandboxReadOnlyPaths:      sandboxRO,
-		SandboxContainerImage:     sandboxImg,
-		ContextWindowTokens:       pc.ContextWindow,
-		ContextReserveTokens:      contextReserve,
-		MaxLLMRetries:             maxLLMRetries,
-		StreamWithTools:           pc.StreamWithTools,
-		FetchAllowHosts:           fetchHosts,
-		FetchPreapproved:          fetchPreapproved,
-		FetchMaxBytes:             fetchMax,
-		FetchTimeoutSec:           fetchTimeout,
-		MaxCompletionSeconds:      maxCompletion,
-		SearchMaxResults:          searchMaxResults,
-		FetchWebRatePerSec:        fetchWebRate,
-		FetchWebRateBurst:         fetchWebBurst,
-		AutoCompactPct:            autoCompactPct,
-		AutoCheckCmd:              strings.TrimSpace(pc.AutoCheckCmd),
-		LintCmd:                   strings.TrimSpace(pc.LintCmd),
-		TestCmd:                   strings.TrimSpace(pc.TestCmd),
-		LegacyMode:                strings.TrimSpace(pc.Mode),
-		Plain:                     pc.Plain,
-		Quiet:                     pc.Quiet,
-		Verbose:                   pc.Verbose,
-		MouseEnabled:              mouseEnabled,
-		LogPath:                   strings.TrimSpace(pc.LogPath),
-		StreamReply:               streamReply,
-		Progress:                  pc.Progress,
-		AcpPreloadModelOnSetModel: acpPreloadModelOnSetModel,
-		DesignSaveDir:             strings.TrimSpace(pc.DesignSaveDir),
-		DesignSave:                designSave,
-		PlanTot:                   planTot,
-		ProjectContext:            strings.TrimSpace(pc.ProjectContext),
-		AstGrep:                   strings.TrimSpace(pc.AstGrep),
-		EmbeddingModel:            strings.TrimSpace(pc.EmbeddingModel),
-		EmbeddingBaseURL:          strings.TrimRight(strings.TrimSpace(pc.EmbeddingBaseURL), "/"),
-		EmbeddingAPIKey:           strings.TrimSpace(pc.EmbeddingAPIKey),
-		RepoMapTokens:             pc.RepoMapTokens,
-		UpdateNotify:              updateNotify,
-		LowReasoning: ReasoningTier{
-			BaseURL: strings.TrimSpace(pc.LowReasoningBaseURL),
-			APIKey:  strings.TrimSpace(pc.LowReasoningAPIKey),
-			Model:   strings.TrimSpace(pc.LowReasoningModel),
-		},
-		HighReasoning: ReasoningTier{
-			BaseURL: strings.TrimSpace(pc.HighReasoningBaseURL),
-			APIKey:  strings.TrimSpace(pc.HighReasoningAPIKey),
-			Model:   strings.TrimSpace(pc.HighReasoningModel),
-		},
-		MCPServers: pc.MCPServers,
-		GitProtectedBranches:      protectedBranches,
-		GitAutoCommit:             gitAutoCommit,
-		CheckpointAuto:            checkpointAuto,
-		CostPerMTok:               pc.CostPerMTok,
-	}
-	if err := ValidateSandbox(c); err != nil {
-		return nil, err
-	}
-	c.BaseURL = strings.TrimRight(c.BaseURL, "/")
-	if c.ExecTimeoutSeconds < 1 {
-		c.ExecTimeoutSeconds = defaultExecTimeoutSec
-	}
-	if c.ExecTimeoutSeconds > maxExecTimeoutSec {
-		c.ExecTimeoutSeconds = maxExecTimeoutSec
-	}
-	if c.ExecMaxOutputBytes < 1 {
-		c.ExecMaxOutputBytes = defaultExecMaxOutBytes
-	}
-	if c.ExecMaxOutputBytes > maxExecMaxOutputBytes {
-		c.ExecMaxOutputBytes = maxExecMaxOutputBytes
-	}
-	if c.MaxConcurrent < 1 {
-		return nil, fmt.Errorf("max_concurrent must be at least 1")
-	}
-	if c.ContextWindowTokens < 0 {
-		c.ContextWindowTokens = 0
-	}
-	if c.ContextReserveTokens < 0 {
-		c.ContextReserveTokens = defaultContextReserve
-	}
-	if c.MaxLLMRetries < 0 {
-		c.MaxLLMRetries = 0
-	}
-	if c.FetchMaxBytes < 1 {
-		c.FetchMaxBytes = defaultFetchMaxBytes
-	}
-	if c.FetchMaxBytes > maxFetchMaxBytes {
-		c.FetchMaxBytes = maxFetchMaxBytes
-	}
-	if c.FetchTimeoutSec < 1 {
-		c.FetchTimeoutSec = defaultFetchTimeoutSec
-	}
-	if c.FetchTimeoutSec > maxFetchTimeoutSec {
-		c.FetchTimeoutSec = maxFetchTimeoutSec
-	}
-	if c.MaxCompletionSeconds < 1 {
-		c.MaxCompletionSeconds = defaultMaxCompletionSeconds
-	}
-	if c.MaxCompletionSeconds > maxMaxCompletionSeconds {
-		c.MaxCompletionSeconds = maxMaxCompletionSeconds
-	}
-	if c.SearchMaxResults < 1 {
-		c.SearchMaxResults = defaultSearchMaxResults
-	}
-	if c.SearchMaxResults > maxSearchMaxResults {
-		c.SearchMaxResults = maxSearchMaxResults
-	}
-	if c.AutoCompactPct < 0 {
-		c.AutoCompactPct = 0
-	}
-	if c.AutoCompactPct > 100 {
-		c.AutoCompactPct = 100
-	}
-	if c.RepoMapTokens < -1 {
-		c.RepoMapTokens = 0
-	}
-	c.maybeWarnDeprecatedModeModels(pc)
-	c.maybeWarnDeprecatedMode()
 	return c, nil
 }
 
@@ -769,7 +526,8 @@ func parseCommaListPreserveCase(s string) []string {
 	return out
 }
 
-var delegateProfileNameRe = regexp.MustCompile(`^[a-z0-9_-]+$`)
+// ProfileNameRe validates profile / delegate-profile names: lowercase alphanumeric, hyphens, underscores.
+var ProfileNameRe = regexp.MustCompile(`^[a-z0-9_-]+$`)
 
 // parseDelegateSandboxProfiles validates admin-defined delegate sandbox profiles.
 func parseDelegateSandboxProfiles(profiles map[string]DelegateSandboxProfile, defaultName string) (map[string]DelegateSandboxProfile, string, error) {
@@ -782,7 +540,7 @@ func parseDelegateSandboxProfiles(profiles map[string]DelegateSandboxProfile, de
 		if name == "" {
 			return nil, "", fmt.Errorf("delegate_sandbox_profiles: profile name must not be empty")
 		}
-		if !delegateProfileNameRe.MatchString(name) {
+		if !ProfileNameRe.MatchString(name) {
 			return nil, "", fmt.Errorf("delegate_sandbox_profiles: profile name %q contains invalid character (use [a-z0-9_-])", name)
 		}
 		if np := strings.TrimSpace(strings.ToLower(p.NetworkPolicy)); np != "" {

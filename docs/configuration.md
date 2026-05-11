@@ -60,6 +60,92 @@ With no overrides, both tiers fall back to the top-level `base_url` / `api_key` 
 
 **Backward compatibility:** older configs that contained a top-level **`mode`** key (or a per-mode **`models`** override map for `build` / `ask` / `plan`) still load. Codient logs a one-time deprecation notice on startup, ignores those values, and uses the auto-only path. Remove them from `config.json` to silence the warning.
 
+## Named profiles
+
+Bundle a set of settings under a name and switch with one flag, env var, or slash command. Profiles are sparse: only the keys you specify override the top-level defaults. Existing configs without profiles keep working unchanged.
+
+**Resolution order:**
+
+1. Built-in defaults.
+2. Top-level keys in `config.json` (existing behavior).
+3. Selected profile's overrides (new layer).
+4. CLI flags (`-plain`, `-workspace`, etc. — existing `flag.Visit` path).
+
+**Profile selection precedence:** `-profile <name>` flag > `CODIENT_PROFILE` env var > `active_profile` field in `config.json`. Unknown names from the flag or env are hard errors (exit 2). An `active_profile` pointing at a missing name warns once and falls back to top-level keys.
+
+**Example config.json with profiles:**
+
+```json
+{
+  "base_url": "http://127.0.0.1:13305/v1",
+  "api_key": "codient",
+  "model": "qwen3-coder-30b",
+  "active_profile": "local",
+  "profiles": {
+    "local": {
+      "low_reasoning_model": "qwen3-coder-7b",
+      "high_reasoning_model": "qwen3-coder-30b",
+      "lint_cmd": "off",
+      "test_cmd": "off"
+    },
+    "frontier": {
+      "base_url": "https://api.openai.com/v1",
+      "api_key": "sk-...",
+      "model": "gpt-5-codex",
+      "high_reasoning_model": "gpt-5-pro",
+      "low_reasoning_model": "gpt-5-mini",
+      "plan_tot": true
+    },
+    "ci-strict": {
+      "autocheck_cmd": "go build ./...",
+      "lint_cmd": "golangci-lint run ./...",
+      "test_cmd": "go test -race ./...",
+      "sandbox_mode": "container",
+      "exec_allowlist": "go,git",
+      "git_auto_commit": false
+    }
+  }
+}
+```
+
+**Overridable keys:** `base_url`, `api_key`, `model`, all `low_reasoning_*` / `high_reasoning_*` / `embedding_*` keys, `autocheck_cmd`, `lint_cmd`, `test_cmd`, `autocheck_fix_max_retries`, `autocheck_fix_stop_on_no_progress`, `sandbox_mode`, `sandbox_ro_paths`, `sandbox_container_image`, `exec_allowlist`, `exec_env_passthrough`, `exec_timeout_sec`, `exec_max_output_bytes`, `max_concurrent`, all `fetch_*` keys, `search_max_results`, `git_auto_commit`, `git_protected_branches`, `plan_tot`, `cost_per_mtok`, `context_window`, `context_reserve`, `max_llm_retries`, `stream_with_tools`, `max_completion_seconds`, `autocompact_threshold`, `plain`, `quiet`, `verbose`, `mouse_enabled`, `progress`, `stream_reply`.
+
+**Intentionally excluded:** `workspace`, `mcp_servers`, `delegate_sandbox_profiles`, `delegate_sandbox_default`, `delegate_git_worktrees`, `hooks_enabled`, `update_notify`, `log`, `design_save_dir`, `design_save`, `project_context`, `ast_grep`, `repo_map_tokens`, `checkpoint_auto`, `acp_preload_model_on_set_model`. These are per-machine wiring rather than per-workflow choices.
+
+**Profile names** must match `[a-z0-9_-]+`.
+
+### CLI
+
+```
+codient -profile frontier          # select a profile at startup
+codient -list-profiles             # list configured profiles and exit
+CODIENT_PROFILE=ci-strict codient -p -prompt "…"  # env var selection
+```
+
+### `/profile` slash command
+
+| Form | Behaviour |
+|------|-----------|
+| `/profile` | Show active profile and available names |
+| `/profile list` | Same as bare `/profile` |
+| `/profile <name>` | Mid-session swap: re-merge from saved config, rebuild client + registry + system prompt |
+| `/profile default` | Revert to top-level-only config (clears `active_profile`) |
+| `/profile diff <name>` | Print keys that would change vs the current effective config |
+| `/profile show [name]` | Print profile overrides (defaults to active) |
+| `/profile save <name>` | Save the current session config as a sparse delta; refuses overwrite without `--force` |
+| `/profile delete <name>` | Remove a profile; refuses if active unless `--force` |
+
+### ACP (editor integration)
+
+- **`initialize` response** includes `"profiles": true` in `agentCapabilities`, plus `activeProfile` and `profiles` list.
+- **`agent/list_profiles`** returns `{active, profiles: [{name, model}]}`.
+- **`session/new`** accepts an optional `"profile"` param.
+- **`session/set_profile`** `{sessionId, profile}` → applies mid-session, emits `session/profile_changed` notification.
+
+### `/setup` wizard
+
+At the end of `/setup`, an optional prompt lets you save the current configuration as a named profile.
+
 ## `/config` reference
 
 Run `/config` with no arguments to see all current values. `/config <key>` shows one value. `/config <key> <value>` sets and persists.
@@ -107,6 +193,8 @@ Run `/config` with no arguments to see all current values. `/config <key>` shows
 | `autocheck_cmd` | **Build** check after mutating file tools in **build** mode (empty = auto-detect from workspace, `off` = skip). Runs first in the auto-check sequence. | *(auto)* |
 | `lint_cmd` | **Lint** check in the same sequence (empty = auto-detect, `off` = skip). Runs after build succeeds (**fail-fast**). | *(auto)* |
 | `test_cmd` | **Test** check in the same sequence (empty = auto-detect, `off` = skip). Runs after lint succeeds. | *(auto)* |
+| `autocheck_fix_max_retries` | Maximum fix-loop iterations after an auto-check failure within a single turn. `0` = single-shot (no retry loop, today's default). `> 0` = the runner re-runs the failing step after the model edits and stops when the step passes, the cap is reached, or no progress is detected. | `0` |
+| `autocheck_fix_stop_on_no_progress` | When the fix loop is active, abort early if the failure signature is identical between consecutive attempts. | `true` |
 | **Git (build path)** | | |
 | `git_auto_commit` | After each build-path turn that changes files, commit with message `codient: turn N` (set `false` for legacy file-restore `/undo` without commits) | `true` |
 | `delegate_git_worktrees` | When **`true`**, each **`delegate_task`** sub-agent runs in a **detached git worktree** at **`HEAD`** under `~/.codient/delegate-worktrees/` (requires a git workspace and `git` on `PATH`). Filesystem edits there are **not merged** into the parent workspace. Uncommitted changes in the main tree are **not** visible in the worktree. Sub-agents omit the **`repo_map`** tool for this path (MVP). | `false` |
@@ -210,6 +298,27 @@ LLM calls (`fetch_url`, `web_search`) stay in the parent process and never enter
 When the orchestrator routes a turn into the **build** path (SIMPLE_FIX or post-handoff COMPLEX_TASK), after successful mutating tools (`write_file`, `str_replace`, etc.) codient runs **build → lint → test** using the resolved `autocheck_cmd`, `lint_cmd`, and `test_cmd` settings. Order is **fail-fast** (if build fails, lint and test are skipped). Each step uses the same timeout cap as the legacy single-command auto-check (bounded by `exec_timeout_sec`, max 60s per step). **Auto-detection** examples: **build** — same as before (`go build ./...`, `cargo check`, `npx tsc --noEmit`, …). **Lint** — `golangci-lint run ./...` when `go.mod` exists and `golangci-lint` is on `PATH`; `cargo clippy -- -D warnings` for Rust; `npm run lint` when `package.json` has a `lint` script; Python: `ruff check .` or `flake8` if that binary is on `PATH`. **Test** — `go test ./...`, `cargo test`, `npm test` when a `test` script exists, or `python -m pytest` when pytest markers are present. Plan-path **verification** at the end of a plan uses the same resolved build, lint, and test commands.
 
 On failure, combined stdout and stderr from the failing step are injected as a user message so the model can fix issues before finishing the turn. Output is truncated by **`exec_max_output_bytes`**.
+
+### Fix loop
+
+By default (`autocheck_fix_max_retries = 0`) auto-check is single-shot: the failure is injected once and the multi-turn agent loop handles convergence. Setting `autocheck_fix_max_retries` to a positive integer enables an explicit **fix loop** within each user turn:
+
+1. After a mutating tool batch triggers auto-check and a step fails, the runner counts the attempt and injects the failure body with an `[auto-check fix attempt N/M]` suffix.
+2. The model edits files → the next tool batch triggers auto-check again.
+3. If the checks pass, the loop state resets and the turn continues normally.
+4. If `autocheck_fix_stop_on_no_progress` is `true` (default) and the **failure signature** (a stable hash of the parsed output) is identical to the previous attempt, the runner stops the loop and tells the model to report what is still failing and stop editing.
+5. If the attempt count reaches the cap, the runner emits a `max retries exhausted` notice and stops the loop.
+
+The fix loop runs in every Runner that has `AutoCheck` attached: the REPL, `-print`, ACP, and delegated sub-agents. Only build-path turns are affected (plan and ask paths never attach `AutoCheck`).
+
+**Failure parsing:** Auto-check output is parsed by a language-aware parser registry. A Go-test parser extracts `--- FAIL: TestName`, file:line locations, and `FAIL\tpkg` lines; other languages use an opaque default (SHA-256 hash of the output body).
+
+```json
+{
+  "autocheck_fix_max_retries": 3,
+  "autocheck_fix_stop_on_no_progress": true
+}
+```
 
 ### Unity projects (ACP / C#)
 

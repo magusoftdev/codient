@@ -1480,3 +1480,139 @@ func TestRunner_MaxCostExceeded(t *testing.T) {
 		t.Fatalf("expected ErrMaxCost, got %v", err)
 	}
 }
+
+// --- Fix-loop tests ----------------------------------------------------------
+
+const toolRoundWriteFile = `{
+  "id": "x", "object": "chat.completion", "created": 1, "model": "m",
+  "choices": [{"index": 0, "message": {
+    "role": "assistant", "content": "",
+    "tool_calls": [{"id": "call_1", "type": "function",
+      "function": {"name": "write_file",
+        "arguments": "{\"path\":\"f.txt\",\"content\":\"x\"}"}}]
+  }, "finish_reason": "tool_calls"}]
+}`
+
+const finalReply = `{
+  "id": "y", "object": "chat.completion", "created": 2, "model": "m",
+  "choices": [{"index": 0, "message": {
+    "role": "assistant", "content": "done"
+  }, "finish_reason": "stop"}]
+}`
+
+func TestRunner_AutoCheckLoopUntilGreen(t *testing.T) {
+	attempt := 0
+	llm := &captureLLM{model: "m", script: []string{
+		toolRoundWriteFile, // round 1: model edits
+		toolRoundWriteFile, // round 2: model fixes
+		finalReply,         // round 3: model says done
+	}}
+	reg := tools.NewRegistry()
+	reg.Register(mustWriteFileTool(t))
+	r := &Runner{
+		LLM: llm, Cfg: &config.Config{}, Tools: reg,
+		AutoCheck: func(context.Context) AutoCheckOutcome {
+			attempt++
+			if attempt == 1 {
+				return AutoCheckOutcome{
+					Inject: "[auto-check] BUILD FAIL", Progress: "exit=1",
+					Signature: "sig-a", FailingStep: "build",
+				}
+			}
+			return AutoCheckOutcome{Passed: true, Progress: "exit=0"}
+		},
+		AutoCheckMaxFixes:         3,
+		AutoCheckStopOnNoProgress: true,
+	}
+	_, _, err := r.Run(context.Background(), "", openai.UserMessage("edit"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(llm.MsgJSON) != 3 {
+		t.Fatalf("expected 3 LLM calls, got %d", len(llm.MsgJSON))
+	}
+	if !strings.Contains(string(llm.MsgJSON[1]), "fix attempt 1/3") {
+		t.Fatalf("second request should contain attempt 1/3: %s", string(llm.MsgJSON[1]))
+	}
+	if strings.Contains(string(llm.MsgJSON[2]), "fix attempt 2/3") {
+		t.Fatalf("third request should not contain a second fix attempt (checks passed): %s", string(llm.MsgJSON[2]))
+	}
+}
+
+func TestRunner_AutoCheckLoopCapExhausted(t *testing.T) {
+	llm := &captureLLM{model: "m", script: []string{
+		toolRoundWriteFile, // round 1
+		toolRoundWriteFile, // round 2
+		finalReply,         // round 3: model stops
+	}}
+	reg := tools.NewRegistry()
+	reg.Register(mustWriteFileTool(t))
+	attempt := 0
+	r := &Runner{
+		LLM: llm, Cfg: &config.Config{}, Tools: reg,
+		AutoCheck: func(context.Context) AutoCheckOutcome {
+			attempt++
+			return AutoCheckOutcome{
+				Inject: "[auto-check] FAIL", Progress: "exit=1",
+				Signature: "sig-" + strings.Repeat("x", attempt), FailingStep: "test",
+			}
+		},
+		AutoCheckMaxFixes:         2,
+		AutoCheckStopOnNoProgress: true,
+	}
+	reply, _, err := r.Run(context.Background(), "", openai.UserMessage("edit"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reply != "done" {
+		t.Fatalf("expected final reply 'done', got %q", reply)
+	}
+	found := false
+	for _, raw := range llm.MsgJSON {
+		if strings.Contains(string(raw), "max retries (2) exhausted") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("expected max-retries-exhausted notice in one of the LLM requests")
+	}
+}
+
+func TestRunner_AutoCheckLoopNoProgressShortCircuit(t *testing.T) {
+	llm := &captureLLM{model: "m", script: []string{
+		toolRoundWriteFile, // round 1
+		toolRoundWriteFile, // round 2
+		finalReply,         // round 3
+	}}
+	reg := tools.NewRegistry()
+	reg.Register(mustWriteFileTool(t))
+	r := &Runner{
+		LLM: llm, Cfg: &config.Config{}, Tools: reg,
+		AutoCheck: func(context.Context) AutoCheckOutcome {
+			return AutoCheckOutcome{
+				Inject: "[auto-check] FAIL", Progress: "exit=1",
+				Signature: "same-sig", FailingStep: "lint",
+			}
+		},
+		AutoCheckMaxFixes:         5,
+		AutoCheckStopOnNoProgress: true,
+	}
+	reply, _, err := r.Run(context.Background(), "", openai.UserMessage("edit"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reply != "done" {
+		t.Fatalf("expected 'done', got %q", reply)
+	}
+	found := false
+	for _, raw := range llm.MsgJSON {
+		if strings.Contains(string(raw), "no progress") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("expected no-progress notice in one of the LLM requests")
+	}
+}

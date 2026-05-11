@@ -69,7 +69,9 @@ func Run() int {
 		approveStr    = flag.String("auto-approve", "off", "with -print: off|exec|fetch|all (non-interactive approvals)")
 		maxTurns      = flag.Int("max-turns", 0, "max LLM rounds for one user turn (0=unlimited)")
 		maxCostUSD    = flag.Float64("max-cost", 0, "max estimated session USD (0=unlimited; needs pricing)")
-		sandboxFlag   = flag.String("sandbox", "", "subprocess sandbox: off|native|container|auto (overrides config)")
+		sandboxFlag    = flag.String("sandbox", "", "subprocess sandbox: off|native|container|auto (overrides config)")
+		profileFlag    = flag.String("profile", "", "named profile from config.json (overrides active_profile and CODIENT_PROFILE)")
+		listProfiles   = flag.Bool("list-profiles", false, "print configured profile names and exit")
 	)
 	var (
 		printMode bool
@@ -98,7 +100,7 @@ func Run() int {
 		return runSelfUpdate()
 	}
 
-	cfg, err := config.Load()
+	cfg, err := config.LoadWithProfile(*profileFlag)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "config: %v\n", err)
 		return 2
@@ -187,6 +189,22 @@ func Run() int {
 		}
 		return 0
 	}
+	if *listProfiles {
+		names := config.ProfileNamesList(cfg.Profiles)
+		if len(names) == 0 {
+			fmt.Println("(no profiles configured)")
+		} else {
+			active := cfg.ActiveProfile
+			for _, n := range names {
+				if n == active {
+					fmt.Printf("%s (active)\n", n)
+				} else {
+					fmt.Println(n)
+				}
+			}
+		}
+		return 0
+	}
 	if *a2aFlag {
 		cancel()
 		a2aCtx, a2aCancel := signal.NotifyContext(context.Background(), os.Interrupt)
@@ -205,7 +223,7 @@ func Run() int {
 	}
 
 	if *acpFlag {
-		if err := validateACPFlags(printMode, *repl, *stream, *ping, *listModels, *listTools, *a2aFlag, *update, *showVersion, len(imageFlagPaths)); err != nil {
+		if err := validateACPFlags(printMode, *repl, *stream, *ping, *listModels, *listTools, *listProfiles, *a2aFlag, *update, *showVersion, len(imageFlagPaths)); err != nil {
 			fmt.Fprintf(os.Stderr, "%v\n", err)
 			return 2
 		}

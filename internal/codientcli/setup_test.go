@@ -174,3 +174,72 @@ func TestSlashSetup_RefreshesTUIChromeAfterModelChange(t *testing.T) {
 		t.Fatalf("final chrome Model = %q, want %q (footer would stay stale on the old model otherwise)", last.Model, "second-model")
 	}
 }
+
+// TestSlashSetup_SaveAsProfile exercises the "save as profile" branch at the
+// end of the /setup wizard. A scripted stdin says "yes" to the profile save
+// and provides a profile name.
+func TestSlashSetup_SaveAsProfile(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CODIENT_STATE_DIR", dir)
+	t.Setenv("CODIENT_PROFILE", "")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v1/models" && r.Method == http.MethodGet:
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"my-model"}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	cfg := &config.Config{
+		BaseURL:   srv.URL + "/v1",
+		APIKey:    "sk-test",
+		Model:     "",
+		Workspace: t.TempDir(),
+	}
+
+	s := &session{
+		cfg:  cfg,
+		mode: prompt.ModeAuto,
+	}
+
+	// Wizard prompt sequence:
+	//   1. Base URL  (blank -> keep srv.URL)
+	//   2. API key   (blank -> keep sk-test)
+	//   3. Model selection -> "1" (picks "my-model")
+	//   4. Embedding model (blank -> skip)
+	//   5. High-reasoning override? -> "n"
+	//   6. Save as profile? -> "y"
+	//   7. Profile name -> "test-prof"
+	input := strings.Join([]string{"", "", "1", "", "n", "y", "test-prof"}, "\n") + "\n"
+	sc := bufio.NewScanner(strings.NewReader(input))
+
+	ok := s.runSetupWizard(context.Background(), sc)
+	if !ok {
+		t.Fatal("setup wizard should succeed")
+	}
+	if s.cfg.Model != "my-model" {
+		t.Fatalf("model after setup = %q, want 'my-model'", s.cfg.Model)
+	}
+	if s.cfg.ActiveProfile != "test-prof" {
+		t.Fatalf("active profile after setup = %q, want 'test-prof'", s.cfg.ActiveProfile)
+	}
+	if _, exists := s.cfg.Profiles["test-prof"]; !exists {
+		t.Fatal("profile 'test-prof' should exist after setup wizard save")
+	}
+
+	// Verify that the profile was persisted to disk.
+	pc, err := config.LoadPersistentConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pc.ActiveProfile != "test-prof" {
+		t.Fatalf("persisted active_profile = %q, want 'test-prof'", pc.ActiveProfile)
+	}
+	if _, exists := pc.Profiles["test-prof"]; !exists {
+		t.Fatal("profile 'test-prof' should exist on disk")
+	}
+}

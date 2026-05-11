@@ -721,3 +721,58 @@ func newLiveRunnerWithFetch(t *testing.T, workspace string) (*agent.Runner, cont
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
 	return ar, ctx, cancel
 }
+
+// ============================================================================
+// Fix loop: AutoCheck retry with cap
+// ============================================================================
+
+func TestIntegration_AgentAutoCheckFixLoop(t *testing.T) {
+	skipUnlessIntegration(t)
+	skipUnlessStrictTools(t)
+	dir := workspaceFixture(t, nil)
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.RequireModel(); err != nil {
+		t.Fatal(err)
+	}
+	wsRoot, _ := filepath.Abs(dir)
+	cfg.Workspace = wsRoot
+	client := openaiclient.New(cfg)
+	reg := tools.Default(wsRoot, "", nil, nil, nil, "", nil, nil, nil)
+
+	var attempts int
+	ar := &agent.Runner{
+		LLM:   client,
+		Cfg:   cfg,
+		Tools: reg,
+		AutoCheck: func(ctx context.Context) agent.AutoCheckOutcome {
+			attempts++
+			if attempts <= 1 {
+				return agent.AutoCheckOutcome{
+					Inject:      "[auto-check] build errors after file changes:\n\nexit_code: 1\ncmd: go build ./...\n\nundefined: something",
+					Progress:    "auto-check [build]: go build ./... · exit=1",
+					Signature:   "sig-first",
+					FailingStep: "build",
+				}
+			}
+			return agent.AutoCheckOutcome{Passed: true, Progress: "auto-check [build]: go build ./... · exit=0"}
+		},
+		AutoCheckMaxFixes:         3,
+		AutoCheckStopOnNoProgress: true,
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
+	defer cancel()
+
+	sys := `You have write_file. When asked to create a file, call write_file with JSON {"path": "fixloop.txt", "content": "hello\n"} and then confirm. If you see auto-check errors, just call write_file again.`
+	user := "Create fixloop.txt with content 'hello'."
+	_, _, err = ar.Run(ctx, sys, openai.UserMessage(user), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if attempts < 2 {
+		t.Fatalf("expected at least 2 AutoCheck attempts (retry after first failure), got %d", attempts)
+	}
+}

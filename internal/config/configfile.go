@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-const currentSchemaVersion = 1
+const currentSchemaVersion = 2
 
 // PersistentConfig holds all user-configurable settings saved to ~/.codient/config.json.
 type PersistentConfig struct {
@@ -68,10 +68,15 @@ type PersistentConfig struct {
 	SearchMaxResults int `json:"search_max_results,omitempty"`
 
 	// Auto
-	AutoCompactPct int    `json:"autocompact_threshold,omitempty"`
-	AutoCheckCmd   string `json:"autocheck_cmd,omitempty"`
-	LintCmd        string `json:"lint_cmd,omitempty"`
-	TestCmd        string `json:"test_cmd,omitempty"`
+	AutoCompactPct         int    `json:"autocompact_threshold,omitempty"`
+	AutoCheckCmd           string `json:"autocheck_cmd,omitempty"`
+	LintCmd                string `json:"lint_cmd,omitempty"`
+	TestCmd                string `json:"test_cmd,omitempty"`
+	AutoCheckFixMaxRetries int    `json:"autocheck_fix_max_retries,omitempty"`
+	// AutoCheckFixStopOnNoProgress defaults to true when the fix loop is
+	// active. Use a *bool so that an explicit false in JSON is distinguishable
+	// from "not set".
+	AutoCheckFixStopOnNoProgress *bool `json:"autocheck_fix_stop_on_no_progress,omitempty"`
 
 	// UI/Output
 	Plain   bool `json:"plain,omitempty"`
@@ -163,6 +168,74 @@ type PersistentConfig struct {
 	DelegateSandboxProfiles map[string]DelegateSandboxProfile `json:"delegate_sandbox_profiles,omitempty"`
 	// DelegateSandboxDefault is the profile name applied when delegate_task omits sandbox_profile.
 	DelegateSandboxDefault string `json:"delegate_sandbox_default,omitempty"`
+
+	// ActiveProfile selects a named profile from Profiles at startup (lowest precedence after
+	// CODIENT_PROFILE env and -profile CLI flag).
+	ActiveProfile string `json:"active_profile,omitempty"`
+	// Profiles maps names to sparse setting bundles that override top-level keys.
+	Profiles map[string]ProfileOverride `json:"profiles,omitempty"`
+}
+
+// ProfileOverride holds a sparse set of settings that override top-level
+// PersistentConfig values when the profile is active. Every field is a
+// pointer (or omitempty) so that nil/zero means "inherit from top-level".
+type ProfileOverride struct {
+	BaseURL              *string `json:"base_url,omitempty"`
+	APIKey               *string `json:"api_key,omitempty"`
+	Model                *string `json:"model,omitempty"`
+	LowReasoningModel    *string `json:"low_reasoning_model,omitempty"`
+	LowReasoningBaseURL  *string `json:"low_reasoning_base_url,omitempty"`
+	LowReasoningAPIKey   *string `json:"low_reasoning_api_key,omitempty"`
+	HighReasoningModel   *string `json:"high_reasoning_model,omitempty"`
+	HighReasoningBaseURL *string `json:"high_reasoning_base_url,omitempty"`
+	HighReasoningAPIKey  *string `json:"high_reasoning_api_key,omitempty"`
+	EmbeddingModel       *string `json:"embedding_model,omitempty"`
+	EmbeddingBaseURL     *string `json:"embedding_base_url,omitempty"`
+	EmbeddingAPIKey      *string `json:"embedding_api_key,omitempty"`
+
+	AutoCheckCmd             *string `json:"autocheck_cmd,omitempty"`
+	LintCmd                  *string `json:"lint_cmd,omitempty"`
+	TestCmd                  *string `json:"test_cmd,omitempty"`
+	AutoCheckFixMaxRetries   *int    `json:"autocheck_fix_max_retries,omitempty"`
+	AutoCheckFixStopOnNoProg *bool   `json:"autocheck_fix_stop_on_no_progress,omitempty"`
+
+	SandboxMode           *string `json:"sandbox_mode,omitempty"`
+	SandboxReadOnlyPaths  *string `json:"sandbox_ro_paths,omitempty"`
+	SandboxContainerImage *string `json:"sandbox_container_image,omitempty"`
+	ExecAllowlist         *string `json:"exec_allowlist,omitempty"`
+	ExecEnvPassthrough    *string `json:"exec_env_passthrough,omitempty"`
+	ExecTimeoutSec        *int    `json:"exec_timeout_sec,omitempty"`
+	ExecMaxOutBytes       *int    `json:"exec_max_output_bytes,omitempty"`
+
+	MaxConcurrent *int `json:"max_concurrent,omitempty"`
+
+	FetchAllowHosts    *string `json:"fetch_allow_hosts,omitempty"`
+	FetchPreapproved   *bool   `json:"fetch_preapproved,omitempty"`
+	FetchMaxBytes      *int    `json:"fetch_max_bytes,omitempty"`
+	FetchTimeoutSec    *int    `json:"fetch_timeout_sec,omitempty"`
+	FetchWebRatePerSec *int    `json:"fetch_web_rate_per_sec,omitempty"`
+	FetchWebRateBurst  *int    `json:"fetch_web_rate_burst,omitempty"`
+	SearchMaxResults   *int    `json:"search_max_results,omitempty"`
+
+	GitAutoCommit        *bool   `json:"git_auto_commit,omitempty"`
+	GitProtectedBranches *string `json:"git_protected_branches,omitempty"`
+
+	PlanTot     *bool        `json:"plan_tot,omitempty"`
+	CostPerMTok *CostPerMTok `json:"cost_per_mtok,omitempty"`
+
+	ContextWindow        *int  `json:"context_window,omitempty"`
+	ContextReserve       *int  `json:"context_reserve,omitempty"`
+	MaxLLMRetries        *int  `json:"max_llm_retries,omitempty"`
+	StreamWithTools      *bool `json:"stream_with_tools,omitempty"`
+	MaxCompletionSeconds *int  `json:"max_completion_seconds,omitempty"`
+	AutoCompactPct       *int  `json:"autocompact_threshold,omitempty"`
+
+	Plain        *bool `json:"plain,omitempty"`
+	Quiet        *bool `json:"quiet,omitempty"`
+	Verbose      *bool `json:"verbose,omitempty"`
+	MouseEnabled *bool `json:"mouse_enabled,omitempty"`
+	Progress     *bool `json:"progress,omitempty"`
+	StreamReply  *bool `json:"stream_reply,omitempty"`
 }
 
 // ModeConnectionOverride holds optional per-mode overrides for base_url, api_key, and model.
@@ -210,8 +283,12 @@ func migrateConfig(pc *PersistentConfig) error {
 		return fmt.Errorf("config file is from a newer version of codient (schema version %d); this binary supports up to version %d — please upgrade codient", pc.SchemaVersion, currentSchemaVersion)
 	}
 	// Version 0 → 1: no structural changes, just add version field.
-	if pc.SchemaVersion == 0 {
+	if pc.SchemaVersion < 1 {
 		pc.SchemaVersion = 1
+	}
+	// Version 1 → 2: adds profiles and active_profile (additive).
+	if pc.SchemaVersion < 2 {
+		pc.SchemaVersion = 2
 	}
 	return nil
 }
@@ -294,9 +371,10 @@ func ConfigToPersistent(cfg *Config) *PersistentConfig {
 		FetchWebRateBurst:     cfg.FetchWebRateBurst,
 		SearchMaxResults:      cfg.SearchMaxResults,
 		AutoCompactPct:        cfg.AutoCompactPct,
-		AutoCheckCmd:          cfg.AutoCheckCmd,
+		AutoCheckCmd:           cfg.AutoCheckCmd,
 		LintCmd:               cfg.LintCmd,
 		TestCmd:               cfg.TestCmd,
+		AutoCheckFixMaxRetries: cfg.AutoCheckFixMaxRetries,
 		Plain:                 cfg.Plain,
 		Quiet:                 cfg.Quiet,
 		Verbose:               cfg.Verbose,
@@ -350,12 +428,18 @@ func ConfigToPersistent(cfg *Config) *PersistentConfig {
 		f := false
 		pc.MouseEnabled = &f
 	}
+	if !cfg.AutoCheckFixStopOnNoProgress {
+		f := false
+		pc.AutoCheckFixStopOnNoProgress = &f
+	}
 	pc.CostPerMTok = cfg.CostPerMTok
 	pc.HooksEnabled = cfg.HooksEnabled
 	pc.DelegateGitWorktrees = cfg.DelegateGitWorktrees
 	pc.CheckpointAuto = cfg.CheckpointAuto
 	pc.DelegateSandboxProfiles = cfg.DelegateSandboxProfiles
 	pc.DelegateSandboxDefault = cfg.DelegateSandboxDefault
+	pc.ActiveProfile = cfg.ActiveProfile
+	pc.Profiles = cfg.Profiles
 	return pc
 }
 

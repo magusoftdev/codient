@@ -93,11 +93,44 @@ func (s *session) runSetupWizard(ctx context.Context, sc *bufio.Scanner) bool {
 	// to low-reasoning, complex planning to high-reasoning).
 	s.setupReasoningTierOverrides(ctx, sc)
 
+	// Optional: save the current configuration as a named profile.
+	s.setupSaveAsProfile(sc)
+
 	if err := saveCurrentConfig(s.cfg); err != nil {
 		fmt.Fprintf(os.Stderr, "  Warning: could not save config: %v\n", err)
 	}
 	fmt.Fprintf(os.Stderr, "\n  Configuration saved. Model set to %s.\n\n", s.cfg.Model)
 	return true
+}
+
+// setupSaveAsProfile offers to save the current wizard results as a named profile.
+func (s *session) setupSaveAsProfile(sc *bufio.Scanner) {
+	fmt.Fprintf(os.Stderr, "\n  Save this configuration as a named profile? (y/N): ")
+	if !sc.Scan() {
+		return
+	}
+	ans := strings.TrimSpace(strings.ToLower(sc.Text()))
+	if ans != "y" && ans != "yes" {
+		return
+	}
+
+	fmt.Fprintf(os.Stderr, "  Profile name (lowercase letters, numbers, hyphens, underscores): ")
+	if !sc.Scan() {
+		return
+	}
+	name := strings.TrimSpace(strings.ToLower(sc.Text()))
+	if name == "" {
+		fmt.Fprintf(os.Stderr, "  Skipping profile save (empty name).\n")
+		return
+	}
+	if !config.ProfileNameRe.MatchString(name) {
+		fmt.Fprintf(os.Stderr, "  Invalid profile name %q (use [a-z0-9_-]).\n", name)
+		return
+	}
+
+	if err := s.profileSave(name, true); err != nil {
+		fmt.Fprintf(os.Stderr, "  Warning: could not save profile: %v\n", err)
+	}
 }
 
 // setupEmbeddingServerOverride optionally points /v1/embeddings at a different server than chat.

@@ -329,6 +329,8 @@ func (s *session) newRunner() *agent.Runner {
 			sec := autoCheckTimeoutSec(s.cfg)
 			r.AutoCheck = makeAutoCheckSequence(s.cfg.EffectiveWorkspace(), steps, time.Duration(sec)*time.Second, s.cfg.ExecMaxOutputBytes, s.progressOut)
 		}
+		r.AutoCheckMaxFixes = s.cfg.AutoCheckFixMaxRetries
+		r.AutoCheckStopOnNoProgress = s.cfg.AutoCheckFixStopOnNoProgress
 	}
 	return r
 }
@@ -436,6 +438,8 @@ func (s *session) delegateTaskFn() tools.DelegateRunner {
 				sec := autoCheckTimeoutSec(cfg)
 				rp.AutoCheck = makeAutoCheckSequence(cfg.EffectiveWorkspace(), steps, time.Duration(sec)*time.Second, cfg.ExecMaxOutputBytes, progress)
 			}
+			rp.AutoCheckMaxFixes = cfg.AutoCheckFixMaxRetries
+			rp.AutoCheckStopOnNoProgress = cfg.AutoCheckFixStopOnNoProgress
 		}
 		res, err := subagent.Run(ctx, rp)
 		if err != nil {
@@ -1629,6 +1633,12 @@ func (s *session) buildSlashCommands(ctx context.Context, sc *bufio.Scanner) *sl
 		Run:         func(args string) error { return s.handleConfig(ctx, args) },
 	})
 	cmds.Register(slashcmd.Command{
+		Name:        "profile",
+		Usage:       "/profile [list|show|diff|save|delete|default|<name>]",
+		Description: "view, switch, save, or delete named config profiles",
+		Run:         func(args string) error { return s.handleProfile(ctx, args) },
+	})
+	cmds.Register(slashcmd.Command{
 		Name:        "setup",
 		Description: "guided setup wizard for API connection, chat model, and optional embedding model for semantic search",
 		Run: func(string) error {
@@ -2213,7 +2223,8 @@ func (s *session) handleConfig(ctx context.Context, args string) error {
 		"fetch_web_rate_per_sec", "fetch_web_rate_burst",
 		"search_max_results":
 		s.installRegistry(buildRegistry(s.cfg, s.mode, s, s.memOpts))
-	case "autocheck_cmd", "lint_cmd", "test_cmd":
+	case "autocheck_cmd", "lint_cmd", "test_cmd",
+		"autocheck_fix_max_retries", "autocheck_fix_stop_on_no_progress":
 		s.rebuildSystemPrompt()
 	case "embedding_model", "embedding_base_url", "embedding_api_key":
 		s.startCodeIndex(ctx)
@@ -2298,6 +2309,8 @@ func (s *session) printAllConfig() {
 	fmt.Fprintf(w, "  autocheck_cmd:         %s\n", s.cfg.AutoCheckCmd)
 	fmt.Fprintf(w, "  lint_cmd:              %s\n", s.cfg.LintCmd)
 	fmt.Fprintf(w, "  test_cmd:              %s\n", s.cfg.TestCmd)
+	fmt.Fprintf(w, "  autocheck_fix_max_retries: %d\n", s.cfg.AutoCheckFixMaxRetries)
+	fmt.Fprintf(w, "  autocheck_fix_stop_on_no_progress: %v\n", s.cfg.AutoCheckFixStopOnNoProgress)
 	fmt.Fprintf(w, "\n  -- Git (build mode) --\n")
 	fmt.Fprintf(w, "  git_auto_commit:       %v\n", s.cfg.GitAutoCommit)
 	fmt.Fprintf(w, "  delegate_git_worktrees: %v\n", s.cfg.DelegateGitWorktrees)
@@ -2430,6 +2443,10 @@ func (s *session) getConfigValue(key string) (string, bool) {
 		return s.cfg.LintCmd, true
 	case "test_cmd":
 		return s.cfg.TestCmd, true
+	case "autocheck_fix_max_retries":
+		return strconv.Itoa(s.cfg.AutoCheckFixMaxRetries), true
+	case "autocheck_fix_stop_on_no_progress":
+		return strconv.FormatBool(s.cfg.AutoCheckFixStopOnNoProgress), true
 	case "plain":
 		return strconv.FormatBool(s.cfg.Plain), true
 	case "quiet":
@@ -2649,6 +2666,18 @@ func (s *session) setConfig(key, value string) error {
 		s.cfg.LintCmd = value
 	case "test_cmd":
 		s.cfg.TestCmd = value
+	case "autocheck_fix_max_retries":
+		n, err := strconv.Atoi(value)
+		if err != nil || n < 0 {
+			return fmt.Errorf("autocheck_fix_max_retries must be a non-negative integer")
+		}
+		s.cfg.AutoCheckFixMaxRetries = n
+	case "autocheck_fix_stop_on_no_progress":
+		b, err := parseBool(value)
+		if err != nil {
+			return fmt.Errorf("autocheck_fix_stop_on_no_progress must be true or false")
+		}
+		s.cfg.AutoCheckFixStopOnNoProgress = b
 	case "plain":
 		b, err := parseBool(value)
 		if err != nil {

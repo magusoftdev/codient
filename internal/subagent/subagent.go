@@ -59,6 +59,11 @@ type RunParams struct {
 	// built from cfg.SandboxMode for run_command in this sub-agent. Used by
 	// delegate_task to inject a per-delegate container session or profile runner.
 	SandboxRunnerOverride sandbox.Runner
+	// AutoCheckMaxFixes caps fix-loop retries in this sub-agent (0 = single-shot).
+	AutoCheckMaxFixes int
+	// AutoCheckStopOnNoProgress aborts the fix loop when the failure signature
+	// is unchanged between consecutive attempts.
+	AutoCheckStopOnNoProgress bool
 }
 
 // newRunnerFromParams builds the agent.Runner used by Run.
@@ -76,6 +81,8 @@ func newRunnerFromParams(llm agent.ChatClient, p RunParams, reg *tools.Registry,
 	}
 	if p.AutoCheck != nil {
 		r.AutoCheck = p.AutoCheck
+		r.AutoCheckMaxFixes = p.AutoCheckMaxFixes
+		r.AutoCheckStopOnNoProgress = p.AutoCheckStopOnNoProgress
 	}
 	return r
 }

@@ -19,9 +19,10 @@ type Params struct {
 	Mode                   Mode // zero / empty treated as ModeBuild
 	UserSystem             string
 	RepoInstructions       string // optional, already truncated by caller
-	AutoCheckBuildResolved string // resolved build command (autocheck_cmd), empty when disabled
-	AutoCheckLintResolved  string // resolved lint command, empty when disabled
-	AutoCheckTestResolved  string // resolved test command, empty when disabled
+	AutoCheckBuildResolved  string // resolved build command (autocheck_cmd), empty when disabled
+	AutoCheckLintResolved   string // resolved lint command, empty when disabled
+	AutoCheckTestResolved   string // resolved test command, empty when disabled
+	AutoCheckFixMaxRetries  int    // 0 = single-shot (no loop info in prompt)
 	ProjectContext         string // auto-detected project summary (language, framework, etc.)
 	RepoMap                string // structural overview (paths + symbols), optional
 	Memory                 string // cross-session memory (global + workspace), already loaded and truncated
@@ -430,7 +431,11 @@ func sectionPerToolNotes(p Params) string {
 			if tst != "" {
 				parts = append(parts, fmt.Sprintf("**test** `%s`", tst))
 			}
-			fmt.Fprintf(&b, "- **Auto-check**: After successful **write_file**, **str_replace**, **patch_file**, **insert_lines**, **remove_path**, **move_path**, or **copy_path**, the host runs checks in order (**fail-fast**): %s. If a step fails, you receive `[auto-check]` feedback for that step—fix those errors before moving on.\n", strings.Join(parts, ", then "))
+			fixNote := ""
+			if p.AutoCheckFixMaxRetries > 0 {
+				fixNote = fmt.Sprintf(" The host retries up to **%d** times: after each `[auto-check]` failure, fix the reported errors and the host re-runs the failing step automatically. If the same failures repeat or the retry cap is reached, the host stops the loop—report what is still failing and stop editing files.", p.AutoCheckFixMaxRetries)
+			}
+			fmt.Fprintf(&b, "- **Auto-check**: After successful **write_file**, **str_replace**, **patch_file**, **insert_lines**, **remove_path**, **move_path**, or **copy_path**, the host runs checks in order (**fail-fast**): %s. If a step fails, you receive `[auto-check]` feedback for that step—fix those errors before moving on.%s\n", strings.Join(parts, ", then "), fixNote)
 		}
 	}
 	if _, ok := set["run_command"]; ok && len(cfg.ExecAllowlist) > 0 {

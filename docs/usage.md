@@ -7,6 +7,8 @@ codient -ping
 # List models and tools
 codient -list-models
 codient -list-tools
+codient -list-profiles
+codient -profile frontier
 
 # Start an interactive session (default when stdin is a TTY)
 codient
@@ -214,6 +216,9 @@ codient -plain -progress -acp -workspace /path/to/project
   - **Preload (default on):** unless disabled, the agent runs a **minimal non-streaming chat completion** (not added to conversation history) so local inference servers load the model **before** the RPC returns. On failure, the session’s previous model is restored and the RPC fails with **`preload:`** in the error message. Disable per request with **`"preload": false`**, or set **`acp_preload_model_on_set_model`** to **`false`** in **`config.json`** to skip preloads for all switches.
   - **Progress:** while switching models, the agent may emit JSON-RPC notifications **`session/model_status`** with **`params`**: **`sessionId`**, **`phase`** (`unloading` \| `loading` \| `ready` \| `error`), and optional **`message`**. On Ollama-compatible hosts (OpenAI base URL ending in **`/v1`**, not known cloud APIs), **`unloading`** precedes a best-effort **`POST …/api/generate`** unload (`keep_alive: 0`) for the previous model before the new one is warmed. Clients may show these in UI chrome without treating them as transcript content.
 - **`agent/list_models`** returns ids from **`GET …/models`** on the effective connection for the agent (top-level **`base_url`** plus any **`low_reasoning_model`** / **`high_reasoning_model`** sibling overrides in **`config.json`**) — same endpoint as **`codient -list-models`**.
+- **`agent/list_profiles`** returns `{"active": "<name|empty>", "profiles": [...]}` — same data as **`codient -list-profiles`**.
+- **`session/new`** accepts an optional **`"profile"`** parameter to select a named profile for that session (does not change the global `active_profile`). Unknown names fail with **`-32602`** invalid params.
+- **`session/set_profile`** switches the active profile mid-session: `{sessionId, profile}`. Emits a **`session/profile_changed`** notification with `{sessionId, profile, resolvedModel}`. Fails with **`session_busy`** while a turn is in progress. Send an empty string to revert to top-level defaults.
 - **`session/intent_identified`** is emitted on every **`session/prompt`** when the orchestrator classifies the user message. **`params`**: **`sessionId`**, **`category`** (`QUERY` \| `DESIGN` \| `SIMPLE_FIX` \| `COMPLEX_TASK`), **`reasoning`** (short string), **`fallback`** (boolean — `true` when the supervisor reply could not be parsed and codient defaulted to QUERY).
 - **`session/mode_status`** is emitted whenever the resolved internal mode changes during a turn (orchestrator routing decision, plan -> build hand-off). **`params`**: **`sessionId`**, **`mode`** (resolved mode for the rest of the turn), **`phase`** (`changed` \| `plan_ready`), and an optional **`handoff`** boolean (set when an automatic plan -> build hand-off occurred).
 - **`session/set_mode`** is no longer routed: codient responds with JSON-RPC **`-32601` "method not found"** so older clients can fall back gracefully.
@@ -231,7 +236,8 @@ Inside a session you can use slash commands to control the agent:
 |---------|-------------|
 | `/edit-plan` (or `/ep`) | Open the active plan in `$EDITOR`/`$VISUAL` (fallbacks: `vi`, `notepad`). On save, codient re-parses the markdown into the structured `plan.json` and bumps the revision. |
 | `/config [key] [value]` | View or set any configuration key (no args = show all, key = show one, key value = set and save). The reasoning-tier overrides live under `low_reasoning_*` and `high_reasoning_*` keys (e.g. `low_reasoning_model`, `high_reasoning_base_url`). |
-| `/setup` | Guided setup wizard for API connection, chat model selection, optional **low / high reasoning tier** model overrides used by the orchestrator, and optional embedding model for semantic search |
+| `/profile [subcommand]` | View, switch, save, or delete named config profiles. See [Named profiles](configuration.md#named-profiles). |
+| `/setup` | Guided setup wizard for API connection, chat model selection, optional **low / high reasoning tier** model overrides used by the orchestrator, optional embedding model for semantic search, and optional save-as-profile |
 | `/create-skill` | Guided wizard to author a **skill** (`SKILL.md` under user or workspace skills dirs); refreshes the in-session skill catalog |
 | `/create-rule` | Guided wizard to author a **Cursor-style rule** (`.mdc` under **`.cursor/rules/`** in the workspace; same frontmatter as Cursor). Codient does not load these into the CLI system prompt—they apply in Cursor and compatible editors |
 | `/skills` | List discovered skills (name, scope, `read_file` path) |

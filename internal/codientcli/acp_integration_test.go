@@ -1337,3 +1337,294 @@ func TestACPIntegration_AutoModeComplexTaskHandsOffToBuild(t *testing.T) {
 		t.Fatalf("expected at least one write tool call after auto plan->build handoff")
 	}
 }
+
+// TestACPIntegration_AgentListProfiles exercises agent/list_profiles against a
+// mock server with profiles configured via the state dir.
+func TestACPIntegration_AgentListProfiles(t *testing.T) {
+	skipUnlessIntegrationACP(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v1/models" && r.Method == http.MethodGet:
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"mock-openai-model"}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	stateDir := t.TempDir()
+	writeACPIntegrationConfigJSON(t, stateDir, map[string]any{
+		"base_url":       srv.URL + "/v1",
+		"api_key":        "integration-test",
+		"model":          "mock-openai-model",
+		"active_profile": "local",
+		"profiles": map[string]any{
+			"local":    map[string]any{"model": "local-model"},
+			"frontier": map[string]any{"model": "frontier-model"},
+		},
+	})
+	dir := t.TempDir()
+	h := startACPWithEnv(t, dir, append(os.Environ(), "CODIENT_STATE_DIR="+stateDir))
+	h.handshake()
+
+	id := h.nextRPCID()
+	h.writeJSON(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      id,
+		"method":  "agent/list_profiles",
+		"params":  map[string]any{},
+	})
+	res, errObj, _ := h.readUntilRPCResult(id, 30*time.Second)
+	if errObj != nil {
+		t.Fatalf("agent/list_profiles error: %d %s", errObj.Code, errObj.Message)
+	}
+	var parsed struct {
+		Active   string `json:"active"`
+		Profiles []struct {
+			Name  string `json:"name"`
+			Model string `json:"model"`
+		} `json:"profiles"`
+	}
+	if err := json.Unmarshal(res, &parsed); err != nil {
+		t.Fatalf("decode: %v (raw %s)", err, string(res))
+	}
+	if parsed.Active != "local" {
+		t.Fatalf("active: got %q want 'local'", parsed.Active)
+	}
+	if len(parsed.Profiles) != 2 {
+		t.Fatalf("expected 2 profiles, got %d", len(parsed.Profiles))
+	}
+}
+
+// TestACPIntegration_SessionNewWithProfile exercises session/new with an
+// explicit profile parameter.
+func TestACPIntegration_SessionNewWithProfile(t *testing.T) {
+	skipUnlessIntegrationACP(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v1/models" && r.Method == http.MethodGet:
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"mock-openai-model"}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	stateDir := t.TempDir()
+	writeACPIntegrationConfigJSON(t, stateDir, map[string]any{
+		"base_url": srv.URL + "/v1",
+		"api_key":  "integration-test",
+		"model":    "mock-openai-model",
+		"profiles": map[string]any{
+			"fast": map[string]any{"model": "fast-model"},
+		},
+	})
+	dir := t.TempDir()
+	h := startACPWithEnv(t, dir, append(os.Environ(), "CODIENT_STATE_DIR="+stateDir))
+	h.handshake()
+	ws, _ := filepath.Abs(dir)
+
+	id := h.nextRPCID()
+	h.writeJSON(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      id,
+		"method":  "session/new",
+		"params": map[string]any{
+			"cwd":        ws,
+			"profile":    "fast",
+			"mcpServers": []any{},
+		},
+	})
+	res, errObj, _ := h.readUntilRPCResult(id, 2*time.Minute)
+	if errObj != nil {
+		t.Fatalf("session/new error: %d %s", errObj.Code, errObj.Message)
+	}
+	var out struct {
+		SessionID string `json:"sessionId"`
+		Profile   string `json:"profile"`
+	}
+	if err := json.Unmarshal(res, &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.SessionID == "" {
+		t.Fatal("missing sessionId")
+	}
+	if out.Profile != "fast" {
+		t.Fatalf("profile: got %q want 'fast'", out.Profile)
+	}
+
+	// Unknown profile should fail.
+	id2 := h.nextRPCID()
+	h.writeJSON(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      id2,
+		"method":  "session/new",
+		"params": map[string]any{
+			"cwd":        ws,
+			"profile":    "nonexistent",
+			"mcpServers": []any{},
+		},
+	})
+	_, errObj2, _ := h.readUntilRPCResult(id2, 30*time.Second)
+	if errObj2 == nil {
+		t.Fatal("session/new with unknown profile should fail")
+	}
+	if errObj2.Code != -32602 {
+		t.Fatalf("expected -32602 for unknown profile, got %d", errObj2.Code)
+	}
+}
+
+// TestACPIntegration_SessionSetProfile exercises session/set_profile and
+// asserts the session/profile_changed notification.
+func TestACPIntegration_SessionSetProfile(t *testing.T) {
+	skipUnlessIntegrationACP(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v1/models" && r.Method == http.MethodGet:
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"mock-openai-model"}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	stateDir := t.TempDir()
+	writeACPIntegrationConfigJSON(t, stateDir, map[string]any{
+		"base_url": srv.URL + "/v1",
+		"api_key":  "integration-test",
+		"model":    "mock-openai-model",
+		"profiles": map[string]any{
+			"alt": map[string]any{"model": "alt-model"},
+		},
+	})
+	dir := t.TempDir()
+	h := startACPWithEnv(t, dir, append(os.Environ(), "CODIENT_STATE_DIR="+stateDir))
+	h.handshake()
+	ws, _ := filepath.Abs(dir)
+	sid := h.sessionNew(ws)
+
+	// Set profile.
+	id := h.nextRPCID()
+	h.writeJSON(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      id,
+		"method":  "session/set_profile",
+		"params":  map[string]any{"sessionId": sid, "profile": "alt"},
+	})
+
+	// Read lines until we get the RPC result, collecting notifications.
+	deadline := time.Now().Add(30 * time.Second)
+	var sawProfileChanged bool
+	var changedProfile string
+	for time.Now().Before(deadline) {
+		line := h.readLine(10 * time.Second)
+		if line == "" {
+			continue
+		}
+		var wrap rpcLine
+		if err := json.Unmarshal([]byte(line), &wrap); err != nil {
+			continue
+		}
+		if wrap.Method == "session/profile_changed" {
+			sawProfileChanged = true
+			var p struct {
+				Profile string `json:"profile"`
+			}
+			_ = json.Unmarshal(wrap.Params, &p)
+			changedProfile = p.Profile
+		}
+		if wrap.ID != nil && *wrap.ID == id {
+			if wrap.Error != nil {
+				t.Fatalf("session/set_profile error: %d %s", wrap.Error.Code, wrap.Error.Message)
+			}
+			break
+		}
+	}
+	if !sawProfileChanged {
+		t.Fatal("expected session/profile_changed notification")
+	}
+	if changedProfile != "alt" {
+		t.Fatalf("profile_changed profile: got %q want 'alt'", changedProfile)
+	}
+
+	// Unknown profile should fail.
+	id2 := h.nextRPCID()
+	h.writeJSON(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      id2,
+		"method":  "session/set_profile",
+		"params":  map[string]any{"sessionId": sid, "profile": "nonexistent"},
+	})
+	_, errObj, _ := h.readUntilRPCResult(id2, 30*time.Second)
+	if errObj == nil {
+		t.Fatal("session/set_profile with unknown profile should fail")
+	}
+	if errObj.Code != -32602 {
+		t.Fatalf("expected -32602 for unknown profile, got %d", errObj.Code)
+	}
+}
+
+// TestACPIntegration_InitializeReportsProfiles checks that the initialize
+// response includes profiles and activeProfile fields.
+func TestACPIntegration_InitializeReportsProfiles(t *testing.T) {
+	skipUnlessIntegrationACP(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v1/models" && r.Method == http.MethodGet:
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"mock-openai-model"}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	stateDir := t.TempDir()
+	writeACPIntegrationConfigJSON(t, stateDir, map[string]any{
+		"base_url":       srv.URL + "/v1",
+		"api_key":        "integration-test",
+		"model":          "mock-openai-model",
+		"active_profile": "dev",
+		"profiles": map[string]any{
+			"dev":  map[string]any{"model": "dev-model"},
+			"prod": map[string]any{"model": "prod-model"},
+		},
+	})
+	dir := t.TempDir()
+	h := startACPWithEnv(t, dir, append(os.Environ(), "CODIENT_STATE_DIR="+stateDir))
+
+	id := h.nextRPCID()
+	h.writeJSON(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      id,
+		"method":  "initialize",
+		"params": map[string]any{
+			"protocolVersion":    1,
+			"clientCapabilities": map[string]any{},
+			"clientInfo":         map[string]any{"name": "test", "version": "0"},
+		},
+	})
+	res, errObj, _ := h.readUntilRPCResult(id, 2*time.Minute)
+	if errObj != nil {
+		t.Fatalf("initialize error: %d %s", errObj.Code, errObj.Message)
+	}
+	var parsed struct {
+		ActiveProfile     string   `json:"activeProfile"`
+		Profiles          []string `json:"profiles"`
+		AgentCapabilities struct {
+			Profiles bool `json:"profiles"`
+		} `json:"agentCapabilities"`
+	}
+	if err := json.Unmarshal(res, &parsed); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if parsed.ActiveProfile != "dev" {
+		t.Fatalf("activeProfile: got %q want 'dev'", parsed.ActiveProfile)
+	}
+	if !parsed.AgentCapabilities.Profiles {
+		t.Fatal("agentCapabilities.profiles should be true")
+	}
+	sort.Strings(parsed.Profiles)
+	if len(parsed.Profiles) != 2 || parsed.Profiles[0] != "dev" || parsed.Profiles[1] != "prod" {
+		t.Fatalf("profiles: got %v want [dev prod]", parsed.Profiles)
+	}
+}

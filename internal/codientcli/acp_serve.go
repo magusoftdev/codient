@@ -46,7 +46,7 @@ const (
 	acpMinCodientUnityPackageSemver = "1.0.0"
 )
 
-func validateACPFlags(printMode, repl, stream, ping, listModels, listTools, a2a, update, version bool, nImages int) error {
+func validateACPFlags(printMode, repl, stream, ping, listModels, listTools, listProfiles, a2a, update, version bool, nImages int) error {
 	var bad []string
 	if printMode {
 		bad = append(bad, "-print")
@@ -65,6 +65,9 @@ func validateACPFlags(printMode, repl, stream, ping, listModels, listTools, a2a,
 	}
 	if listTools {
 		bad = append(bad, "-list-tools")
+	}
+	if listProfiles {
+		bad = append(bad, "-list-profiles")
 	}
 	if a2a {
 		bad = append(bad, "-a2a")
@@ -280,6 +283,7 @@ type acpChatSession struct {
 	currentPlan   *planstore.Plan
 	workspaceRoot string
 	modelID       string
+	profileID     string // per-session profile override (empty = server default)
 	lastPlanReply string // last assistant text in plan mode (for ToT heuristic)
 	// lastIntent records the most recent supervisor classification for this
 	// session (auto-mode telemetry). Nil until the orchestrator runs a turn.
@@ -399,10 +403,14 @@ func (s *acpServer) handleRequest(ctx context.Context, method string, params jso
 		s.handleInitialize(ctx, params, id)
 	case "agent/list_models":
 		s.handleAgentListModels(ctx, id)
+	case "agent/list_profiles":
+		s.handleAgentListProfiles(ctx, id)
 	case "session/new":
 		s.handleSessionNew(ctx, params, id)
 	case "session/set_model":
 		s.handleSessionSetModel(ctx, params, id)
+	case "session/set_profile":
+		s.handleSessionSetProfile(ctx, params, id)
 	case "session/prompt":
 		s.handleSessionPrompt(ctx, params, id)
 	default:
@@ -437,11 +445,16 @@ func (s *acpServer) handleInitialize(_ context.Context, params json.RawMessage, 
 	}
 	s.initialized = true
 	defaultModel := strings.TrimSpace(s.client.Model())
+
+	profileNames := config.ProfileNamesList(s.cfg.Profiles)
+	activeProfile := s.cfg.ActiveProfile
+
 	_ = s.tr.WriteResult(id, map[string]any{
 		"protocolVersion":  acpProtocolVersion,
 		"defaultChatModel": defaultModel,
 		"agentCapabilities": map[string]any{
 			"loadSession": false,
+			"profiles":    len(profileNames) > 0,
 			"promptCapabilities": map[string]any{
 				"image":           false,
 				"audio":           false,
@@ -457,7 +470,9 @@ func (s *acpServer) handleInitialize(_ context.Context, params json.RawMessage, 
 			"title":   "Codient",
 			"version": s.version,
 		},
-		"authMethods": []any{},
+		"activeProfile": activeProfile,
+		"profiles":      profileNames,
+		"authMethods":   []any{},
 	})
 }
 
@@ -488,8 +503,9 @@ func (s *acpServer) handleSessionNew(ctx context.Context, params json.RawMessage
 		return
 	}
 	var p struct {
-		Cwd   string `json:"cwd"`
-		Model string `json:"model"`
+		Cwd     string `json:"cwd"`
+		Model   string `json:"model"`
+		Profile string `json:"profile"`
 		// Mode is accepted but ignored: every session is auto-mode and the
 		// orchestrator picks an internal mode per session/prompt. Older clients
 		// that still send "mode" keep working.
@@ -498,6 +514,18 @@ func (s *acpServer) handleSessionNew(ctx context.Context, params json.RawMessage
 	if err := json.Unmarshal(params, &p); err != nil {
 		_ = s.tr.WriteError(id, -32602, "invalid params")
 		return
+	}
+	// Validate profile param if provided.
+	profName := strings.TrimSpace(p.Profile)
+	if profName != "" {
+		if !config.ProfileNameRe.MatchString(profName) {
+			_ = s.tr.WriteError(id, -32602, fmt.Sprintf("invalid profile name %q", profName))
+			return
+		}
+		if _, ok := s.cfg.Profiles[profName]; !ok {
+			_ = s.tr.WriteError(id, -32602, fmt.Sprintf("unknown profile %q", profName))
+			return
+		}
 	}
 	ws := filepath.Clean(s.cfg.EffectiveWorkspace())
 	cwd, err := filepath.Abs(strings.TrimSpace(p.Cwd))
@@ -520,11 +548,12 @@ func (s *acpServer) handleSessionNew(ctx context.Context, params json.RawMessage
 		mode:          prompt.ModeAuto,
 		workspaceRoot: cwd,
 		modelID:       strings.TrimSpace(p.Model),
+		profileID:     profName,
 	}
 	s.mu.Lock()
 	s.sessions[sid] = sess
 	s.mu.Unlock()
-	_ = s.tr.WriteResult(id, map[string]any{"sessionId": sid, "mode": string(prompt.ModeAuto)})
+	_ = s.tr.WriteResult(id, map[string]any{"sessionId": sid, "mode": string(prompt.ModeAuto), "profile": profName})
 }
 
 // modeArtifactsFor returns the registry and system prompt to use for the given mode.
@@ -939,6 +968,86 @@ func (sess *acpChatSession) cancelActiveTurn() {
 	}
 }
 
+// handleAgentListProfiles returns the configured profile names and active profile.
+func (s *acpServer) handleAgentListProfiles(_ context.Context, id int) {
+	names := config.ProfileNamesList(s.cfg.Profiles)
+	type profileInfo struct {
+		Name  string `json:"name"`
+		Model string `json:"model,omitempty"`
+	}
+	out := make([]profileInfo, 0, len(names))
+	for _, n := range names {
+		model := ""
+		if p, ok := s.cfg.Profiles[n]; ok && p.Model != nil {
+			model = *p.Model
+		}
+		out = append(out, profileInfo{Name: n, Model: model})
+	}
+	_ = s.tr.WriteResult(id, map[string]any{
+		"active":   s.cfg.ActiveProfile,
+		"profiles": out,
+	})
+}
+
+// handleSessionSetProfile switches the per-session profile and emits a notification.
+func (s *acpServer) handleSessionSetProfile(ctx context.Context, params json.RawMessage, id int) {
+	if !s.initialized {
+		_ = s.tr.WriteError(id, -32002, "not initialized")
+		return
+	}
+	if err := s.waitACPRegistryReady(ctx); err != nil {
+		_ = s.tr.WriteError(id, -32603, err.Error())
+		return
+	}
+	var p struct {
+		SessionID string `json:"sessionId"`
+		Profile   string `json:"profile"`
+	}
+	if err := json.Unmarshal(params, &p); err != nil || strings.TrimSpace(p.SessionID) == "" {
+		_ = s.tr.WriteError(id, -32602, "invalid session/set_profile params")
+		return
+	}
+	s.mu.Lock()
+	sess := s.sessions[p.SessionID]
+	s.mu.Unlock()
+	if sess == nil {
+		_ = s.tr.WriteError(id, -32001, "unknown session")
+		return
+	}
+	sess.cancelMu.Lock()
+	if sess.cancelTurn != nil {
+		sess.cancelMu.Unlock()
+		_ = s.tr.WriteError(id, -32603, "session_busy")
+		return
+	}
+	sess.cancelMu.Unlock()
+
+	profName := strings.TrimSpace(p.Profile)
+	if profName != "" {
+		if !config.ProfileNameRe.MatchString(profName) {
+			_ = s.tr.WriteError(id, -32602, fmt.Sprintf("invalid profile name %q", profName))
+			return
+		}
+		if _, ok := s.cfg.Profiles[profName]; !ok {
+			_ = s.tr.WriteError(id, -32602, fmt.Sprintf("unknown profile %q", profName))
+			return
+		}
+	}
+
+	sess.cancelMu.Lock()
+	sess.profileID = profName
+	sess.cancelMu.Unlock()
+
+	resolvedModel := s.acpEffectiveModelID(strings.TrimSpace(sess.modelID))
+
+	_ = s.tr.WriteResult(id, map[string]any{"profile": profName})
+	_ = s.tr.SendNotification("session/profile_changed", map[string]any{
+		"sessionId":     p.SessionID,
+		"profile":       profName,
+		"resolvedModel": resolvedModel,
+	})
+}
+
 func acpExtractPromptText(prompt json.RawMessage) (string, error) {
 	var blocks []struct {
 		Type string `json:"type"`
@@ -1059,6 +1168,8 @@ func (s *acpServer) newACPRunnerLocked(sess *acpChatSession) *agent.Runner {
 			sec := autoCheckTimeoutSec(s.cfg)
 			r.AutoCheck = makeAutoCheckSequence(s.cfg.EffectiveWorkspace(), steps, time.Duration(sec)*time.Second, s.cfg.ExecMaxOutputBytes, s.progressWriter)
 		}
+		r.AutoCheckMaxFixes = s.cfg.AutoCheckFixMaxRetries
+		r.AutoCheckStopOnNoProgress = s.cfg.AutoCheckFixStopOnNoProgress
 	}
 	sid := sess.id
 	r.OnToolBefore = func(ctx context.Context, toolCallID, name string, args json.RawMessage) {

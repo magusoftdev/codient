@@ -127,4 +127,24 @@ func TestBuild_AutoCheckNote(t *testing.T) {
 	if !strings.Contains(s, "golangci-lint") || !strings.Contains(s, "go test ./...") || !strings.Contains(s, "fail-fast") {
 		t.Fatalf("expected lint/test in auto-check note: %s", s)
 	}
+	if strings.Contains(s, "retries") {
+		t.Fatal("expected no fix-loop wording when AutoCheckFixMaxRetries is 0")
+	}
+}
+
+func TestBuild_AutoCheckFixLoopNote(t *testing.T) {
+	cfg := &config.Config{Workspace: "/tmp/w"}
+	reg := tools.Default("/tmp/w", "", nil, nil, nil, "", nil, nil, nil)
+	s := Build(Params{
+		Cfg: cfg, Reg: reg, Mode: ModeBuild,
+		AutoCheckBuildResolved: "go build ./...",
+		AutoCheckTestResolved:  "go test ./...",
+		AutoCheckFixMaxRetries: 3,
+	})
+	if !strings.Contains(s, "retries up to **3** times") {
+		t.Fatalf("expected fix-loop wording with cap 3: %s", s)
+	}
+	if !strings.Contains(s, "stop editing files") {
+		t.Fatalf("expected exhaustion guidance in auto-check note: %s", s)
+	}
 }
