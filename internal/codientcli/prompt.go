@@ -70,12 +70,18 @@ func buildRegistry(cfg *config.Config, mode prompt.Mode, s *session, memOpts *to
 		rm = s.repoMap
 	}
 	uskill := userSkillsReadLib()
+	var lspClient tools.LSPClient
+	var lspCfg map[string]config.LSPServerConfig
+	if s != nil && s.lspMgr != nil {
+		lspClient = s.lspMgr
+		lspCfg = cfg.LSPServers
+	}
 	var reg *tools.Registry
 	switch mode {
 	case prompt.ModeAsk:
-		reg = tools.DefaultReadOnly(cfg.EffectiveWorkspace(), uskill, fetch, search, sgPath, idx, rm)
+		reg = tools.DefaultReadOnly(cfg.EffectiveWorkspace(), uskill, fetch, search, sgPath, idx, rm, lspClient, lspCfg)
 	case prompt.ModePlan:
-		reg = tools.DefaultReadOnlyPlan(cfg.EffectiveWorkspace(), uskill, fetch, search, sgPath, idx, rm)
+		reg = tools.DefaultReadOnlyPlan(cfg.EffectiveWorkspace(), uskill, fetch, search, sgPath, idx, rm, lspClient, lspCfg)
 	default:
 		var execOpts *tools.ExecOptions
 		if len(cfg.ExecAllowlist) > 0 {
@@ -104,7 +110,7 @@ func buildRegistry(cfg *config.Config, mode prompt.Mode, s *session, memOpts *to
 				execOpts.Allowlist = cfg.ExecAllowlist
 			}
 		}
-		reg = tools.Default(cfg.EffectiveWorkspace(), uskill, execOpts, fetch, search, sgPath, idx, rm, memOpts)
+		reg = tools.Default(cfg.EffectiveWorkspace(), uskill, execOpts, fetch, search, sgPath, idx, rm, memOpts, lspClient, lspCfg)
 	}
 	if s != nil && mode == prompt.ModeBuild && !s.acpNoDelegate {
 		tools.RegisterCreatePullRequest(reg, s.gitPullRequestContextFn())

@@ -36,9 +36,9 @@ func RegistryForMode(cfg *config.Config, mode prompt.Mode, rm *repomap.Map, sand
 	}
 	switch mode {
 	case prompt.ModeAsk:
-		return tools.DefaultReadOnly(ws, uskill, fetch, search, sgPath, nil, rm)
+		return tools.DefaultReadOnly(ws, uskill, fetch, search, sgPath, nil, rm, nil, nil)
 	case prompt.ModePlan:
-		return tools.DefaultReadOnlyPlan(ws, uskill, fetch, search, sgPath, nil, rm)
+		return tools.DefaultReadOnlyPlan(ws, uskill, fetch, search, sgPath, nil, rm, nil, nil)
 	default:
 		var execOpts *tools.ExecOptions
 		if len(cfg.ExecAllowlist) > 0 {
@@ -68,7 +68,7 @@ func RegistryForMode(cfg *config.Config, mode prompt.Mode, rm *repomap.Map, sand
 				WorkspaceRoot: ws,
 			}
 		}
-		return tools.Default(ws, uskill, execOpts, fetch, search, sgPath, nil, rm, memOpts)
+		return tools.Default(ws, uskill, execOpts, fetch, search, sgPath, nil, rm, memOpts, nil, nil)
 	}
 }
 

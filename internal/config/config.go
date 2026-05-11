@@ -165,6 +165,8 @@ type Config struct {
 	HighReasoning ReasoningTier
 	// MCPServers maps server IDs to their connection config. Nil/empty means no MCP servers.
 	MCPServers map[string]MCPServerConfig
+	// LSPServers maps language IDs to their server config. Nil/empty means no LSP servers.
+	LSPServers map[string]LSPServerConfig
 	// GitProtectedBranches lists short branch names that trigger lazy auto-branch to codient/<slug> in build mode (default main, master, develop).
 	GitProtectedBranches []string
 	// GitAutoCommit enables auto-commit after each build turn that changes files (default true).

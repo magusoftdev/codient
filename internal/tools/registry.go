@@ -11,6 +11,7 @@ import (
 
 	"codient/internal/codeextract"
 	"codient/internal/codeindex"
+	"codient/internal/config"
 	"codient/internal/repomap"
 
 	"github.com/openai/openai-go/v3"
@@ -99,7 +100,7 @@ func (r *Registry) Run(ctx context.Context, name string, args json.RawMessage) (
 // exec enables run_command when non-nil and Allowlist is non-empty (exec_allowlist in config).
 // fetch enables fetch_url when non-nil and AllowHosts is non-empty (fetch_allow_hosts / preapproved in config).
 // search enables web_search when non-nil (always enabled in default builds).
-func Default(workspace string, userSkillsReadLib string, exec *ExecOptions, fetch *FetchOptions, search *SearchOptions, astGrepPath string, idx *codeindex.Index, rm *repomap.Map, mem *MemoryOptions) *Registry {
+func Default(workspace string, userSkillsReadLib string, exec *ExecOptions, fetch *FetchOptions, search *SearchOptions, astGrepPath string, idx *codeindex.Index, rm *repomap.Map, mem *MemoryOptions, lsp LSPClient, lspCfg map[string]config.LSPServerConfig) *Registry {
 	r := NewRegistry()
 	registerBuiltinTools(r, true)
 	root := strings.TrimSpace(workspace)
@@ -109,6 +110,8 @@ func Default(workspace string, userSkillsReadLib string, exec *ExecOptions, fetc
 	registerMemoryUpdate(r, mem)
 	registerSemanticSearch(r, idx)
 	registerRepoMap(r, rm)
+	RegisterLSPReadTools(r, root, lsp, lspCfg)
+	RegisterLSPMutatingTools(r, root, lsp, lspCfg)
 	return r
 }
 
@@ -117,7 +120,7 @@ func Default(workspace string, userSkillsReadLib string, exec *ExecOptions, fetc
 // userSkillsReadLib is optional; see Default.
 // fetch enables fetch_url when non-nil and AllowHosts is non-empty.
 // search enables web_search when non-nil.
-func DefaultReadOnly(workspace string, userSkillsReadLib string, fetch *FetchOptions, search *SearchOptions, astGrepPath string, idx *codeindex.Index, rm *repomap.Map) *Registry {
+func DefaultReadOnly(workspace string, userSkillsReadLib string, fetch *FetchOptions, search *SearchOptions, astGrepPath string, idx *codeindex.Index, rm *repomap.Map, lsp LSPClient, lspCfg map[string]config.LSPServerConfig) *Registry {
 	r := NewRegistry()
 	registerBuiltinTools(r, true)
 	root := strings.TrimSpace(workspace)
@@ -126,12 +129,13 @@ func DefaultReadOnly(workspace string, userSkillsReadLib string, fetch *FetchOpt
 	}
 	registerSemanticSearch(r, idx)
 	registerRepoMap(r, rm)
+	RegisterLSPReadTools(r, root, lsp, lspCfg)
 	return r
 }
 
 // DefaultReadOnlyPlan is like DefaultReadOnly but omits echo so the model cannot substitute
 // a one-line echo for a written design. Use for Plan mode.
-func DefaultReadOnlyPlan(workspace string, userSkillsReadLib string, fetch *FetchOptions, search *SearchOptions, astGrepPath string, idx *codeindex.Index, rm *repomap.Map) *Registry {
+func DefaultReadOnlyPlan(workspace string, userSkillsReadLib string, fetch *FetchOptions, search *SearchOptions, astGrepPath string, idx *codeindex.Index, rm *repomap.Map, lsp LSPClient, lspCfg map[string]config.LSPServerConfig) *Registry {
 	r := NewRegistry()
 	registerBuiltinTools(r, false)
 	root := strings.TrimSpace(workspace)
@@ -140,6 +144,7 @@ func DefaultReadOnlyPlan(workspace string, userSkillsReadLib string, fetch *Fetc
 	}
 	registerSemanticSearch(r, idx)
 	registerRepoMap(r, rm)
+	RegisterLSPReadTools(r, root, lsp, lspCfg)
 	return r
 }
 

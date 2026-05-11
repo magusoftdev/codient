@@ -33,6 +33,7 @@ import (
 	"codient/internal/gitutil"
 	"codient/internal/hooks"
 	"codient/internal/imageutil"
+	"codient/internal/lspclient"
 	"codient/internal/mcpclient"
 	"codient/internal/openaiclient"
 	"codient/internal/planstore"
@@ -124,7 +125,8 @@ type session struct {
 	codeIndex *codeindex.Index // semantic search index; nil when embedding_model is not configured
 	repoMap   *repomap.Map     // structural repo map; nil when repo_map_tokens is -1
 
-	mcpMgr *mcpclient.Manager // MCP server connections; nil when no mcp_servers configured
+	mcpMgr *mcpclient.Manager    // MCP server connections; nil when no mcp_servers configured
+	lspMgr *lspclient.Manager    // LSP server connections; nil when no lsp_servers configured
 
 	// acpRegistryMu guards stub.registry / stub.systemPrompt while async MCP connect finishes (-acp).
 	acpRegistryMu sync.RWMutex
@@ -998,6 +1000,9 @@ func (s *session) runSingleTurn(ctx context.Context, user string, extra []imageu
 	if s.mcpMgr != nil {
 		defer s.mcpMgr.Close()
 	}
+	if s.lspMgr != nil {
+		defer s.lspMgr.Close()
+	}
 	wsEarly := s.cfg.EffectiveWorkspace()
 
 	if strings.TrimSpace(s.singleTurnExplicitSessionID) != "" && s.singleTurnForceNew {
@@ -1256,6 +1261,9 @@ func (s *session) runSession(ctx context.Context, initialPrompt string, newSessi
 
 	if s.mcpMgr != nil {
 		defer s.mcpMgr.Close()
+	}
+	if s.lspMgr != nil {
+		defer s.lspMgr.Close()
 	}
 
 	// Print before startCodeIndex: the index goroutine may redraw the REPL prompt via
@@ -1839,6 +1847,64 @@ func (s *session) buildSlashCommands(ctx context.Context, sc *bufio.Scanner) *sl
 			for _, t := range tt {
 				fmt.Fprintf(os.Stderr, "  %-30s %s\n", t.Name, t.Description)
 			}
+			return nil
+		},
+	})
+	cmds.Register(slashcmd.Command{
+		Name:        "lsp",
+		Usage:       "/lsp [server]",
+		Description: "list LSP servers and capabilities (no args = all servers, server = capabilities for that server)",
+		Run: func(args string) error {
+			if s.lspMgr == nil {
+				fmt.Fprintf(os.Stderr, "No LSP servers configured. Add lsp_servers to ~/.codient/config.json.\n")
+				return nil
+			}
+			args = strings.TrimSpace(args)
+			if args == "" {
+				ids := s.lspMgr.ServerIDs()
+				if len(ids) == 0 {
+					fmt.Fprintf(os.Stderr, "No LSP servers connected.\n")
+					return nil
+				}
+				fmt.Fprintf(os.Stderr, "LSP servers (%d connected):\n", len(ids))
+				for _, id := range ids {
+					caps := s.lspMgr.ServerCapabilities(id)
+					var supported []string
+					if caps != nil {
+						if bool(caps.DefinitionProvider) {
+							supported = append(supported, "definition")
+						}
+						if bool(caps.ReferencesProvider) {
+							supported = append(supported, "references")
+						}
+						if bool(caps.HoverProvider) {
+							supported = append(supported, "hover")
+						}
+						if bool(caps.RenameProvider) {
+							supported = append(supported, "rename")
+						}
+						if bool(caps.WorkspaceSymbolProvider) {
+							supported = append(supported, "workspace/symbol")
+						}
+					}
+					fmt.Fprintf(os.Stderr, "  %s (%s)\n", id, strings.Join(supported, ", "))
+				}
+				return nil
+			}
+			caps := s.lspMgr.ServerCapabilities(args)
+			if caps == nil {
+				fmt.Fprintf(os.Stderr, "LSP server %q not connected.\n", args)
+				return nil
+			}
+			fmt.Fprintf(os.Stderr, "LSP %s capabilities:\n", args)
+			fmt.Fprintf(os.Stderr, "  definition:       %v\n", bool(caps.DefinitionProvider))
+			fmt.Fprintf(os.Stderr, "  typeDefinition:   %v\n", bool(caps.TypeDefinitionProvider))
+			fmt.Fprintf(os.Stderr, "  implementation:   %v\n", bool(caps.ImplementationProvider))
+			fmt.Fprintf(os.Stderr, "  references:       %v\n", bool(caps.ReferencesProvider))
+			fmt.Fprintf(os.Stderr, "  hover:            %v\n", bool(caps.HoverProvider))
+			fmt.Fprintf(os.Stderr, "  documentSymbol:   %v\n", bool(caps.DocumentSymbolProvider))
+			fmt.Fprintf(os.Stderr, "  workspaceSymbol:  %v\n", bool(caps.WorkspaceSymbolProvider))
+			fmt.Fprintf(os.Stderr, "  rename:           %v\n", bool(caps.RenameProvider))
 			return nil
 		},
 	})

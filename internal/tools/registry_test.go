@@ -10,7 +10,7 @@ import (
 )
 
 func TestEcho(t *testing.T) {
-	r := Default("", "", nil, nil, nil, "", nil, nil, nil)
+	r := Default("", "", nil, nil, nil, "", nil, nil, nil, nil, nil)
 	out, err := r.Run(context.Background(), "echo", json.RawMessage(`{"message":"hi"}`))
 	if err != nil {
 		t.Fatal(err)
@@ -34,7 +34,7 @@ type Box struct { N int }
 	if err := os.WriteFile(p, []byte(goSrc), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	r := DefaultReadOnly(dir, "", nil, nil, "", nil, nil)
+	r := DefaultReadOnly(dir, "", nil, nil, "", nil, nil, nil, nil)
 	out, err := r.Run(context.Background(), "read_file", json.RawMessage(`{"path":"x.go","view":"outline"}`))
 	if err != nil {
 		t.Fatal(err)
@@ -165,7 +165,7 @@ func TestWriteFileWorkspace(t *testing.T) {
 
 func TestWriteFileToolViaRegistry(t *testing.T) {
 	dir := t.TempDir()
-	r := Default(dir, "", nil, nil, nil, "", nil, nil, nil)
+	r := Default(dir, "", nil, nil, nil, "", nil, nil, nil, nil, nil)
 	out, err := r.Run(context.Background(), "write_file", json.RawMessage(`{
 		"path": "pkg/x.go",
 		"content": "package pkg\n",
@@ -188,7 +188,7 @@ func TestWriteFileToolViaRegistry(t *testing.T) {
 
 func TestWriteFileRejectsEmptyContent(t *testing.T) {
 	dir := t.TempDir()
-	r := Default(dir, "", nil, nil, nil, "", nil, nil, nil)
+	r := Default(dir, "", nil, nil, nil, "", nil, nil, nil, nil, nil)
 	_, err := r.Run(context.Background(), "write_file", json.RawMessage(`{
 		"path": "empty.go",
 		"content": ""
@@ -206,7 +206,7 @@ func TestWriteFileRejectsEmptyContent(t *testing.T) {
 
 func TestDefaultWorkspaceToolsRegistered(t *testing.T) {
 	dir := t.TempDir()
-	r := Default(dir, "", nil, nil, nil, "", nil, nil, nil)
+	r := Default(dir, "", nil, nil, nil, "", nil, nil, nil, nil, nil)
 	names := map[string]bool{}
 	for _, n := range r.Names() {
 		names[n] = true
@@ -223,10 +223,10 @@ func TestDefaultWorkspaceToolsRegistered(t *testing.T) {
 
 func TestDefaultReadOnly_OmitsMutatingTools(t *testing.T) {
 	dir := t.TempDir()
-	r := DefaultReadOnly(dir, "", nil, nil, "", nil, nil)
+	r := DefaultReadOnly(dir, "", nil, nil, "", nil, nil, nil, nil)
 	names := r.Names()
 	for _, n := range names {
-		if n == "write_file" || n == "run_command" || n == "remove_path" || n == "move_path" || n == "copy_path" {
+		if n == "write_file" || n == "run_command" || n == "remove_path" || n == "move_path" || n == "copy_path" || n == "lsp_rename" {
 			t.Fatalf("unexpected tool %q in read-only registry", n)
 		}
 	}
@@ -244,7 +244,7 @@ func TestDefaultReadOnly_OmitsMutatingTools(t *testing.T) {
 
 func TestDefaultReadOnlyPlan_NoEcho(t *testing.T) {
 	dir := t.TempDir()
-	r := DefaultReadOnlyPlan(dir, "", nil, nil, "", nil, nil)
+	r := DefaultReadOnlyPlan(dir, "", nil, nil, "", nil, nil, nil, nil)
 	for _, n := range r.Names() {
 		if n == "echo" {
 			t.Fatal("plan registry must not include echo")
@@ -267,7 +267,7 @@ func TestDefault_WithFetch_IncludesFetchURL(t *testing.T) {
 		AllowHosts: []string{"example.com"},
 		MaxBytes:   4096,
 		TimeoutSec: 10,
-	}, nil, "", nil, nil, nil)
+	}, nil, "", nil, nil, nil, nil, nil)
 	found := false
 	for _, n := range r.Names() {
 		if n == "fetch_url" {
@@ -281,7 +281,7 @@ func TestDefault_WithFetch_IncludesFetchURL(t *testing.T) {
 
 func TestDefault_WithSearch_IncludesWebSearch(t *testing.T) {
 	dir := t.TempDir()
-	r := Default(dir, "", nil, nil, &SearchOptions{}, "", nil, nil, nil)
+	r := Default(dir, "", nil, nil, &SearchOptions{}, "", nil, nil, nil, nil, nil)
 	found := false
 	for _, n := range r.Names() {
 		if n == "web_search" {
@@ -299,7 +299,7 @@ func TestDefault_WithAllowlist_IncludesRunCommand(t *testing.T) {
 		Allowlist:      []string{"go"},
 		TimeoutSeconds: 30,
 		MaxOutputBytes: 1024,
-	}, nil, nil, "", nil, nil, nil)
+	}, nil, nil, "", nil, nil, nil, nil, nil)
 	hasRun := false
 	hasShell := false
 	for _, n := range r.Names() {

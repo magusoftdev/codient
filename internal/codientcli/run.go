@@ -22,6 +22,7 @@ import (
 	"codient/internal/config"
 	"codient/internal/designstore"
 	"codient/internal/imageutil"
+	"codient/internal/lspclient"
 	"codient/internal/mcpclient"
 	"codient/internal/openaiclient"
 	"codient/internal/projectinfo"
@@ -240,12 +241,16 @@ func Run() int {
 			defer logFile.Close()
 			agentLog = agentlog.New(logFile)
 		}
-		// MCP connect can take minutes on bad networks; never block the ACP stdio loop on it.
+		// MCP/LSP connect can take minutes on bad networks; never block the ACP stdio loop.
 		var mcpMgr *mcpclient.Manager
 		if len(cfg.MCPServers) > 0 {
 			mcpMgr = mcpclient.NewManager(Version)
 		}
-		return runACPServer(acpCtx, cfg, client, mcpMgr, agentLog, *maxTurns, *maxCostUSD)
+		var lspMgr *lspclient.Manager
+		if len(cfg.LSPServers) > 0 {
+			lspMgr = lspclient.NewManager()
+		}
+		return runACPServer(acpCtx, cfg, client, mcpMgr, lspMgr, agentLog, *maxTurns, *maxCostUSD)
 	}
 
 	if *stream {
@@ -356,6 +361,16 @@ func Run() int {
 		}
 		if len(mgr.ServerIDs()) > 0 {
 			s.mcpMgr = mgr
+		}
+	}
+	if len(cfg.LSPServers) > 0 {
+		mgr := lspclient.NewManager()
+		warns := mgr.Connect(ctx, cfg.LSPServers, cfg.EffectiveWorkspace())
+		for _, w := range warns {
+			fmt.Fprintf(os.Stderr, "codient: %s\n", w)
+		}
+		if len(mgr.ServerIDs()) > 0 {
+			s.lspMgr = mgr
 		}
 	}
 

@@ -475,6 +475,7 @@ func buildConfigFromPersistent(pc *PersistentConfig, selectedProfile string) (*C
 			Model:   strings.TrimSpace(pc.HighReasoningModel),
 		},
 		MCPServers:           pc.MCPServers,
+		LSPServers:           pc.LSPServers,
 		GitProtectedBranches: protectedBranches,
 		GitAutoCommit:        gitAutoCommit,
 		CheckpointAuto:       checkpointAuto,

@@ -58,16 +58,15 @@ This document supersedes informal “gap list” audits: it records **what codie
 | **Voice input** | **Not implemented** | |
 | **Session sync across devices** | **Non-goal (first-party)** | Roll your own with `SessionEnd` hooks that `rclone` / `aws s3 sync` **`<workspace>/.codient/sessions/`** to storage you own — see [Bring-your-own remote](usage.md#bring-your-own-remote-and-background-runs). |
 | **Batch / parallel PRs** | **Not implemented** | |
-| **LSP** | **Not implemented** | ast-grep / indexing; no language server client. |
+| **LSP** | **Done** | `internal/lspclient`; config `lsp_servers`; tools `lsp_definition`, `lsp_references`, `lsp_hover`, `lsp_type_definition`, `lsp_implementation`, `lsp_document_symbols`, `lsp_workspace_symbols`, `lsp_rename`. See [Context and integrations](context-and-integrations.md#lsp-servers). |
 | **Structural repo map** | **Done** | System prompt injection + `repo_map` tool (`internal/repomap`). |
 
 ---
 
 ## Remaining work (prioritized summary)
 
-1. **LSP** — Optional client for definition/rename/type-aware refactors.  
-2. **IDE extension / watch mode** — Separate deliverable from core CLI.  
-3. **Terminal UX** — Word-level or richer diff presentation if desired beyond unified / colored `git diff`.  
+1. **IDE extension / watch mode** — Separate deliverable from core CLI.  
+2. **Terminal UX** — Word-level or richer diff presentation if desired beyond unified / colored `git diff`.  
 
 ---
 

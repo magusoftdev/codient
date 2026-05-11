@@ -229,6 +229,8 @@ Run `/config` with no arguments to see all current values. `/config <key>` shows
 | `update_notify` | Show interactive update prompt on REPL startup | `true` |
 | **MCP** | | |
 | `mcp_servers` | Map of MCP server IDs to connection configs (see [MCP servers](context-and-integrations.md#mcp-model-context-protocol-servers)) | *(empty)* |
+| **LSP** | | |
+| `lsp_servers` | Map of language IDs (e.g. `go`, `python`) to LSP server configs. Each entry: `command`, `args`, `env`, `file_extensions`. See [LSP servers](context-and-integrations.md#lsp-servers) | `{}` |
 
 ### Local models and tool calling
 

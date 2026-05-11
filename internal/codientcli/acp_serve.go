@@ -25,6 +25,7 @@ import (
 	"codient/internal/assistout"
 	"codient/internal/config"
 	"codient/internal/intent"
+	"codient/internal/lspclient"
 	"codient/internal/mcpclient"
 	"codient/internal/openaiclient"
 	"codient/internal/planstore"
@@ -88,7 +89,7 @@ func validateACPFlags(printMode, repl, stream, ping, listModels, listTools, list
 }
 
 // runACPServer runs the Agent Client Protocol (ACP) over NDJSON JSON-RPC on stdin/stdout.
-func runACPServer(ctx context.Context, cfg *config.Config, client *openaiclient.Client, mcpMgr *mcpclient.Manager, agentLog *agentlog.Logger, maxTurns int, maxCostUSD float64) int {
+func runACPServer(ctx context.Context, cfg *config.Config, client *openaiclient.Client, mcpMgr *mcpclient.Manager, lspMgr *lspclient.Manager, agentLog *agentlog.Logger, maxTurns int, maxCostUSD float64) int {
 	if err := cfg.RequireModel(); err != nil {
 		fmt.Fprintf(os.Stderr, "config: %v\n", err)
 		return 2
@@ -139,6 +140,7 @@ func runACPServer(ctx context.Context, cfg *config.Config, client *openaiclient.
 		client:        client,
 		progressOut:   progressOut,
 		mcpMgr:        mcpMgr,
+		lspMgr:        lspMgr,
 		repoMap:       rm,
 		agentLog:      agentLog,
 		tokenTracker:  tracker,
@@ -202,6 +204,7 @@ func runACPServer(ctx context.Context, cfg *config.Config, client *openaiclient.
 		stub.systemPrompt = sp
 		stub.acpRegistryMu.Unlock()
 
+		needRebuild := false
 		if stub.mcpMgr != nil && len(cfg.MCPServers) > 0 {
 			mgr := stub.mcpMgr
 			go func() {
@@ -217,7 +220,26 @@ func runACPServer(ctx context.Context, cfg *config.Config, client *openaiclient.
 				stub.systemPrompt = sp2
 				stub.acpRegistryMu.Unlock()
 			}()
+			needRebuild = true
 		}
+		if stub.lspMgr != nil && len(cfg.LSPServers) > 0 {
+			mgr := stub.lspMgr
+			go func() {
+				lspCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+				defer cancel()
+				warns := mgr.Connect(lspCtx, cfg.LSPServers, cfg.EffectiveWorkspace())
+				for _, w := range warns {
+					fmt.Fprintf(os.Stderr, "codient: %s\n", w)
+				}
+				reg2, sp2 := srv.buildModeArtifacts(prompt.ModeAuto)
+				stub.acpRegistryMu.Lock()
+				stub.registry = reg2
+				stub.systemPrompt = sp2
+				stub.acpRegistryMu.Unlock()
+			}()
+			needRebuild = true
+		}
+		_ = needRebuild
 	}()
 
 	reqCh := make(chan acpserver.WireMsg, 256)

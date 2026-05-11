@@ -247,6 +247,7 @@ Inside a session you can use slash commands to control the agent:
 | `/tools` | List tools available to the current internal mode (orchestrator-resolved per turn) |
 | `/hooks` | List configured lifecycle hooks (requires `hooks_enabled`) |
 | `/mcp [server]` | List connected MCP servers and tool counts; with a server name, list that server's tools |
+| `/lsp [server]` | List LSP servers and capabilities |
 | `/status` | Show session state (orchestrator's resolved mode for the last turn, model, turns, estimated context, API token totals, resolved **auto-check** build/lint/test commands, exec policy) |
 | `/cost` (or `/tokens`) | Show session token counts (prompt/completion/total) and estimated cost |
 | `/log [path]` | Show logging status or enable JSONL logging to a file |

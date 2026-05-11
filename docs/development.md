@@ -57,3 +57,5 @@ Set **`CODIENT_INTEGRATION_STRICT_TOOLS=1`** when running ACP integration tests 
 | Windows | `powershell` | Built-in |
 
 The clipboard integration test (`internal/clipboard/integration_test.go`) requires `CODIENT_INTEGRATION=1` and a real clipboard with an image copied.
+
+**LSP integration test** (`internal/lspclient/integration_test.go`) requires `CODIENT_INTEGRATION=1` and the **`gopls`** binary on `PATH` (`exec.LookPath("gopls")`). The test starts a real `gopls` server, exercises the LSP handshake and tool operations against a temporary Go workspace, and is skipped when either gate is unmet.

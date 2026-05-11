@@ -147,6 +147,9 @@ type PersistentConfig struct {
 	// MCP servers to connect to at session start.
 	MCPServers map[string]MCPServerConfig `json:"mcp_servers,omitempty"`
 
+	// LSP language servers to connect to at session start.
+	LSPServers map[string]LSPServerConfig `json:"lsp_servers,omitempty"`
+
 	// Git workflow (build mode): comma-separated branch names that trigger lazy auto-branch (default: main,master,develop).
 	GitProtectedBranches string `json:"git_protected_branches,omitempty"`
 	// GitAutoCommit defaults to true when omitted: auto-commit after each build turn that changes files.
@@ -254,6 +257,14 @@ type MCPServerConfig struct {
 	Env     map[string]string `json:"env,omitempty"`
 	URL     string            `json:"url,omitempty"`
 	Headers map[string]string `json:"headers,omitempty"`
+}
+
+// LSPServerConfig describes a single Language Server Protocol server.
+type LSPServerConfig struct {
+	Command        string            `json:"command,omitempty"`
+	Args           []string          `json:"args,omitempty"`
+	Env            map[string]string `json:"env,omitempty"`
+	FileExtensions []string          `json:"file_extensions,omitempty"`
 }
 
 // StateDir returns the codient state directory (~/.codient, or CODIENT_STATE_DIR if set).
@@ -394,6 +405,7 @@ func ConfigToPersistent(cfg *Config) *PersistentConfig {
 		HighReasoningBaseURL:  cfg.HighReasoning.BaseURL,
 		HighReasoningAPIKey:   cfg.HighReasoning.APIKey,
 		MCPServers:            cfg.MCPServers,
+		LSPServers:            cfg.LSPServers,
 		GitProtectedBranches:  strings.Join(cfg.GitProtectedBranches, ","),
 	}
 	if !cfg.GitAutoCommit {

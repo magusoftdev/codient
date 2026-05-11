@@ -484,6 +484,7 @@ func sectionPerToolNotes(p Params) string {
 		b.WriteString("- **echo** / **get_time**: Utility tools for sanity checks.\n")
 	}
 	writeMCPToolNotes(&b, names)
+	writeLSPToolNotes(&b, names)
 	return strings.TrimSpace(b.String())
 }
 
@@ -522,5 +523,35 @@ func writeMCPToolNotes(b *strings.Builder, names []string) {
 	for _, sid := range order {
 		si := servers[sid]
 		fmt.Fprintf(b, "- **%s**: %s\n", sid, strings.Join(si.tools, ", "))
+	}
+}
+
+// writeLSPToolNotes appends a section about LSP tools if any are registered.
+func writeLSPToolNotes(b *strings.Builder, names []string) {
+	var lspTools []string
+	for _, n := range names {
+		if strings.HasPrefix(n, "lsp_") {
+			lspTools = append(lspTools, n)
+		}
+	}
+	if len(lspTools) == 0 {
+		return
+	}
+	b.WriteString("\n\n### LSP (Language Server Protocol) tools\n\n")
+	b.WriteString("The following tools use a **language server** for type-aware code intelligence. " +
+		"Positions use **1-based** line and character numbers. " +
+		"The optional `language` parameter selects a specific language server by ID " +
+		"(e.g. \"go\", \"python\"); if omitted, the server is selected by file extension.\n\n")
+	b.WriteString("- **lsp_definition**, **lsp_type_definition**, **lsp_implementation**: " +
+		"Jump to the definition, type definition, or implementation of the symbol at a position.\n")
+	b.WriteString("- **lsp_references**: Find all references to a symbol.\n")
+	b.WriteString("- **lsp_hover**: Get type and documentation for a symbol.\n")
+	b.WriteString("- **lsp_document_symbols**: List all symbols in a file.\n")
+	b.WriteString("- **lsp_workspace_symbols**: Search for symbols across the workspace (requires `language`).\n")
+	for _, n := range lspTools {
+		if n == "lsp_rename" {
+			b.WriteString("- **lsp_rename**: Rename a symbol across the workspace (all references updated automatically).\n")
+			break
+		}
 	}
 }

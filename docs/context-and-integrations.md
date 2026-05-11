@@ -59,6 +59,51 @@ Configure MCP servers in `~/.codient/config.json` under the `mcp_servers` key. E
 - If a server fails to connect, a warning is printed and the session continues without that server's tools.
 - Use the `/mcp` slash command to inspect connected servers and their tools.
 
+## LSP servers
+
+Codient can connect to **LSP (Language Server Protocol)** servers and expose type-aware code intelligence tools to the agent. This gives the model precise go-to-definition, find-references, hover docs, and rename capabilities backed by the same language servers your editor uses.
+
+Configure LSP servers in `~/.codient/config.json` under the `lsp_servers` key. Each entry is a **language ID** mapped to its server config:
+
+```json
+{
+  "lsp_servers": {
+    "go": {
+      "command": "gopls",
+      "args": ["serve"],
+      "env": {},
+      "file_extensions": [".go"]
+    }
+  }
+}
+```
+
+- **`command`** + **`args`**: the server binary and arguments (stdio transport).
+- **`env`**: optional environment variables passed to the server process.
+- **`file_extensions`**: file suffixes this server handles (used for routing).
+
+**Tools registered:**
+
+| Tool | Mutating | Modes |
+|------|----------|-------|
+| `lsp_definition` | no | all |
+| `lsp_references` | no | all |
+| `lsp_hover` | no | all |
+| `lsp_type_definition` | no | all |
+| `lsp_implementation` | no | all |
+| `lsp_document_symbols` | no | all |
+| `lsp_workspace_symbols` | no | all |
+| `lsp_rename` | **yes** | build only |
+
+**Positions** use **1-based** line and character numbers (the client translates to the 0-based protocol offsets internally).
+
+**How it works:**
+
+- On session start, codient connects to all configured servers eagerly and performs the LSP `initialize` / `initialized` handshake.
+- Tools are registered in the tool registry with names as listed above. The agent calls them the same way as built-in tools.
+- If a server fails to start or crashes, a warning is printed and the session continues without that server's tools — server failures are **warnings, not fatal errors**.
+- Use the **`/lsp`** slash command to inspect connected servers and their capabilities.
+
 ## Lifecycle hooks
 
 Codient can run **shell commands** at specific points in the agent lifecycle (similar to hooks in Claude Code, Cursor, and OpenAI Codex CLI). Hooks are **opt-in**: set **`hooks_enabled`** to **`true`** in `~/.codient/config.json` or via **`/config hooks_enabled true`**.
