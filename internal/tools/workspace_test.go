@@ -187,6 +187,69 @@ func TestStrReplaceWorkspace_ReplaceAll(t *testing.T) {
 	}
 }
 
+func TestAbsUnderRoot_SymlinkInsideRoot(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "real")
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(target, "file.txt"), []byte("ok"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skip("symlinks not supported on this platform")
+	}
+	abs, err := absUnderRoot(dir, "link/file.txt")
+	if err != nil {
+		t.Fatalf("symlink inside root should be allowed: %v", err)
+	}
+	if !strings.Contains(abs, "link") {
+		t.Fatalf("expected logical path with link, got %s", abs)
+	}
+}
+
+func TestAbsUnderRoot_SymlinkEscapesRoot(t *testing.T) {
+	parent := t.TempDir()
+	root := filepath.Join(parent, "workspace")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(parent, "outside")
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(outside, "secret.txt"), []byte("secret"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "evil")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skip("symlinks not supported on this platform")
+	}
+	_, err := absUnderRoot(root, "evil/secret.txt")
+	if err == nil {
+		t.Fatal("symlink escaping root should be rejected")
+	}
+	if !strings.Contains(err.Error(), "escapes workspace root") {
+		t.Fatalf("expected 'escapes workspace root' error, got: %v", err)
+	}
+}
+
+func TestAbsUnderRoot_NewFileInExistingDir(t *testing.T) {
+	dir := t.TempDir()
+	sub := filepath.Join(dir, "sub")
+	if err := os.MkdirAll(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	abs, err := absUnderRoot(dir, "sub/newfile.txt")
+	if err != nil {
+		t.Fatalf("new file under existing dir: %v", err)
+	}
+	if !strings.Contains(abs, "newfile.txt") {
+		t.Fatalf("expected newfile.txt in path, got %s", abs)
+	}
+}
+
 func TestWriteFileWorkspace_InvalidMode(t *testing.T) {
 	dir := t.TempDir()
 	err := writeFileWorkspace(dir, "z.txt", "x", "wipe")

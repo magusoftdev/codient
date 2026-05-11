@@ -78,7 +78,7 @@ func TestBuildRegistry_NilSession_NoDelegateTask(t *testing.T) {
 func TestBuildAgentSystemPrompt_DelegationSection_Build(t *testing.T) {
 	cfg := &config.Config{Workspace: t.TempDir()}
 	reg := buildRegistry(cfg, prompt.ModeBuild, nil, nil)
-	tools.RegisterDelegateTask(reg, "build", func(_ context.Context, _, _, _ string) (string, error) {
+	tools.RegisterDelegateTask(reg, "build", nil, func(_ context.Context, _, _, _, _ string) (string, error) {
 		return "", nil
 	})
 	s := buildAgentSystemPrompt(cfg, reg, prompt.ModeBuild, "", "", "", "", "", nil)
@@ -93,7 +93,7 @@ func TestBuildAgentSystemPrompt_DelegationSection_Build(t *testing.T) {
 func TestBuildAgentSystemPrompt_DelegationSection_Ask(t *testing.T) {
 	cfg := &config.Config{Workspace: t.TempDir()}
 	reg := buildRegistry(cfg, prompt.ModeAsk, nil, nil)
-	tools.RegisterDelegateTask(reg, "ask", func(_ context.Context, _, _, _ string) (string, error) {
+	tools.RegisterDelegateTask(reg, "ask", nil, func(_ context.Context, _, _, _, _ string) (string, error) {
 		return "", nil
 	})
 	s := buildAgentSystemPrompt(cfg, reg, prompt.ModeAsk, "", "", "", "", "", nil)

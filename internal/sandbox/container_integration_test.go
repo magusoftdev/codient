@@ -90,3 +90,89 @@ func TestIntegration_ContainerRunner_WorkspaceIsolation(t *testing.T) {
 		t.Fatalf("host-only file should not be visible in container: code=%d err=%v stderr check failed", code, err)
 	}
 }
+
+func TestIntegration_ContainerSession_PersistsState(t *testing.T) {
+	skipUnlessContainerIntegration(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	ws := t.TempDir()
+	sess, err := StartContainerSession(ctx, "", ws, Policy{})
+	if err != nil {
+		t.Fatalf("StartContainerSession: %v", err)
+	}
+	defer func() {
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer stopCancel()
+		sess.Close(stopCtx)
+	}()
+
+	// First exec: write a marker file.
+	var stdout1, stderr1 bytes.Buffer
+	code, err := sess.Exec(ctx, []string{"sh", "-c", "echo session_marker > /workspace/marker.txt"}, nil, &stdout1, &stderr1, 30*time.Second)
+	if err != nil {
+		t.Fatalf("first exec: %v stderr=%s", err, stderr1.String())
+	}
+	if code != 0 {
+		t.Fatalf("first exec: exit %d stderr=%s", code, stderr1.String())
+	}
+
+	// Second exec: read it back. State persists because it's the same container.
+	var stdout2, stderr2 bytes.Buffer
+	code, err = sess.Exec(ctx, []string{"cat", "/workspace/marker.txt"}, nil, &stdout2, &stderr2, 30*time.Second)
+	if err != nil {
+		t.Fatalf("second exec: %v stderr=%s", err, stderr2.String())
+	}
+	if code != 0 {
+		t.Fatalf("second exec: exit %d stderr=%s", code, stderr2.String())
+	}
+	if !strings.Contains(stdout2.String(), "session_marker") {
+		t.Fatalf("expected session_marker, got %q", stdout2.String())
+	}
+
+	// The file should also be visible on the host via the bind mount.
+	hostData, err := os.ReadFile(filepath.Join(ws, "marker.txt"))
+	if err != nil {
+		t.Fatalf("read host marker: %v", err)
+	}
+	if !strings.Contains(string(hostData), "session_marker") {
+		t.Fatalf("host marker: got %q", string(hostData))
+	}
+}
+
+func TestIntegration_ContainerSession_SessionRunner(t *testing.T) {
+	skipUnlessContainerIntegration(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	ws := t.TempDir()
+	sess, err := StartContainerSession(ctx, "", ws, Policy{})
+	if err != nil {
+		t.Fatalf("StartContainerSession: %v", err)
+	}
+	defer func() {
+		stopCtx, stopCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer stopCancel()
+		sess.Close(stopCtx)
+	}()
+
+	runner := &SessionRunner{Sess: sess}
+	if !runner.Available() {
+		t.Fatal("expected Available() true")
+	}
+	if runner.Name() != "container-session" {
+		t.Fatalf("Name: got %q", runner.Name())
+	}
+
+	var stdout, stderr bytes.Buffer
+	code, err := runner.Exec(ctx, Policy{}, ws, []string{"echo", "via-runner"}, nil, 30*time.Second, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	if code != 0 {
+		t.Fatalf("exit %d stderr=%s", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "via-runner") {
+		t.Fatalf("stdout: got %q", stdout.String())
+	}
+}

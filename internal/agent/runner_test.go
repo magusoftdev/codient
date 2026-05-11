@@ -709,7 +709,7 @@ func TestRunner_DelegateTaskIntegration(t *testing.T) {
 	reg.Register(mustEchoTool(t))
 
 	var delegatedMode, delegatedTask, delegatedCtx string
-	tools.RegisterDelegateTask(reg, "build", func(_ context.Context, mode, task, ctx string) (string, error) {
+	tools.RegisterDelegateTask(reg, "build", nil, func(_ context.Context, mode, task, ctx, _ string) (string, error) {
 		delegatedMode = mode
 		delegatedTask = task
 		delegatedCtx = ctx
@@ -785,7 +785,7 @@ func TestRunner_DelegateTask_PrivilegeEscalationBlocked(t *testing.T) {
 	llm := &captureLLM{model: "m", script: []string{delegateCall, final}}
 	reg := tools.NewRegistry()
 	var delegateCalled bool
-	tools.RegisterDelegateTask(reg, "ask", func(_ context.Context, _, _, _ string) (string, error) {
+	tools.RegisterDelegateTask(reg, "ask", nil, func(_ context.Context, _, _, _, _ string) (string, error) {
 		delegateCalled = true
 		return "should not reach here", nil
 	})
@@ -861,7 +861,7 @@ func TestRunner_DelegateTask_ParallelCalls(t *testing.T) {
 
 	var mu sync.Mutex
 	var tasks []string
-	tools.RegisterDelegateTask(reg, "build", func(_ context.Context, _, task, _ string) (string, error) {
+	tools.RegisterDelegateTask(reg, "build", nil, func(_ context.Context, _, task, _, _ string) (string, error) {
 		mu.Lock()
 		tasks = append(tasks, task)
 		mu.Unlock()

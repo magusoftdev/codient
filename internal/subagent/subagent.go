@@ -19,6 +19,7 @@ import (
 	"codient/internal/openaiclient"
 	"codient/internal/prompt"
 	"codient/internal/repomap"
+	"codient/internal/sandbox"
 	"codient/internal/tokentracker"
 	"codient/internal/tools"
 )
@@ -54,6 +55,10 @@ type RunParams struct {
 	Tracker           *tokentracker.Tracker
 	// AutoCheck runs after successful mutating tools in this sub-agent (build mode only; nil skips).
 	AutoCheck func(context.Context) agent.AutoCheckOutcome
+	// SandboxRunnerOverride, when non-nil, replaces the default sandbox.Runner
+	// built from cfg.SandboxMode for run_command in this sub-agent. Used by
+	// delegate_task to inject a per-delegate container session or profile runner.
+	SandboxRunnerOverride sandbox.Runner
 }
 
 // newRunnerFromParams builds the agent.Runner used by Run.
@@ -81,7 +86,7 @@ func newRunnerFromParams(llm agent.ChatClient, p RunParams, reg *tools.Registry,
 func Run(ctx context.Context, p RunParams) (Result, error) {
 	client := openaiclient.NewForTier(p.Cfg, tierForMode(p.Mode))
 
-	reg := agentfactory.RegistryForMode(p.Cfg, p.Mode, p.RepoMap)
+	reg := agentfactory.RegistryForMode(p.Cfg, p.Mode, p.RepoMap, p.SandboxRunnerOverride)
 	repoMapText := repomap.PromptText(p.Cfg.RepoMapTokens, p.RepoMap)
 	sys := agentfactory.SystemPromptForMode(p.Cfg, reg, p.Mode, repoMapText, io.Discard)
 

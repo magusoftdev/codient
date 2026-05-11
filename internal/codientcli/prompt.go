@@ -115,7 +115,11 @@ func buildRegistry(cfg *config.Config, mode prompt.Mode, s *session, memOpts *to
 	// Register delegate_task for the interactive parent session only.
 	// Sub-agent registries (built via agentfactory) never get this tool.
 	if s != nil && !s.acpNoDelegate {
-		tools.RegisterDelegateTask(reg, string(mode), s.delegateTaskFn())
+		var profileNames []string
+		for name := range s.cfg.DelegateSandboxProfiles {
+			profileNames = append(profileNames, name)
+		}
+		tools.RegisterDelegateTask(reg, string(mode), profileNames, s.delegateTaskFn())
 	}
 	if s != nil && s.acpCallClient != nil {
 		registerUnityACPToolsForMode(reg, mode, s.acpCallClient)

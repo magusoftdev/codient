@@ -12,13 +12,16 @@ import (
 
 // DelegateRunner is the callback signature for executing a sub-agent.
 // mode is "build"|"ask"|"plan"; task is the self-contained task description;
-// extraContext is optional context from the parent.
-type DelegateRunner func(ctx context.Context, mode, task, extraContext string) (string, error)
+// extraContext is optional context from the parent; sandboxProfile selects an
+// admin-defined delegate sandbox profile (empty = use global or default).
+type DelegateRunner func(ctx context.Context, mode, task, extraContext, sandboxProfile string) (string, error)
 
 // RegisterDelegateTask adds the delegate_task tool to a parent agent's registry.
 // parentMode controls which sub-agent modes are allowed (privilege escalation guard).
+// profileNames lists available delegate sandbox profiles (from config); empty
+// means no sandbox_profile parameter is exposed.
 // runFn is injected by the session layer to avoid circular dependencies.
-func RegisterDelegateTask(r *Registry, parentMode string, runFn DelegateRunner) {
+func RegisterDelegateTask(r *Registry, parentMode string, profileNames []string, runFn DelegateRunner) {
 	allowedModes := []string{"ask"}
 	desc := "Delegate a self-contained research task to a read-only sub-agent that runs in ask mode. " +
 		"The sub-agent gets a fresh context with workspace access (read/search only). " +
@@ -37,34 +40,48 @@ func RegisterDelegateTask(r *Registry, parentMode string, runFn DelegateRunner) 
 		modeEnum[i] = m
 	}
 
+	props := map[string]any{
+		"mode": map[string]any{
+			"type":        "string",
+			"enum":        modeEnum,
+			"description": "Mode for the sub-agent: controls its tool set and system prompt.",
+		},
+		"task": map[string]any{
+			"type":        "string",
+			"description": "Clear, self-contained task description. The sub-agent has no knowledge of the parent conversation.",
+		},
+		"context": map[string]any{
+			"type":        "string",
+			"description": "Optional context snippets (file contents, prior findings) to give the sub-agent. Omit if the task is fully self-contained.",
+		},
+	}
+	if len(profileNames) > 0 {
+		profEnum := make([]any, len(profileNames))
+		for i, n := range profileNames {
+			profEnum[i] = n
+		}
+		props["sandbox_profile"] = map[string]any{
+			"type":        "string",
+			"enum":        profEnum,
+			"description": "Admin-defined sandbox profile for the sub-agent's run_command isolation. Omit to use the default profile.",
+		}
+	}
+
 	r.Register(Tool{
 		Name:        "delegate_task",
 		Description: desc,
 		Parameters: shared.FunctionParameters{
-			"type": "object",
-			"properties": map[string]any{
-				"mode": map[string]any{
-					"type":        "string",
-					"enum":        modeEnum,
-					"description": "Mode for the sub-agent: controls its tool set and system prompt.",
-				},
-				"task": map[string]any{
-					"type":        "string",
-					"description": "Clear, self-contained task description. The sub-agent has no knowledge of the parent conversation.",
-				},
-				"context": map[string]any{
-					"type":        "string",
-					"description": "Optional context snippets (file contents, prior findings) to give the sub-agent. Omit if the task is fully self-contained.",
-				},
-			},
+			"type":                 "object",
+			"properties":           props,
 			"required":             []string{"mode", "task"},
 			"additionalProperties": false,
 		},
 		Run: func(ctx context.Context, args json.RawMessage) (string, error) {
 			var p struct {
-				Mode    string `json:"mode"`
-				Task    string `json:"task"`
-				Context string `json:"context"`
+				Mode           string `json:"mode"`
+				Task           string `json:"task"`
+				Context        string `json:"context"`
+				SandboxProfile string `json:"sandbox_profile"`
 			}
 			if err := json.Unmarshal(args, &p); err != nil {
 				return "", fmt.Errorf("invalid arguments: %w", err)
@@ -79,7 +96,11 @@ func RegisterDelegateTask(r *Registry, parentMode string, runFn DelegateRunner) 
 			if strings.TrimSpace(p.Task) == "" {
 				return "", fmt.Errorf("task is required")
 			}
-			return runFn(ctx, p.Mode, p.Task, p.Context)
+			profile := strings.TrimSpace(p.SandboxProfile)
+			if profile != "" && len(profileNames) > 0 && !slices.Contains(profileNames, profile) {
+				return "", fmt.Errorf("sandbox_profile %q not allowed; available profiles: %s", profile, strings.Join(profileNames, ", "))
+			}
+			return runFn(ctx, p.Mode, p.Task, p.Context, profile)
 		},
 	})
 }

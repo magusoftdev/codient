@@ -589,7 +589,7 @@ func TestIntegration_AgentDelegateTask(t *testing.T) {
 	const marker = "SUB_AGENT_RESULT_abc123"
 	client := openaiclient.New(cfg)
 	reg := tools.Default(wsRoot, "", nil, nil, nil, "", nil, nil, nil)
-	tools.RegisterDelegateTask(reg, "build", func(ctx context.Context, mode, task, extraContext string) (string, error) {
+	tools.RegisterDelegateTask(reg, "build", nil, func(ctx context.Context, mode, task, extraContext, _ string) (string, error) {
 		return marker, nil
 	})
 
@@ -643,7 +643,7 @@ func TestIntegration_SubAgentEndToEnd(t *testing.T) {
 
 	client := openaiclient.New(cfg)
 	reg := tools.Default(wsRoot, "", nil, nil, nil, "", nil, nil, nil)
-	tools.RegisterDelegateTask(reg, "build", func(ctx context.Context, mode, taskDesc, extraContext string) (string, error) {
+	tools.RegisterDelegateTask(reg, "build", nil, func(ctx context.Context, mode, taskDesc, extraContext, _ string) (string, error) {
 		m, mErr := prompt.ParseMode(mode)
 		if mErr != nil {
 			return "", mErr

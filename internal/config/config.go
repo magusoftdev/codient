@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync"
@@ -13,7 +14,7 @@ import (
 )
 
 const (
-	defaultBaseURL              = "http://127.0.0.1:1234/v1"
+	defaultBaseURL              = "http://127.0.0.1:13305/v1"
 	defaultAPIKey               = "codient"
 	defaultMaxConcurrent        = 3
 	defaultExecTimeoutSec       = 120
@@ -170,6 +171,27 @@ type Config struct {
 	HooksEnabled bool
 	// DelegateGitWorktrees isolates each delegate_task in a git worktree (detached HEAD); default false.
 	DelegateGitWorktrees bool
+	// DelegateSandboxProfiles maps admin-defined names to sandbox profiles for delegate_task.
+	// The model can only pick among these names, never define new ones.
+	DelegateSandboxProfiles map[string]DelegateSandboxProfile
+	// DelegateSandboxDefault is the profile name applied when delegate_task omits sandbox_profile.
+	// Empty means fall back to the global SandboxMode / SandboxContainerImage.
+	DelegateSandboxDefault string
+}
+
+// DelegateSandboxProfile describes container isolation settings for a delegate_task invocation.
+type DelegateSandboxProfile struct {
+	Image         string   `json:"image,omitempty"`
+	NetworkPolicy string   `json:"network_policy,omitempty"`
+	MaxMemoryMB   int      `json:"max_memory_mb,omitempty"`
+	MaxCPUPercent int      `json:"max_cpu_percent,omitempty"`
+	MaxProcesses  int      `json:"max_processes,omitempty"`
+	ReadOnlyPaths []string `json:"read_only_paths,omitempty"`
+	EnvPassthrough []string `json:"env_passthrough,omitempty"`
+	// LongLived keeps a single container running for the delegate's lifetime
+	// instead of spawning one per run_command (avoids losing caches between
+	// build and test steps). Default false.
+	LongLived bool `json:"long_lived,omitempty"`
 }
 
 // CostPerMTok holds optional USD per million input/output tokens for cost display.
@@ -421,6 +443,11 @@ func Load() (*Config, error) {
 	}
 	sandboxImg := strings.TrimSpace(pc.SandboxContainerImage)
 
+	delegateProfiles, delegateDefault, delegateErr := parseDelegateSandboxProfiles(pc.DelegateSandboxProfiles, pc.DelegateSandboxDefault)
+	if delegateErr != nil {
+		return nil, delegateErr
+	}
+
 	c := &Config{
 		BaseURL:                   baseURL,
 		APIKey:                    apiKey,
@@ -429,6 +456,8 @@ func Load() (*Config, error) {
 		Workspace:                 ws,
 		HooksEnabled:              pc.HooksEnabled,
 		DelegateGitWorktrees:      pc.DelegateGitWorktrees,
+		DelegateSandboxProfiles:   delegateProfiles,
+		DelegateSandboxDefault:    delegateDefault,
 		ExecAllowlist:             execAllowlist,
 		ExecEnvPassthrough:        execEnvPassthrough,
 		ExecTimeoutSeconds:        execTimeout,
@@ -738,6 +767,48 @@ func parseCommaListPreserveCase(s string) []string {
 		out = append(out, p)
 	}
 	return out
+}
+
+var delegateProfileNameRe = regexp.MustCompile(`^[a-z0-9_-]+$`)
+
+// parseDelegateSandboxProfiles validates admin-defined delegate sandbox profiles.
+func parseDelegateSandboxProfiles(profiles map[string]DelegateSandboxProfile, defaultName string) (map[string]DelegateSandboxProfile, string, error) {
+	if len(profiles) == 0 {
+		return nil, "", nil
+	}
+	out := make(map[string]DelegateSandboxProfile, len(profiles))
+	for name, p := range profiles {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			return nil, "", fmt.Errorf("delegate_sandbox_profiles: profile name must not be empty")
+		}
+		if !delegateProfileNameRe.MatchString(name) {
+			return nil, "", fmt.Errorf("delegate_sandbox_profiles: profile name %q contains invalid character (use [a-z0-9_-])", name)
+		}
+		if np := strings.TrimSpace(strings.ToLower(p.NetworkPolicy)); np != "" {
+			if !sandbox.NetworkPolicyIsValid(np) {
+				return nil, "", fmt.Errorf("delegate_sandbox_profiles[%s]: invalid network_policy %q (use none, bridge, host)", name, p.NetworkPolicy)
+			}
+			p.NetworkPolicy = np
+		}
+		if p.MaxMemoryMB < 0 {
+			p.MaxMemoryMB = 0
+		}
+		if p.MaxCPUPercent < 0 || p.MaxCPUPercent > 100 {
+			p.MaxCPUPercent = 0
+		}
+		if p.MaxProcesses < 0 {
+			p.MaxProcesses = 0
+		}
+		out[name] = p
+	}
+	defaultName = strings.TrimSpace(defaultName)
+	if defaultName != "" {
+		if _, ok := out[defaultName]; !ok {
+			return nil, "", fmt.Errorf("delegate_sandbox_default %q does not match any profile in delegate_sandbox_profiles", defaultName)
+		}
+	}
+	return out, defaultName, nil
 }
 
 func parseSandboxPaths(s string) []string {

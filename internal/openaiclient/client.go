@@ -389,7 +389,7 @@ func (c *Client) probeContextSingleModel(ctx context.Context, modelID string) in
 }
 
 // nativeBaseURL derives the LM Studio native API root from the OpenAI-compat base.
-// e.g. "http://127.0.0.1:1234/v1" -> "http://127.0.0.1:1234"
+// e.g. "http://127.0.0.1:13305/v1" -> "http://127.0.0.1:13305"
 func (c *Client) nativeBaseURL() string {
 	b := c.base
 	if strings.HasSuffix(b, "/v1") {

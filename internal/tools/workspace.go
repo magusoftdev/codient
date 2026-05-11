@@ -35,6 +35,8 @@ func shouldSkipDir(name string) bool {
 }
 
 // absUnderRoot resolves rel inside root and ensures the result stays under root.
+// It also evaluates symlinks: if the resolved real path escapes root, the call
+// is rejected. Symlinks that resolve to targets inside root are allowed.
 func absUnderRoot(root, rel string) (abs string, err error) {
 	absRoot, err := filepath.Abs(root)
 	if err != nil {
@@ -49,7 +51,47 @@ func absUnderRoot(root, rel string) (abs string, err error) {
 	if err != nil || strings.HasPrefix(relPath, "..") {
 		return "", fmt.Errorf("path escapes workspace root")
 	}
+	// Resolve symlinks to catch targets outside root. We use the deepest
+	// existing ancestor so that non-existent paths (e.g. write_file to a
+	// new file) still work: the parent directory must exist and resolve
+	// inside root.
+	resolved, err := evalExistingSymlinks(absFull)
+	if err != nil {
+		return "", err
+	}
+	// Re-resolve root in case root itself is a symlink (e.g. /tmp on macOS).
+	resolvedRoot, err := filepath.EvalSymlinks(absRoot)
+	if err != nil {
+		resolvedRoot = absRoot
+	}
+	resolvedRel, err := filepath.Rel(resolvedRoot, resolved)
+	if err != nil || strings.HasPrefix(resolvedRel, "..") {
+		return "", fmt.Errorf("path escapes workspace root")
+	}
 	return absFull, nil
+}
+
+// evalExistingSymlinks resolves symlinks for the deepest existing ancestor of
+// p, then appends the remaining non-existent tail. This allows absUnderRoot to
+// work for paths that don't exist yet (write_file creating a new file) while
+// still catching symlink escapes in existing ancestors.
+func evalExistingSymlinks(p string) (string, error) {
+	resolved, err := filepath.EvalSymlinks(p)
+	if err == nil {
+		return resolved, nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+	parent := filepath.Dir(p)
+	if parent == p {
+		return p, nil
+	}
+	resolvedParent, err := evalExistingSymlinks(parent)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(resolvedParent, filepath.Base(p)), nil
 }
 
 // resolveReadableAbs tries the workspace root first, then an optional second root

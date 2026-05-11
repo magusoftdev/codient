@@ -549,6 +549,143 @@ func TestLoad_AcpPreloadModelOnSetModelExplicitFalse(t *testing.T) {
 	}
 }
 
+func TestLoad_DelegateSandboxProfiles(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CODIENT_STATE_DIR", dir)
+
+	configJSON := `{
+		"delegate_sandbox_profiles": {
+			"go-build": {"image": "golang:1.22", "long_lived": true, "max_memory_mb": 512},
+			"node": {"image": "node:20", "network_policy": "bridge"}
+		},
+		"delegate_sandbox_default": "go-build"
+	}`
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(configJSON), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.DelegateSandboxProfiles) != 2 {
+		t.Fatalf("profiles: got %d", len(c.DelegateSandboxProfiles))
+	}
+	goBuild := c.DelegateSandboxProfiles["go-build"]
+	if goBuild.Image != "golang:1.22" || !goBuild.LongLived || goBuild.MaxMemoryMB != 512 {
+		t.Fatalf("go-build profile: %+v", goBuild)
+	}
+	node := c.DelegateSandboxProfiles["node"]
+	if node.Image != "node:20" || node.NetworkPolicy != "bridge" {
+		t.Fatalf("node profile: %+v", node)
+	}
+	if c.DelegateSandboxDefault != "go-build" {
+		t.Fatalf("default: got %q", c.DelegateSandboxDefault)
+	}
+}
+
+func TestLoad_DelegateSandboxProfiles_InvalidName(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CODIENT_STATE_DIR", dir)
+
+	configJSON := `{
+		"delegate_sandbox_profiles": {
+			"BAD NAME!": {"image": "alpine"}
+		}
+	}`
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(configJSON), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load()
+	if err == nil || !strings.Contains(err.Error(), "invalid character") {
+		t.Fatalf("expected 'invalid character' error, got %v", err)
+	}
+}
+
+func TestLoad_DelegateSandboxProfiles_InvalidNetworkPolicy(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CODIENT_STATE_DIR", dir)
+
+	configJSON := `{
+		"delegate_sandbox_profiles": {
+			"bad-net": {"network_policy": "private"}
+		}
+	}`
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(configJSON), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load()
+	if err == nil || !strings.Contains(err.Error(), "invalid network_policy") {
+		t.Fatalf("expected invalid network_policy error, got %v", err)
+	}
+}
+
+func TestLoad_DelegateSandboxProfiles_DefaultMismatch(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CODIENT_STATE_DIR", dir)
+
+	configJSON := `{
+		"delegate_sandbox_profiles": {
+			"a": {"image": "alpine"}
+		},
+		"delegate_sandbox_default": "nonexistent"
+	}`
+	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(configJSON), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Load()
+	if err == nil || !strings.Contains(err.Error(), "does not match") {
+		t.Fatalf("expected mismatch error, got %v", err)
+	}
+}
+
+func TestLoad_DelegateSandboxProfiles_EmptyIsNil(t *testing.T) {
+	t.Setenv("CODIENT_STATE_DIR", t.TempDir())
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.DelegateSandboxProfiles != nil {
+		t.Fatalf("expected nil profiles by default, got %v", c.DelegateSandboxProfiles)
+	}
+	if c.DelegateSandboxDefault != "" {
+		t.Fatalf("expected empty default, got %q", c.DelegateSandboxDefault)
+	}
+}
+
+func TestConfigToPersistent_DelegateSandboxProfiles_RoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CODIENT_STATE_DIR", dir)
+
+	cfg := &Config{
+		BaseURL:       "http://test/v1",
+		APIKey:        "key",
+		Model:         "m",
+		MaxConcurrent: 1,
+		DelegateSandboxProfiles: map[string]DelegateSandboxProfile{
+			"test": {Image: "alpine:3.20", LongLived: true, MaxMemoryMB: 256},
+		},
+		DelegateSandboxDefault: "test",
+	}
+	pc := ConfigToPersistent(cfg)
+	if err := SavePersistentConfig(pc); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.DelegateSandboxProfiles) != 1 {
+		t.Fatalf("round-trip profiles: got %d", len(c.DelegateSandboxProfiles))
+	}
+	p := c.DelegateSandboxProfiles["test"]
+	if p.Image != "alpine:3.20" || !p.LongLived || p.MaxMemoryMB != 256 {
+		t.Fatalf("round-trip profile: %+v", p)
+	}
+	if c.DelegateSandboxDefault != "test" {
+		t.Fatalf("round-trip default: %q", c.DelegateSandboxDefault)
+	}
+}
+
 func TestConfigToPersistent_DelegateGitWorktrees(t *testing.T) {
 	cfg := &Config{DelegateGitWorktrees: true}
 	pc := ConfigToPersistent(cfg)

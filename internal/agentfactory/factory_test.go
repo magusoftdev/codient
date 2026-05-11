@@ -7,6 +7,7 @@ import (
 
 	"codient/internal/config"
 	"codient/internal/prompt"
+	"codient/internal/sandbox"
 )
 
 func TestRegistryForMode_NoDelegateTask(t *testing.T) {
@@ -80,6 +81,26 @@ func TestRegistryForMode_PlanNoEcho(t *testing.T) {
 		if name == "echo" {
 			t.Fatal("plan mode should NOT have echo")
 		}
+	}
+}
+
+func TestRegistryForMode_SandboxOverride(t *testing.T) {
+	cfg := &config.Config{
+		Workspace:     t.TempDir(),
+		ExecAllowlist: []string{"go"},
+		MaxConcurrent: 1,
+		SandboxMode:   "off",
+	}
+	// Without override: build mode uses global sandbox.
+	reg := RegistryForMode(cfg, prompt.ModeBuild, nil)
+	if reg == nil {
+		t.Fatal("expected registry")
+	}
+	// With override: build mode uses the provided runner.
+	custom := &sandbox.SessionRunner{}
+	reg2 := RegistryForMode(cfg, prompt.ModeBuild, nil, custom)
+	if reg2 == nil {
+		t.Fatal("expected registry with override")
 	}
 }
 

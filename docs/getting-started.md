@@ -5,7 +5,7 @@ Install the **codient** binary using the **[instructions in the main README](../
 ## Requirements
 
 - [Go](https://go.dev/dl/) 1.26+ (see `go.mod`)
-- A running server exposing OpenAI-style `/v1/chat/completions` (default base URL `http://127.0.0.1:1234/v1`; typical for local stacks)
+- A running server exposing OpenAI-style `/v1/chat/completions` (default base URL `http://127.0.0.1:13305/v1`; typical for local stacks)
 
 **Optional:**
 

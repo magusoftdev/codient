@@ -27,7 +27,7 @@ This document supersedes informal “gap list” audits: it records **what codie
 | Theme | Status | Notes / location |
 |--------|--------|-------------------|
 | **MCP client** | **Done** | `internal/mcpclient`; config `mcp_servers`; tools `mcp__…`. See [Context and integrations](context-and-integrations.md#mcp-model-context-protocol-servers). |
-| **Sub-agents / delegation** | **Largely done** | `delegate_task` + `internal/subagent`: nested child runner that the model can fan out via multiple tool calls in a single round. The agent runner executes those tool calls concurrently (`internal/agent/runner.go`, `sync.WaitGroup` around `runOneTool`), and **`delegate_git_worktrees=true`** gives each delegated task its own `git worktree` under the state directory (`internal/codientcli/session.go::delegateTaskFn`, `internal/gitutil.AddDelegateWorktree`). Remaining nuance: sub-agents share the parent's **`sandbox_mode`** settings for `run_command` but do not yet get an additional per-task container; `sandbox_mode=container` plus `delegate_git_worktrees=true` is the closest current option. See [Usage](usage.md) (sub-agents). |
+| **Sub-agents / delegation** | **Done** | `delegate_task` + `internal/subagent`: nested child runner that the model can fan out via multiple tool calls in a single round. The agent runner executes those tool calls concurrently (`internal/agent/runner.go`, `sync.WaitGroup` around `runOneTool`), and **`delegate_git_worktrees=true`** gives each delegated task its own `git worktree` under the state directory (`internal/codientcli/session.go::delegateTaskFn`, `internal/gitutil.AddDelegateWorktree`). **`delegate_sandbox_profiles`** defines named container isolation profiles (per-delegate image, network policy, resource caps, optional long-lived container sessions). The model picks a profile via `sandbox_profile` on `delegate_task`. Symlink-escape hardening on file tools prevents traversal outside the worktree. See [Configuration](configuration.md#delegate-sandbox-profiles). |
 | **Sandbox / isolation** | **Done (platform-dependent)** | `sandbox_mode`: `off`, `native`, `container`, `auto`. Native: Linux/Darwin/Windows job limits; **container**: Docker/Podman. See [Configuration](configuration.md) (sandboxing). |
 | **Multimodal (images)** | **Done** | CLI `-image`, REPL `/image`, `/paste` (clipboard), Ctrl+V in TUI; use vision-capable models. See [Usage](usage.md). |
 | **File references (`@path`)** | **Done** | `@path/to/file.go` inlines file contents into the user message. Drag-and-drop detection auto-prefixes pasted paths. See [Usage](usage.md#file-references-path). |
@@ -65,13 +65,12 @@ This document supersedes informal “gap list” audits: it records **what codie
 
 ## Remaining work (prioritized summary)
 
-1. **Container isolation for delegated sub-agents** — Parallelism and per-task **git worktrees** are already in (see Sub-agents row above). The remaining nuance is an optional per-delegate container (today **`sandbox_mode=container`** only sandboxes `run_command` inside a sub-agent, not the sub-agent's whole workspace).  
-2. **Cloud / background execution** — Use your own VPS, CI, tmux, or containers (**[BYO remote](usage.md#bring-your-own-remote-and-background-runs)**); first-party hosted dispatch / sync is still out of scope.  
-3. **Named profiles** — Swap preset bundles (approvals, models, autocheck) with one switch.  
-4. **Stronger autonomous verify/fix loop** — Optional explicit loop on top of AutoCheck (parse test output, cap retries, “until green”).  
-5. **LSP** — Optional client for definition/rename/type-aware refactors.  
-6. **IDE extension / watch mode** — Separate deliverable from core CLI.  
-7. **Terminal UX** — Word-level or richer diff presentation if desired beyond unified / colored `git diff`.  
+1. **Cloud / background execution** — Use your own VPS, CI, tmux, or containers (**[BYO remote](usage.md#bring-your-own-remote-and-background-runs)**); first-party hosted dispatch / sync is still out of scope.  
+2. **Named profiles** — Swap preset bundles (approvals, models, autocheck) with one switch.  
+3. **Stronger autonomous verify/fix loop** — Optional explicit loop on top of AutoCheck (parse test output, cap retries, “until green”).  
+4. **LSP** — Optional client for definition/rename/type-aware refactors.  
+5. **IDE extension / watch mode** — Separate deliverable from core CLI.  
+6. **Terminal UX** — Word-level or richer diff presentation if desired beyond unified / colored `git diff`.  
 
 ---
 

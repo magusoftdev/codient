@@ -158,6 +158,11 @@ type PersistentConfig struct {
 
 	// DelegateGitWorktrees runs each delegate_task sub-agent in a detached git worktree at HEAD (default false).
 	DelegateGitWorktrees bool `json:"delegate_git_worktrees,omitempty"`
+
+	// DelegateSandboxProfiles defines named sandbox profiles for delegate_task.
+	DelegateSandboxProfiles map[string]DelegateSandboxProfile `json:"delegate_sandbox_profiles,omitempty"`
+	// DelegateSandboxDefault is the profile name applied when delegate_task omits sandbox_profile.
+	DelegateSandboxDefault string `json:"delegate_sandbox_default,omitempty"`
 }
 
 // ModeConnectionOverride holds optional per-mode overrides for base_url, api_key, and model.
@@ -349,6 +354,8 @@ func ConfigToPersistent(cfg *Config) *PersistentConfig {
 	pc.HooksEnabled = cfg.HooksEnabled
 	pc.DelegateGitWorktrees = cfg.DelegateGitWorktrees
 	pc.CheckpointAuto = cfg.CheckpointAuto
+	pc.DelegateSandboxProfiles = cfg.DelegateSandboxProfiles
+	pc.DelegateSandboxDefault = cfg.DelegateSandboxDefault
 	return pc
 }
 

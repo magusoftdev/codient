@@ -9,7 +9,7 @@ Start codient and set your model (and optionally base URL / API key):
 ```
 codient
 /config model gpt-4o-mini
-/config base_url http://127.0.0.1:1234/v1
+/config base_url http://127.0.0.1:13305/v1
 /config api_key your-key-here
 ```
 
@@ -23,7 +23,7 @@ All settings live in a single JSON file. Use `/config` to view and edit, or edit
 
 ```json
 {
-  "base_url": "http://127.0.0.1:1234/v1",
+  "base_url": "http://127.0.0.1:13305/v1",
   "api_key": "codient",
   "model": "qwen3-coder",
   "search_url": "http://localhost:8888",
@@ -46,7 +46,7 @@ Configure each tier with **`low_reasoning_model`** and **`high_reasoning_model`*
 
 ```json
 {
-  "base_url": "http://127.0.0.1:1234/v1",
+  "base_url": "http://127.0.0.1:13305/v1",
   "api_key": "codient",
   "model": "qwen3-coder-30b",
   "low_reasoning_model": "qwen3-coder-7b",
@@ -67,7 +67,7 @@ Run `/config` with no arguments to see all current values. `/config <key>` shows
 | Key | Description | Default |
 |-----|-------------|---------|
 | **Connection** | | |
-| `base_url` | API base URL including `/v1` | `http://127.0.0.1:1234/v1` |
+| `base_url` | API base URL including `/v1` | `http://127.0.0.1:13305/v1` |
 | `api_key` | Sent as `Authorization` bearer token | `codient` |
 | `model` | Default model id (used by tiers that have no override) | *(none — must be set for typical use)* |
 | `low_reasoning_model` | Model id used by the orchestrator supervisor, **QUERY** (ask path), and **SIMPLE_FIX** (build path) turns | inherit `model` |
@@ -110,6 +110,8 @@ Run `/config` with no arguments to see all current values. `/config <key>` shows
 | **Git (build path)** | | |
 | `git_auto_commit` | After each build-path turn that changes files, commit with message `codient: turn N` (set `false` for legacy file-restore `/undo` without commits) | `true` |
 | `delegate_git_worktrees` | When **`true`**, each **`delegate_task`** sub-agent runs in a **detached git worktree** at **`HEAD`** under `~/.codient/delegate-worktrees/` (requires a git workspace and `git` on `PATH`). Filesystem edits there are **not merged** into the parent workspace. Uncommitted changes in the main tree are **not** visible in the worktree. Sub-agents omit the **`repo_map`** tool for this path (MVP). | `false` |
+| `delegate_sandbox_profiles` | Map of named sandbox profiles for `delegate_task` sub-agents. Each profile can specify `image`, `network_policy` (`none`/`bridge`/`host`), `max_memory_mb`, `max_cpu_percent`, `max_processes`, `read_only_paths`, `env_passthrough`, and `long_lived` (keep one container per delegate lifetime). The model can only pick among admin-defined names, never define new ones. See [Delegate sandbox profiles](#delegate-sandbox-profiles). | *(empty)* |
+| `delegate_sandbox_default` | Profile name from `delegate_sandbox_profiles` applied when `delegate_task` omits `sandbox_profile`. Empty = use global `sandbox_mode`. | *(empty)* |
 | `git_protected_branches` | Comma-separated branch names; when the first change lands on one of these, codient creates `codient/<task-slug>` and commits there | `main,master,develop` |
 | `checkpoint_auto` | Automatic checkpoints: **`plan`** (after each completed plan phase group), **`all`** (after each build turn that changes files and commits), **`off`** (manual `/checkpoint` only) | `plan` |
 | **UI/Output** | | |
@@ -159,6 +161,49 @@ Use **`-sandbox <mode>`** on the CLI to override `sandbox_mode` for that process
 
 **Optional integration tests** (real Docker/Podman) live under `internal/sandbox` with `//go:build integration`. Run with  
 `CODIENT_INTEGRATION=1 go test -tags=integration ./internal/sandbox/...` when a container runtime is installed.
+
+## Delegate sandbox profiles
+
+When `delegate_sandbox_profiles` is set, the model can pass `sandbox_profile` to `delegate_task` to select a named profile. Each profile overrides the global `sandbox_mode` for that sub-agent's `run_command` invocations.
+
+Example config:
+
+```json
+{
+  "delegate_sandbox_profiles": {
+    "go-build": {
+      "image": "golang:1.22",
+      "long_lived": true,
+      "max_memory_mb": 1024,
+      "max_cpu_percent": 50
+    },
+    "node": {
+      "image": "node:20",
+      "network_policy": "bridge"
+    }
+  },
+  "delegate_sandbox_default": "go-build"
+}
+```
+
+Profile fields:
+
+| Field | Description | Default |
+|-------|-------------|---------|
+| `image` | OCI image for the container | `alpine:3.20` |
+| `network_policy` | Container network: `none`, `bridge`, `host` | `none` |
+| `max_memory_mb` | Memory limit in MiB | *(unlimited)* |
+| `max_cpu_percent` | CPU cap as a percentage (1–100) | *(unlimited)* |
+| `max_processes` | PID limit | *(unlimited)* |
+| `read_only_paths` | Extra host paths granted read-only | *(empty)* |
+| `env_passthrough` | Extra environment variable names forwarded | *(empty)* |
+| `long_lived` | Keep a single container running for the delegate's lifetime (`docker run -d` + `docker exec` per command) instead of a fresh container per `run_command`. Preserves build caches and intermediate files across commands. | `false` |
+
+Profile names must match `[a-z0-9_-]+`. When `delegate_sandbox_default` is set, delegates that omit `sandbox_profile` use that profile. Otherwise they fall back to the global `sandbox_mode`.
+
+The `long_lived` flag only takes effect when the delegate is in **build** mode. Read-only modes (`ask`, `plan`) don't execute `run_command`.
+
+LLM calls (`fetch_url`, `web_search`) stay in the parent process and never enter the container.
 
 ## Auto-check sequence
 

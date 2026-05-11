@@ -817,25 +817,30 @@ func TestACPIntegration_AgentListModelsMockUpstream(t *testing.T) {
 		}, []string{"lm-studio/key-a", "lm-studio/key-b"})
 	})
 
-	t.Run("per_mode_base_url_only", func(t *testing.T) {
+	t.Run("per_mode_base_url_does_not_break_list", func(t *testing.T) {
 		t.Parallel()
+		// agent/list_models uses the top-level client, so per-mode overrides
+		// must not interfere. Point the top-level URL at a mock and verify
+		// that the presence of a per-mode base_url doesn't break listing.
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Path != "/v1/models" || r.Method != http.MethodGet {
 				http.NotFound(w, r)
 				return
 			}
-			_, _ = w.Write([]byte(`{"data":[{"id":"per-mode-base-url-model"}]}`))
+			_, _ = w.Write([]byte(`{"data":[{"id":"top-level-model"}]}`))
 		}))
 		defer srv.Close()
 		runACPAgentListModelsSmoke(t, map[string]any{
-			"model": "per-mode-base-url-model",
+			"base_url": srv.URL + "/v1",
+			"api_key":  "integration-test",
+			"model":    "top-level-model",
 			"models": map[string]any{
 				"build": map[string]any{
-					"base_url": srv.URL + "/v1",
+					"base_url": "http://127.0.0.1:19999/v1",
 					"api_key":  "k",
 				},
 			},
-		}, []string{"per-mode-base-url-model"})
+		}, []string{"top-level-model"})
 	})
 }
 

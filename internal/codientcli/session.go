@@ -39,6 +39,7 @@ import (
 	"codient/internal/projectinfo"
 	"codient/internal/prompt"
 	"codient/internal/repomap"
+	"codient/internal/sandbox"
 	"codient/internal/selfupdate"
 	"codient/internal/sessionstore"
 	"codient/internal/skills"
@@ -334,7 +335,7 @@ func (s *session) newRunner() *agent.Runner {
 
 // delegateTaskFn returns the callback used by the delegate_task tool to run sub-agents.
 func (s *session) delegateTaskFn() tools.DelegateRunner {
-	return func(ctx context.Context, modeStr, task, extraContext string) (string, error) {
+	return func(ctx context.Context, modeStr, task, extraContext, sandboxProfile string) (string, error) {
 		mode, err := prompt.ParseMode(modeStr)
 		if err != nil {
 			return "", err
@@ -383,16 +384,51 @@ func (s *session) delegateTaskFn() tools.DelegateRunner {
 			cfg = &c2
 			repoMap = nil
 		}
+		// Resolve delegate sandbox profile and optional long-lived container.
+		var sbRunner sandbox.Runner
+		var containerSess *sandbox.ContainerSession
+		profile, profileOK := resolveDelegateSandboxProfile(cfg, sandboxProfile)
+		if profileOK && profile.LongLived && mode == prompt.ModeBuild {
+			sess, sessErr := sandbox.StartContainerSession(
+				ctx,
+				profile.Image,
+				cfg.EffectiveWorkspace(),
+				sandbox.Policy{
+					NetworkPolicy: profile.NetworkPolicy,
+					MaxMemoryMB:   profile.MaxMemoryMB,
+					MaxCPUPercent: profile.MaxCPUPercent,
+					MaxProcesses:  profile.MaxProcesses,
+				},
+			)
+			if sessErr != nil {
+				return "", fmt.Errorf("delegate sandbox: start container session: %w", sessErr)
+			}
+			containerSess = sess
+			defer func() {
+				stopCtx, stopCancel := context.WithTimeout(context.Background(), 90*time.Second)
+				defer stopCancel()
+				if closeErr := containerSess.Close(stopCtx); closeErr != nil {
+					fmt.Fprintf(os.Stderr, "codient: delegate container cleanup: %v\n", closeErr)
+				}
+			}()
+			sbRunner = &sandbox.SessionRunner{Sess: sess}
+		} else if profileOK {
+			sbRunner = sandbox.SelectRunner("container", sandbox.SelectOptions{
+				ContainerImage: profile.Image,
+			})
+		}
+
 		rp := subagent.RunParams{
-			Cfg:               cfg,
-			Mode:              mode,
-			Task:              task,
-			Context:           extraContext,
-			RepoMap:           repoMap,
-			Log:               s.agentLog,
-			Progress:          progress,
-			OnTranscriptEvent: onTranscript,
-			Tracker:           s.tokenTracker,
+			Cfg:                   cfg,
+			Mode:                  mode,
+			Task:                  task,
+			Context:               extraContext,
+			RepoMap:               repoMap,
+			Log:                   s.agentLog,
+			Progress:              progress,
+			OnTranscriptEvent:     onTranscript,
+			Tracker:               s.tokenTracker,
+			SandboxRunnerOverride: sbRunner,
 		}
 		if mode == prompt.ModeBuild {
 			steps := buildAutoCheckSteps(cfg)
@@ -407,6 +443,21 @@ func (s *session) delegateTaskFn() tools.DelegateRunner {
 		}
 		return res.Reply, nil
 	}
+}
+
+// resolveDelegateSandboxProfile looks up a named profile, falling back to the
+// default profile when name is empty. Returns the profile and true if a profile
+// was resolved, or a zero profile and false when no profile applies (the
+// sub-agent should use the global sandbox config).
+func resolveDelegateSandboxProfile(cfg *config.Config, name string) (config.DelegateSandboxProfile, bool) {
+	if name == "" {
+		name = cfg.DelegateSandboxDefault
+	}
+	if name == "" || len(cfg.DelegateSandboxProfiles) == 0 {
+		return config.DelegateSandboxProfile{}, false
+	}
+	p, ok := cfg.DelegateSandboxProfiles[name]
+	return p, ok
 }
 
 // interruptTurn cancels the currently executing agent turn, if any.

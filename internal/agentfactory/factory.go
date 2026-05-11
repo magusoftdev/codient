@@ -21,7 +21,10 @@ import (
 // RegistryForMode builds a tool registry for the given mode with no interactive
 // session state (no exec prompts, no MCP, no code index). Suitable for
 // sub-agents and the A2A server. rm may be nil (no repo_map tool or shared map).
-func RegistryForMode(cfg *config.Config, mode prompt.Mode, rm *repomap.Map) *tools.Registry {
+// sandboxOverride, when non-nil, replaces the sandbox.Runner built from
+// cfg.SandboxMode for run_command (used by delegate_task for per-delegate
+// container sessions or profile runners).
+func RegistryForMode(cfg *config.Config, mode prompt.Mode, rm *repomap.Map, sandboxOverride ...sandbox.Runner) *tools.Registry {
 	ws := cfg.EffectiveWorkspace()
 	netLimit := tools.NewNetworkLimiter(cfg.FetchWebRatePerSec, cfg.FetchWebRateBurst)
 	fetch := FetchOpts(cfg, netLimit)
@@ -39,6 +42,14 @@ func RegistryForMode(cfg *config.Config, mode prompt.Mode, rm *repomap.Map) *too
 	default:
 		var execOpts *tools.ExecOptions
 		if len(cfg.ExecAllowlist) > 0 {
+			var sbRunner sandbox.Runner
+			if len(sandboxOverride) > 0 && sandboxOverride[0] != nil {
+				sbRunner = sandboxOverride[0]
+			} else {
+				sbRunner = sandbox.SelectRunner(cfg.SandboxMode, sandbox.SelectOptions{
+					ContainerImage: cfg.SandboxContainerImage,
+				})
+			}
 			execOpts = &tools.ExecOptions{
 				TimeoutSeconds:       cfg.ExecTimeoutSeconds,
 				MaxOutputBytes:       cfg.ExecMaxOutputBytes,
@@ -46,9 +57,7 @@ func RegistryForMode(cfg *config.Config, mode prompt.Mode, rm *repomap.Map) *too
 				EnvPassthrough:       append([]string(nil), cfg.ExecEnvPassthrough...),
 				SandboxReadOnlyPaths: append([]string(nil), cfg.SandboxReadOnlyPaths...),
 				WorkspaceRoot:        cfg.EffectiveWorkspace(),
-				SandboxRunner: sandbox.SelectRunner(cfg.SandboxMode, sandbox.SelectOptions{
-					ContainerImage: cfg.SandboxContainerImage,
-				}),
+				SandboxRunner:        sbRunner,
 			}
 		}
 		stateDir, _ := config.StateDir()

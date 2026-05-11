@@ -17,7 +17,7 @@ When the API returns usage metadata, codient aggregates **prompt and completion 
 
 ## Install
 
-You need a running server with OpenAI-style `/v1/chat/completions` (the default in config is `http://127.0.0.1:1234/v1`, typical for local stacks). Prebuilt release installs do not require Go on your PATH; [Go](https://go.dev/dl/) **1.26+** is only required for `go install` or `make install` from a clone (see `go.mod`).
+You need a running server with OpenAI-style `/v1/chat/completions` (the default in config is `http://127.0.0.1:13305/v1`, typical for local stacks). Prebuilt release installs do not require Go on your PATH; [Go](https://go.dev/dl/) **1.26+** is only required for `go install` or `make install` from a clone (see `go.mod`).
 
 **macOS / Linux:**
 

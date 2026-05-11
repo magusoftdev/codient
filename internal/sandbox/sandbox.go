@@ -28,6 +28,10 @@ type Policy struct {
 	MaxCPUPercent  int
 	MaxProcesses   int
 	EnvPassthrough []string
+	// NetworkPolicy controls the container network mode: "none" (default),
+	// "bridge", or "host". Only honoured by ContainerRunner and
+	// ContainerSession; native and noop runners ignore it.
+	NetworkPolicy string
 }
 
 // Runner executes argv with optional OS-level isolation.
@@ -136,6 +140,29 @@ func SelectRunner(mode string, opt SelectOptions) Runner {
 		return NoopRunner{}
 	}
 	return errRunner{name: "invalid", Err: fmt.Errorf("invalid sandbox_mode %q (use off, native, container, auto)", mode)}
+}
+
+// NetworkFlag returns the --network=<mode> flag for a Policy. Defaults to
+// "none" when NetworkPolicy is empty or unrecognised.
+func NetworkFlag(p Policy) string {
+	switch strings.ToLower(strings.TrimSpace(p.NetworkPolicy)) {
+	case "bridge":
+		return "--network=bridge"
+	case "host":
+		return "--network=host"
+	default:
+		return "--network=none"
+	}
+}
+
+// NetworkPolicyIsValid reports whether s is a recognised network policy value.
+func NetworkPolicyIsValid(s string) bool {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "", "none", "bridge", "host":
+		return true
+	default:
+		return false
+	}
 }
 
 // ModeIsValid reports whether s is a recognized sandbox mode keyword.

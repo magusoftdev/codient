@@ -10,7 +10,7 @@ import (
 func TestDelegateTask_BuildParent_AllModesAllowed(t *testing.T) {
 	r := NewRegistry()
 	var gotMode, gotTask, gotCtx string
-	RegisterDelegateTask(r, "build", func(_ context.Context, mode, task, extraContext string) (string, error) {
+	RegisterDelegateTask(r, "build", nil, func(_ context.Context, mode, task, extraContext, _ string) (string, error) {
 		gotMode = mode
 		gotTask = task
 		gotCtx = extraContext
@@ -40,7 +40,7 @@ func TestDelegateTask_BuildParent_AllModesAllowed(t *testing.T) {
 
 func TestDelegateTask_AskParent_OnlyAskAllowed(t *testing.T) {
 	r := NewRegistry()
-	RegisterDelegateTask(r, "ask", func(_ context.Context, mode, task, _ string) (string, error) {
+	RegisterDelegateTask(r, "ask", nil, func(_ context.Context, mode, task, _, _ string) (string, error) {
 		return "ok", nil
 	})
 
@@ -63,7 +63,7 @@ func TestDelegateTask_AskParent_OnlyAskAllowed(t *testing.T) {
 
 func TestDelegateTask_PlanParent_OnlyAskAllowed(t *testing.T) {
 	r := NewRegistry()
-	RegisterDelegateTask(r, "plan", func(_ context.Context, mode, task, _ string) (string, error) {
+	RegisterDelegateTask(r, "plan", nil, func(_ context.Context, mode, task, _, _ string) (string, error) {
 		return "ok", nil
 	})
 
@@ -82,7 +82,7 @@ func TestDelegateTask_PlanParent_OnlyAskAllowed(t *testing.T) {
 
 func TestDelegateTask_PlanParent_PlanModeRejected(t *testing.T) {
 	r := NewRegistry()
-	RegisterDelegateTask(r, "plan", func(_ context.Context, _, _, _ string) (string, error) {
+	RegisterDelegateTask(r, "plan", nil, func(_ context.Context, _, _, _, _ string) (string, error) {
 		return "ok", nil
 	})
 
@@ -95,7 +95,7 @@ func TestDelegateTask_PlanParent_PlanModeRejected(t *testing.T) {
 
 func TestDelegateTask_EmptyTask_Rejected(t *testing.T) {
 	r := NewRegistry()
-	RegisterDelegateTask(r, "build", func(_ context.Context, _, _, _ string) (string, error) {
+	RegisterDelegateTask(r, "build", nil, func(_ context.Context, _, _, _, _ string) (string, error) {
 		return "ok", nil
 	})
 
@@ -108,7 +108,7 @@ func TestDelegateTask_EmptyTask_Rejected(t *testing.T) {
 
 func TestDelegateTask_EmptyMode_Rejected(t *testing.T) {
 	r := NewRegistry()
-	RegisterDelegateTask(r, "build", func(_ context.Context, _, _, _ string) (string, error) {
+	RegisterDelegateTask(r, "build", nil, func(_ context.Context, _, _, _, _ string) (string, error) {
 		return "ok", nil
 	})
 
@@ -121,7 +121,7 @@ func TestDelegateTask_EmptyMode_Rejected(t *testing.T) {
 
 func TestDelegateTask_WhitespaceOnlyTask_Rejected(t *testing.T) {
 	r := NewRegistry()
-	RegisterDelegateTask(r, "build", func(_ context.Context, _, _, _ string) (string, error) {
+	RegisterDelegateTask(r, "build", nil, func(_ context.Context, _, _, _, _ string) (string, error) {
 		return "ok", nil
 	})
 
@@ -134,7 +134,7 @@ func TestDelegateTask_WhitespaceOnlyTask_Rejected(t *testing.T) {
 
 func TestDelegateTask_InvalidJSON_Rejected(t *testing.T) {
 	r := NewRegistry()
-	RegisterDelegateTask(r, "build", func(_ context.Context, _, _, _ string) (string, error) {
+	RegisterDelegateTask(r, "build", nil, func(_ context.Context, _, _, _, _ string) (string, error) {
 		return "ok", nil
 	})
 
@@ -147,7 +147,7 @@ func TestDelegateTask_InvalidJSON_Rejected(t *testing.T) {
 func TestDelegateTask_OptionalContext(t *testing.T) {
 	r := NewRegistry()
 	var gotCtx string
-	RegisterDelegateTask(r, "build", func(_ context.Context, _, _, extraContext string) (string, error) {
+	RegisterDelegateTask(r, "build", nil, func(_ context.Context, _, _, extraContext, _ string) (string, error) {
 		gotCtx = extraContext
 		return "ok", nil
 	})
@@ -165,7 +165,7 @@ func TestDelegateTask_OptionalContext(t *testing.T) {
 func TestDelegateTask_ModeNormalized(t *testing.T) {
 	r := NewRegistry()
 	var gotMode string
-	RegisterDelegateTask(r, "build", func(_ context.Context, mode, _, _ string) (string, error) {
+	RegisterDelegateTask(r, "build", nil, func(_ context.Context, mode, _, _, _ string) (string, error) {
 		gotMode = mode
 		return "ok", nil
 	})
@@ -182,7 +182,7 @@ func TestDelegateTask_ModeNormalized(t *testing.T) {
 
 func TestDelegateTask_Schema_BuildParent(t *testing.T) {
 	r := NewRegistry()
-	RegisterDelegateTask(r, "build", func(_ context.Context, _, _, _ string) (string, error) {
+	RegisterDelegateTask(r, "build", nil, func(_ context.Context, _, _, _, _ string) (string, error) {
 		return "", nil
 	})
 
@@ -245,9 +245,91 @@ func TestDelegateTask_Schema_BuildParent(t *testing.T) {
 	}
 }
 
+func TestDelegateTask_SandboxProfile_Passed(t *testing.T) {
+	r := NewRegistry()
+	var gotProfile string
+	RegisterDelegateTask(r, "build", []string{"go-build", "node"}, func(_ context.Context, _, _, _, profile string) (string, error) {
+		gotProfile = profile
+		return "ok", nil
+	})
+
+	args, _ := json.Marshal(map[string]string{"mode": "build", "task": "compile", "sandbox_profile": "go-build"})
+	_, err := r.Run(context.Background(), "delegate_task", args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotProfile != "go-build" {
+		t.Fatalf("expected go-build, got %q", gotProfile)
+	}
+}
+
+func TestDelegateTask_SandboxProfile_Invalid(t *testing.T) {
+	r := NewRegistry()
+	RegisterDelegateTask(r, "build", []string{"go-build"}, func(_ context.Context, _, _, _, _ string) (string, error) {
+		return "ok", nil
+	})
+
+	args, _ := json.Marshal(map[string]string{"mode": "build", "task": "compile", "sandbox_profile": "nonexistent"})
+	_, err := r.Run(context.Background(), "delegate_task", args)
+	if err == nil || !strings.Contains(err.Error(), "not allowed") {
+		t.Fatalf("expected sandbox_profile not allowed error, got %v", err)
+	}
+}
+
+func TestDelegateTask_SandboxProfile_SchemaHasEnum(t *testing.T) {
+	r := NewRegistry()
+	RegisterDelegateTask(r, "build", []string{"go-build", "node"}, func(_ context.Context, _, _, _, _ string) (string, error) {
+		return "", nil
+	})
+
+	oaiTools := r.OpenAITools()
+	for _, tool := range oaiTools {
+		if tool.OfFunction == nil || tool.OfFunction.Function.Name != "delegate_task" {
+			continue
+		}
+		raw, _ := json.Marshal(tool.OfFunction.Function.Parameters)
+		var schema map[string]any
+		json.Unmarshal(raw, &schema)
+		props := schema["properties"].(map[string]any)
+		profProp, ok := props["sandbox_profile"].(map[string]any)
+		if !ok {
+			t.Fatal("sandbox_profile property missing when profiles provided")
+		}
+		enumRaw := profProp["enum"].([]any)
+		if len(enumRaw) != 2 {
+			t.Fatalf("expected 2 profile enum values, got %v", enumRaw)
+		}
+		return
+	}
+	t.Fatal("delegate_task not found")
+}
+
+func TestDelegateTask_SandboxProfile_OmittedWhenNoProfiles(t *testing.T) {
+	r := NewRegistry()
+	RegisterDelegateTask(r, "build", nil, func(_ context.Context, _, _, _, _ string) (string, error) {
+		return "", nil
+	})
+
+	oaiTools := r.OpenAITools()
+	for _, tool := range oaiTools {
+		if tool.OfFunction == nil || tool.OfFunction.Function.Name != "delegate_task" {
+			continue
+		}
+		raw, _ := json.Marshal(tool.OfFunction.Function.Parameters)
+		var schema map[string]any
+		json.Unmarshal(raw, &schema)
+		props := schema["properties"].(map[string]any)
+		if _, ok := props["sandbox_profile"]; ok {
+			t.Fatal("sandbox_profile should be absent when no profiles configured")
+		}
+		return
+	}
+	t.Fatal("delegate_task not found")
+}
+
 func TestDelegateTask_Schema_AskParent_EnumLockedToAsk(t *testing.T) {
 	r := NewRegistry()
-	RegisterDelegateTask(r, "ask", func(_ context.Context, _, _, _ string) (string, error) {
+	RegisterDelegateTask(r, "ask", nil, func(_ context.Context, _, _, _, _ string) (string, error) {
 		return "", nil
 	})
 
