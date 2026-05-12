@@ -76,6 +76,7 @@ func clonePlanTotBranchRunner(base *Runner, llm ChatClient) *Runner {
 		Cfg:                 base.Cfg,
 		Tools:               base.Tools,
 		Log:                 base.Log,
+		ErrorLog:            base.ErrorLog,
 		Tracker:             base.Tracker,
 		Hooks:               base.Hooks,
 		ProgressPlain:       base.ProgressPlain,

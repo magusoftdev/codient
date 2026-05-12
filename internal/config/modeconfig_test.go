@@ -93,15 +93,16 @@ func TestReasoningTier_PersistRoundTrip(t *testing.T) {
 	t.Setenv("CODIENT_STATE_DIR", dir)
 
 	pc := &PersistentConfig{
-		BaseURL:              "http://main/v1",
-		APIKey:               "main-key",
-		Model:                "main-model",
-		LowReasoningModel:    "low-m",
-		LowReasoningBaseURL:  "http://low/v1",
-		LowReasoningAPIKey:   "low-k",
-		HighReasoningModel:   "high-m",
-		HighReasoningBaseURL: "http://high/v1",
-		HighReasoningAPIKey:  "high-k",
+		BaseURL:                         "http://main/v1",
+		APIKey:                          "main-key",
+		Model:                           "main-model",
+		LowReasoningModel:               "low-m",
+		LowReasoningBaseURL:             "http://low/v1",
+		LowReasoningAPIKey:              "low-k",
+		LowReasoningMaxCompletionTokens: 512,
+		HighReasoningModel:              "high-m",
+		HighReasoningBaseURL:            "http://high/v1",
+		HighReasoningAPIKey:             "high-k",
 	}
 	if err := SavePersistentConfig(pc); err != nil {
 		t.Fatal(err)
@@ -124,12 +125,113 @@ func TestReasoningTier_PersistRoundTrip(t *testing.T) {
 	if cfg.LowReasoning.Model != "low-m" {
 		t.Fatalf("cfg.LowReasoning.Model: %q", cfg.LowReasoning.Model)
 	}
+	if cfg.LowReasoning.MaxCompletionTokens != 512 {
+		t.Fatalf("cfg.LowReasoning.MaxCompletionTokens: %d", cfg.LowReasoning.MaxCompletionTokens)
+	}
 	if cfg.HighReasoning.Model != "high-m" {
 		t.Fatalf("cfg.HighReasoning.Model: %q", cfg.HighReasoning.Model)
 	}
 	pc2 := ConfigToPersistent(cfg)
 	if pc2.LowReasoningModel != "low-m" || pc2.HighReasoningModel != "high-m" {
 		t.Fatalf("ConfigToPersistent dropped tiers: %+v", pc2)
+	}
+	if pc2.LowReasoningMaxCompletionTokens != 512 {
+		t.Fatalf("ConfigToPersistent dropped LowReasoningMaxCompletionTokens: %d", pc2.LowReasoningMaxCompletionTokens)
+	}
+}
+
+func TestLowReasoningMaxCompletionTokens_Clamp(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CODIENT_STATE_DIR", dir)
+
+	pc := &PersistentConfig{
+		BaseURL:                         "http://main/v1",
+		APIKey:                          "k",
+		Model:                           "m",
+		LowReasoningMaxCompletionTokens: 10_000, // way above MaxSupervisorMaxCompletionTokens
+	}
+	if err := SavePersistentConfig(pc); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.LowReasoning.MaxCompletionTokens != MaxSupervisorMaxCompletionTokens {
+		t.Fatalf("clamp: got %d, want %d", cfg.LowReasoning.MaxCompletionTokens, MaxSupervisorMaxCompletionTokens)
+	}
+}
+
+// TestDisableIntentHeuristic_PersistRoundTrip ensures the new config knob
+// persists across SavePersistentConfig → Load → ConfigToPersistent.
+func TestDisableIntentHeuristic_PersistRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CODIENT_STATE_DIR", dir)
+
+	pc := &PersistentConfig{
+		BaseURL:                "http://main/v1",
+		APIKey:                 "k",
+		Model:                  "m",
+		DisableIntentHeuristic: true,
+	}
+	if err := SavePersistentConfig(pc); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.DisableIntentHeuristic {
+		t.Fatalf("cfg.DisableIntentHeuristic: got false, want true")
+	}
+	pc2 := ConfigToPersistent(cfg)
+	if !pc2.DisableIntentHeuristic {
+		t.Fatalf("ConfigToPersistent dropped DisableIntentHeuristic")
+	}
+}
+
+// TestDisableIntentHeuristic_DefaultsToFalse confirms the in-code default
+// is false (heuristic enabled). A user with no override gets the fast path.
+func TestDisableIntentHeuristic_DefaultsToFalse(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CODIENT_STATE_DIR", dir)
+
+	pc := &PersistentConfig{
+		BaseURL: "http://main/v1",
+		APIKey:  "k",
+		Model:   "m",
+	}
+	if err := SavePersistentConfig(pc); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DisableIntentHeuristic {
+		t.Fatalf("cfg.DisableIntentHeuristic: got true, want false (default)")
+	}
+}
+
+func TestLowReasoningMaxCompletionTokens_NegativeFallsToDefault(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CODIENT_STATE_DIR", dir)
+
+	pc := &PersistentConfig{
+		BaseURL:                         "http://main/v1",
+		APIKey:                          "k",
+		Model:                           "m",
+		LowReasoningMaxCompletionTokens: -1,
+	}
+	if err := SavePersistentConfig(pc); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.LowReasoning.MaxCompletionTokens != 0 {
+		t.Fatalf("negative value should sanitize to 0, got %d", cfg.LowReasoning.MaxCompletionTokens)
 	}
 }
 

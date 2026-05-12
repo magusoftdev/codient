@@ -50,6 +50,7 @@ type RunParams struct {
 	Context           string       // optional extra context prepended to the task
 	RepoMap           *repomap.Map // optional shared structural map (parent session); nil disables repo_map tool in child
 	Log               *agentlog.Logger
+	ErrorLog          agent.ErrorLogger
 	Progress          io.Writer // nested progress lines written here (already prefixed by caller); nil when using OnTranscriptEvent only
 	OnTranscriptEvent func(agent.TranscriptEvent)
 	Tracker           *tokentracker.Tracker
@@ -73,6 +74,7 @@ func newRunnerFromParams(llm agent.ChatClient, p RunParams, reg *tools.Registry,
 		Cfg:               p.Cfg,
 		Tools:             reg,
 		Log:               log,
+		ErrorLog:          p.ErrorLog,
 		Progress:          p.Progress,
 		OnTranscriptEvent: p.OnTranscriptEvent,
 		ProgressPlain:     p.Cfg.Plain,

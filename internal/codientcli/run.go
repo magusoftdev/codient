@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -21,6 +22,7 @@ import (
 	"codient/internal/assistout"
 	"codient/internal/config"
 	"codient/internal/designstore"
+	"codient/internal/errorsink"
 	"codient/internal/imageutil"
 	"codient/internal/lspclient"
 	"codient/internal/mcpclient"
@@ -305,6 +307,19 @@ func Run() int {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "codient: state dir: %v\n", err)
 	}
+	var errorLog *errorsink.Sink
+	if !errorsink.Disabled() && stateDir != "" {
+		if lg, _, e := errorsink.Open(stateDir); e == nil {
+			errorLog = lg
+		} else {
+			fmt.Fprintf(os.Stderr, "codient: error log: %v\n", e)
+		}
+	}
+	defer func() {
+		if errorLog != nil {
+			_ = errorLog.Close()
+		}
+	}()
 	mem, err := prompt.LoadMemory(stateDir, cfg.EffectiveWorkspace())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "memory: %v\n", err)
@@ -329,6 +344,7 @@ func Run() int {
 	s := &session{
 		cfg:                         cfg,
 		agentLog:                    agentLog,
+		errorLog:                    errorLog,
 		progressOut:                 progressOut,
 		mode:                        prompt.ModeAuto,
 		richOutput:                  assistantOutputRich(cfg.Plain),
@@ -444,7 +460,7 @@ func Run() int {
 				defer close(ts.done)
 				defer func() {
 					if r := recover(); r != nil {
-						fmt.Fprintf(ts.origErr, "codient: session panic: %v\n", r)
+						s.logSessionPanic(r, debug.Stack())
 						ts.exitCode = 1
 					}
 				}()

@@ -1187,7 +1187,7 @@ func TestACPIntegration_AutoModeEmitsIntentNotification(t *testing.T) {
 
 	deadline := time.Now().Add(2 * time.Minute)
 	var sawIntent, sawModeChanged bool
-	var intentCategory, intentReason string
+	var intentCategory, intentReason, intentSource string
 	var modeChangedTo string
 	for time.Now().Before(deadline) && (!sawIntent || !sawModeChanged) {
 		line := h.readLine(30 * time.Second)
@@ -1204,11 +1204,13 @@ func TestACPIntegration_AutoModeEmitsIntentNotification(t *testing.T) {
 				Category  string `json:"category"`
 				Reasoning string `json:"reasoning"`
 				Fallback  bool   `json:"fallback"`
+				Source    string `json:"source"`
 			}
 			if err := json.Unmarshal(wrap.Params, &p); err == nil {
 				sawIntent = true
 				intentCategory = p.Category
 				intentReason = p.Reasoning
+				intentSource = p.Source
 			}
 		case "session/mode_status":
 			var p struct {
@@ -1232,6 +1234,16 @@ func TestACPIntegration_AutoModeEmitsIntentNotification(t *testing.T) {
 	}
 	if intentReason == "" {
 		t.Fatalf("intent reasoning was empty")
+	}
+	// The source field is populated for both heuristic and supervisor
+	// classifications; verify it's one of the expected values rather than
+	// asserting a specific path (the test prompt may match the heuristic
+	// or the mock LLM).
+	switch intentSource {
+	case "supervisor", "heuristic", "heuristic-fallback":
+		// ok
+	default:
+		t.Fatalf("intent source: got %q, want supervisor / heuristic / heuristic-fallback", intentSource)
 	}
 	if !sawModeChanged {
 		t.Fatalf("expected session/mode_status phase=changed notification")

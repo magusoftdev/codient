@@ -137,6 +137,21 @@ type PersistentConfig struct {
 	LowReasoningModel   string `json:"low_reasoning_model,omitempty"`
 	LowReasoningBaseURL string `json:"low_reasoning_base_url,omitempty"`
 	LowReasoningAPIKey  string `json:"low_reasoning_api_key,omitempty"`
+	// LowReasoningMaxCompletionTokens overrides the supervisor's initial
+	// completion budget for IdentifyIntent. 0 keeps the in-code default
+	// (80). Raise for thinking models that need >80 tokens before they
+	// emit the structured answer; the supervisor still auto-retries on
+	// truncation, so this is mostly a perf knob (skip the retry).
+	LowReasoningMaxCompletionTokens int `json:"low_reasoning_max_completion_tokens,omitempty"`
+
+	// DisableIntentHeuristic, when true, disables the pre-LLM heuristic
+	// fast-path classifier in `internal/intent.IdentifyIntent`. The
+	// supervisor LLM is then consulted on every turn, regardless of how
+	// obvious the prompt's intent looks. Useful when users trust their
+	// model's classification over keyword patterns, or for A/B comparing
+	// the two paths. The post-LLM-failure heuristic fallback path is
+	// NOT affected — a faulty supervisor still needs the safety net.
+	DisableIntentHeuristic bool `json:"disable_intent_heuristic,omitempty"`
 
 	// HighReasoningModel selects the model used for DESIGN advice and
 	// COMPLEX_TASK plan generation. Empty inherits Model.
@@ -186,12 +201,14 @@ type ProfileOverride struct {
 	BaseURL              *string `json:"base_url,omitempty"`
 	APIKey               *string `json:"api_key,omitempty"`
 	Model                *string `json:"model,omitempty"`
-	LowReasoningModel    *string `json:"low_reasoning_model,omitempty"`
-	LowReasoningBaseURL  *string `json:"low_reasoning_base_url,omitempty"`
-	LowReasoningAPIKey   *string `json:"low_reasoning_api_key,omitempty"`
-	HighReasoningModel   *string `json:"high_reasoning_model,omitempty"`
-	HighReasoningBaseURL *string `json:"high_reasoning_base_url,omitempty"`
-	HighReasoningAPIKey  *string `json:"high_reasoning_api_key,omitempty"`
+	LowReasoningModel               *string `json:"low_reasoning_model,omitempty"`
+	LowReasoningBaseURL             *string `json:"low_reasoning_base_url,omitempty"`
+	LowReasoningAPIKey              *string `json:"low_reasoning_api_key,omitempty"`
+	LowReasoningMaxCompletionTokens *int    `json:"low_reasoning_max_completion_tokens,omitempty"`
+	HighReasoningModel              *string `json:"high_reasoning_model,omitempty"`
+	HighReasoningBaseURL            *string `json:"high_reasoning_base_url,omitempty"`
+	HighReasoningAPIKey             *string `json:"high_reasoning_api_key,omitempty"`
+	DisableIntentHeuristic          *bool   `json:"disable_intent_heuristic,omitempty"`
 	EmbeddingModel       *string `json:"embedding_model,omitempty"`
 	EmbeddingBaseURL     *string `json:"embedding_base_url,omitempty"`
 	EmbeddingAPIKey      *string `json:"embedding_api_key,omitempty"`
@@ -398,12 +415,14 @@ func ConfigToPersistent(cfg *Config) *PersistentConfig {
 		EmbeddingBaseURL:      cfg.EmbeddingBaseURL,
 		EmbeddingAPIKey:       cfg.EmbeddingAPIKey,
 		RepoMapTokens:         cfg.RepoMapTokens,
-		LowReasoningModel:     cfg.LowReasoning.Model,
-		LowReasoningBaseURL:   cfg.LowReasoning.BaseURL,
-		LowReasoningAPIKey:    cfg.LowReasoning.APIKey,
-		HighReasoningModel:    cfg.HighReasoning.Model,
-		HighReasoningBaseURL:  cfg.HighReasoning.BaseURL,
-		HighReasoningAPIKey:   cfg.HighReasoning.APIKey,
+		LowReasoningModel:               cfg.LowReasoning.Model,
+		LowReasoningBaseURL:             cfg.LowReasoning.BaseURL,
+		LowReasoningAPIKey:              cfg.LowReasoning.APIKey,
+		LowReasoningMaxCompletionTokens: cfg.LowReasoning.MaxCompletionTokens,
+		HighReasoningModel:              cfg.HighReasoning.Model,
+		HighReasoningBaseURL:            cfg.HighReasoning.BaseURL,
+		HighReasoningAPIKey:             cfg.HighReasoning.APIKey,
+		DisableIntentHeuristic:          cfg.DisableIntentHeuristic,
 		MCPServers:            cfg.MCPServers,
 		LSPServers:            cfg.LSPServers,
 		GitProtectedBranches:  strings.Join(cfg.GitProtectedBranches, ","),

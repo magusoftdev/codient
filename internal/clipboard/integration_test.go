@@ -10,8 +10,13 @@ import (
 )
 
 // TestIntegration_HasImage calls HasImage with the real system clipboard.
-// Run manually with an image copied to the clipboard:
+// Run manually with either raw image data or a file URI on the clipboard:
 //
+//	# raw image bytes (browser "Copy Image", screenshot tool)
+//	CODIENT_INTEGRATION=1 go test -tags integration -run TestIntegration_HasImage -v ./internal/clipboard/
+//
+//	# file reference (Nautilus/Dolphin/Finder "Copy", or simulated):
+//	#   printf 'file://%s' /abs/path/to/pic.png | wl-copy --type text/uri-list
 //	CODIENT_INTEGRATION=1 go test -tags integration -run TestIntegration_HasImage -v ./internal/clipboard/
 func TestIntegration_HasImage(t *testing.T) {
 	if os.Getenv("CODIENT_INTEGRATION") == "" {

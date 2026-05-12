@@ -181,8 +181,8 @@ func TestTUIModel_ChromeFooterShowsModelAndContext(t *testing.T) {
 	if !strings.Contains(view, "type / for commands") {
 		t.Fatalf("view should list slash hint, got:\n%s", view)
 	}
-	if !strings.Contains(view, "shift+drag to select") {
-		t.Fatalf("view should show shift+drag hint when mouseEnabled=true, got:\n%s", view)
+	if !strings.Contains(view, "shift+drag") || !strings.Contains(view, "ctrl+shift+c") {
+		t.Fatalf("view should show shift+drag and ctrl+shift+c hints when mouseEnabled=true, got:\n%s", view)
 	}
 }
 
@@ -192,8 +192,8 @@ func TestTUIModel_MouseDisabledHint(t *testing.T) {
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 24})
 	m = updated.(tuiModel)
 	view := m.View()
-	if strings.Contains(view, "shift+drag to select") {
-		t.Fatalf("view should NOT show shift+drag hint when mouseEnabled=false, got:\n%s", view)
+	if strings.Contains(view, "shift+drag") || strings.Contains(view, "ctrl+shift+c") {
+		t.Fatalf("view should NOT show select/copy hints when mouseEnabled=false, got:\n%s", view)
 	}
 }
 

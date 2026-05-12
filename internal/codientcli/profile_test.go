@@ -11,7 +11,6 @@ import (
 )
 
 func strPtr(s string) *string { return &s }
-func boolPtr(b bool) *bool    { return &b }
 
 func setupTestProfileEnv(t *testing.T) string {
 	t.Helper()

@@ -235,6 +235,32 @@ func TestProfileBoolOverrides(t *testing.T) {
 	}
 }
 
+func TestProfileOverride_DisableIntentHeuristic(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CODIENT_STATE_DIR", dir)
+	t.Setenv("CODIENT_PROFILE", "")
+
+	tru := true
+	pc := &PersistentConfig{
+		SchemaVersion: 2,
+		BaseURL:       "http://top/v1",
+		// Top-level default is false (heuristic enabled).
+		Profiles: map[string]ProfileOverride{
+			"llm-only": {DisableIntentHeuristic: &tru},
+		},
+		ActiveProfile: "llm-only",
+	}
+	writeTestConfig(t, dir, pc)
+
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !c.DisableIntentHeuristic {
+		t.Fatal("expected DisableIntentHeuristic=true from profile override")
+	}
+}
+
 func TestProfileIntOverrides(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("CODIENT_STATE_DIR", dir)

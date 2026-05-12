@@ -163,6 +163,11 @@ type Config struct {
 	// COMPLEX_TASK plan generation. Empty fields inherit the top-level
 	// connection (so a user with one model still works without extra config).
 	HighReasoning ReasoningTier
+	// DisableIntentHeuristic, when true, disables the pre-LLM heuristic
+	// fast-path classifier in IdentifyIntent so the supervisor LLM is
+	// consulted on every turn. The post-LLM-failure heuristic fallback
+	// path is NOT affected.
+	DisableIntentHeuristic bool
 	// MCPServers maps server IDs to their connection config. Nil/empty means no MCP servers.
 	MCPServers map[string]MCPServerConfig
 	// LSPServers maps language IDs to their server config. Nil/empty means no LSP servers.
@@ -222,6 +227,13 @@ type ReasoningTier struct {
 	BaseURL string
 	APIKey  string
 	Model   string
+	// MaxCompletionTokens caps the supervisor's initial completion budget on
+	// this tier. Only consulted for the low tier today (the supervisor and
+	// SIMPLE_FIX / QUERY paths run against low; only the supervisor itself
+	// uses an explicit cap). 0 inherits the package default in
+	// internal/intent. Power users on thinking models (Qwen3-Thinking,
+	// DeepSeek-R1, …) can raise this to skip the auto-retry path.
+	MaxCompletionTokens int
 }
 
 // Reasoning tier identifiers accepted by ConnectionForTier.
@@ -229,6 +241,24 @@ const (
 	TierLow  = "low"
 	TierHigh = "high"
 )
+
+// MaxSupervisorMaxCompletionTokens caps the supervisor budget that can be
+// loaded from config to keep a runaway local model from monopolising the
+// low-reasoning tier. Matches maxSupervisorRetryBudget in internal/intent.
+const MaxSupervisorMaxCompletionTokens = 2048
+
+// clampSupervisorBudget sanitises a persisted low_reasoning_max_completion_tokens
+// value. Negative values fall back to 0 (intent default applies); large values
+// are clamped to MaxSupervisorMaxCompletionTokens.
+func clampSupervisorBudget(n int) int {
+	if n <= 0 {
+		return 0
+	}
+	if n > MaxSupervisorMaxCompletionTokens {
+		return MaxSupervisorMaxCompletionTokens
+	}
+	return n
+}
 
 // ConnectionForTier returns the effective base URL, API key, and model for the
 // given reasoning tier ("low" or "high"). Empty fields fall back to the

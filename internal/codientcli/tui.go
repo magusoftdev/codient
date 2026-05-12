@@ -219,7 +219,9 @@ func (m *tuiModel) applyInputStyle() {
 		m.input.Cursor.TextStyle = lipgloss.NewStyle()
 		return
 	}
-	base := lipgloss.NewStyle().Background(tuiPanelBg)
+	base := lipgloss.NewStyle().
+		Background(tuiPanelBg).
+		Foreground(lipgloss.AdaptiveColor{Light: "#18181B", Dark: "#FAFAFA"})
 	styled := textarea.Style{
 		Base:             base,
 		CursorLine:       base,
@@ -499,7 +501,7 @@ func (m *tuiModel) inputFooterView() string {
 	}
 	hintText := ctxHint + "  ·  type / for commands  ·  ctrl+j newline"
 	if m.mouseEnabled {
-		hintText += "  ·  shift+drag to select"
+		hintText += "  ·  shift+drag · ctrl+shift+c  select/copy"
 	}
 	ctxLine := lipgloss.NewStyle().
 		Width(m.width).

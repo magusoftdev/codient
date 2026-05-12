@@ -83,6 +83,9 @@ func mergeProfileIntoPersistent(pc *PersistentConfig, prof *ProfileOverride) *Pe
 	if prof.LowReasoningAPIKey != nil {
 		out.LowReasoningAPIKey = *prof.LowReasoningAPIKey
 	}
+	if prof.LowReasoningMaxCompletionTokens != nil {
+		out.LowReasoningMaxCompletionTokens = *prof.LowReasoningMaxCompletionTokens
+	}
 	if prof.HighReasoningModel != nil {
 		out.HighReasoningModel = *prof.HighReasoningModel
 	}
@@ -91,6 +94,9 @@ func mergeProfileIntoPersistent(pc *PersistentConfig, prof *ProfileOverride) *Pe
 	}
 	if prof.HighReasoningAPIKey != nil {
 		out.HighReasoningAPIKey = *prof.HighReasoningAPIKey
+	}
+	if prof.DisableIntentHeuristic != nil {
+		out.DisableIntentHeuristic = *prof.DisableIntentHeuristic
 	}
 	if prof.EmbeddingModel != nil {
 		out.EmbeddingModel = *prof.EmbeddingModel
@@ -465,16 +471,18 @@ func buildConfigFromPersistent(pc *PersistentConfig, selectedProfile string) (*C
 		RepoMapTokens:             pc.RepoMapTokens,
 		UpdateNotify:              updateNotify,
 		LowReasoning: ReasoningTier{
-			BaseURL: strings.TrimSpace(pc.LowReasoningBaseURL),
-			APIKey:  strings.TrimSpace(pc.LowReasoningAPIKey),
-			Model:   strings.TrimSpace(pc.LowReasoningModel),
+			BaseURL:             strings.TrimSpace(pc.LowReasoningBaseURL),
+			APIKey:              strings.TrimSpace(pc.LowReasoningAPIKey),
+			Model:               strings.TrimSpace(pc.LowReasoningModel),
+			MaxCompletionTokens: clampSupervisorBudget(pc.LowReasoningMaxCompletionTokens),
 		},
 		HighReasoning: ReasoningTier{
 			BaseURL: strings.TrimSpace(pc.HighReasoningBaseURL),
 			APIKey:  strings.TrimSpace(pc.HighReasoningAPIKey),
 			Model:   strings.TrimSpace(pc.HighReasoningModel),
 		},
-		MCPServers:           pc.MCPServers,
+		DisableIntentHeuristic: pc.DisableIntentHeuristic,
+		MCPServers:             pc.MCPServers,
 		LSPServers:           pc.LSPServers,
 		GitProtectedBranches: protectedBranches,
 		GitAutoCommit:        gitAutoCommit,

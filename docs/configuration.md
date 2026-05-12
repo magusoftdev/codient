@@ -58,6 +58,29 @@ Configure each tier with **`low_reasoning_model`** and **`high_reasoning_model`*
 
 With no overrides, both tiers fall back to the top-level `base_url` / `api_key` / `model`. The `/setup` wizard walks through both tiers after you pick the default chat model.
 
+**Intent classification.** Every turn runs through `internal/intent.IdentifyIntent`, which has three tiers:
+
+1. **Heuristic fast path** (deterministic, no LLM call). Matches high-confidence patterns:
+   - **DESIGN**: `create a plan`, `draft a plan`, `make a plan`, `design a/the/an X`, `architect a/the/an X`, `how should I/we`, `how would you`, `what's the best way`, `plan for …`, `sketch a design`.
+   - **COMPLEX_TASK**: a leading edit verb (`refactor`, `migrate`, `rewrite`, `fix`, `add`, `update`, …) plus a multi-file scope hint anywhere (`across`, `everywhere`, `throughout`, `all files`, `every file`, `entire`, `whole codebase`).
+   - **SIMPLE_FIX**: a polite imperative (`please fix X`, `can you rename Y`, `could you add Z`), OR a leading edit verb plus a small-scope hint (`typo`, `comment`, `line N`, `this function`, `this file`, `import statement`).
+   - **QUERY**: leading interrogative starters (`what`, `why`, `where`, `when`, `who`, `which`, `explain`, `describe`, `tell me about`, `is this`, `does this`, `how does/is/are`) **or** a trailing `?` (when no leading edit verb). 
+
+   On a match the supervisor LLM is skipped entirely (~200-1500ms saved per turn). The on-screen status line shows `codient: intent: SIMPLE_FIX (heuristic) — polite imperative: fix`. The `(heuristic)` tag tells you the LLM was not consulted. Anything ambiguous (no pattern match) falls through to tier 2.
+
+2. **Supervisor LLM** — a tiny JSON-only request to the low tier when the heuristic doesn't fire. The default budget is **80 completion tokens** because the classification only emits one short JSON object. "Thinking" models that wrap their answer in a hidden `<think>…</think>` block (Qwen3-Thinking, DeepSeek-R1, GLM-Z1, etc.) can blow through that budget *before* emitting the JSON. Codient mitigates this with five layers of defense:
+   - **`/no_think` directive** appended to every supervisor user message. Qwen3-Thinking / DeepSeek-R1 / similar variants recognise this token as a per-turn switch and skip their hidden reasoning channel. Non-thinking models ignore it.
+   - **Anti-thinking system prompt line** ("Do NOT think out loud … Your VERY FIRST token must be `{`") for model-agnostic guidance.
+   - **`<think>` tag stripping** before parsing — closed `<think>` / `<thought>` / `<reasoning>` / `<reflection>` / `<scratchpad>` blocks are removed so a model that emits the JSON alongside its reasoning still parses cleanly.
+   - **Auto-retry with a larger budget** when the first attempt truncates with `finish_reason == "length"` and produces no parseable JSON (4× initial, clamped to `[1024, 2048]`).
+   - **Reasoning-channel salvage** — when the assistant `content` field is empty but the response carries a non-standard `reasoning_content` / `reasoning` field (LM Studio, vLLM, patched Ollama), Codient parses JSON out of that channel instead.
+
+   To skip the auto-retry on a model you know needs more headroom, set **`low_reasoning_max_completion_tokens`** to e.g. `512`.
+
+3. **Heuristic fallback** when the supervisor LLM cannot produce a parseable answer. Runs the same `heuristicQuickClassify` from tier 1 on the original prompt — so a clearly-typed `please fix X` lands on `SIMPLE_FIX (fallback)` instead of getting downgraded to `QUERY`. When the prompt is genuinely ambiguous (no pattern match), the fallback defaults to `QUERY` (read-only, safe). The status line shows `codient: intent: … (fallback) — supervisor: parse error after retry: budget=… finish="length" channel=content body=…; routed … via heuristic (…)`, so you can diagnose which layer caught the problem.
+
+**Disabling the fast path.** Set **`disable_intent_heuristic: true`** at the top level or inside a profile to skip tier 1 and consult the supervisor LLM on every turn. The fallback (tier 3) safety net is unaffected. Useful when you trust your model's classification over keyword patterns, or to A/B compare the two paths.
+
 **Backward compatibility:** older configs that contained a top-level **`mode`** key (or a per-mode **`models`** override map for `build` / `ask` / `plan`) still load. Codient logs a one-time deprecation notice on startup, ignores those values, and uses the auto-only path. Remove them from `config.json` to silence the warning.
 
 ## Named profiles
@@ -158,6 +181,8 @@ Run `/config` with no arguments to see all current values. `/config <key>` shows
 | `model` | Default model id (used by tiers that have no override) | *(none — must be set for typical use)* |
 | `low_reasoning_model` | Model id used by the orchestrator supervisor, **QUERY** (ask path), and **SIMPLE_FIX** (build path) turns | inherit `model` |
 | `low_reasoning_base_url`, `low_reasoning_api_key` | Connection overrides for the low-reasoning tier | inherit `base_url` / `api_key` |
+| `low_reasoning_max_completion_tokens` | Initial `max_completion_tokens` budget for the orchestrator supervisor call. Raise (e.g. 256–512) when your low-tier model is a "thinking" model (Qwen3-Thinking, DeepSeek-R1, GLM-Z1) that burns the default 80-token budget inside a `<think>` block before emitting JSON. The supervisor still auto-retries once with a larger budget on truncation, so this is mostly a perf knob; clamped to 2048. | `0` (use built-in default of 80) |
+| `disable_intent_heuristic` | When `true`, disables the pre-LLM heuristic fast path so every turn consults the supervisor model. The post-LLM-failure fallback path is NOT affected. Useful when you trust your model's classification over keyword patterns. | `false` (heuristic enabled) |
 | `high_reasoning_model` | Model id used for **DESIGN** (plan path) turns and **COMPLEX_TASK** planning | inherit `model` |
 | `high_reasoning_base_url`, `high_reasoning_api_key` | Connection overrides for the high-reasoning tier | inherit `base_url` / `api_key` |
 | **Defaults** | | |

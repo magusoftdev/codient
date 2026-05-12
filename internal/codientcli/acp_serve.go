@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"sync"
@@ -24,6 +25,7 @@ import (
 	"codient/internal/agentlog"
 	"codient/internal/assistout"
 	"codient/internal/config"
+	"codient/internal/errorsink"
 	"codient/internal/intent"
 	"codient/internal/lspclient"
 	"codient/internal/mcpclient"
@@ -105,6 +107,19 @@ func runACPServer(ctx context.Context, cfg *config.Config, client *openaiclient.
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "codient: state dir: %v\n", err)
 	}
+	var errorLog *errorsink.Sink
+	if !errorsink.Disabled() && stateDir != "" {
+		if lg, _, e := errorsink.Open(stateDir); e == nil {
+			errorLog = lg
+		} else {
+			fmt.Fprintf(os.Stderr, "codient: error log: %v\n", e)
+		}
+	}
+	defer func() {
+		if errorLog != nil {
+			_ = errorLog.Close()
+		}
+	}()
 	mem, err := prompt.LoadMemory(stateDir, cfg.EffectiveWorkspace())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "memory: %v\n", err)
@@ -143,6 +158,7 @@ func runACPServer(ctx context.Context, cfg *config.Config, client *openaiclient.
 		lspMgr:        lspMgr,
 		repoMap:       rm,
 		agentLog:      agentLog,
+		errorLog:      errorLog,
 		tokenTracker:  tracker,
 		acpNoDelegate: true,
 		skillsCatalog: skillsCat,
@@ -163,6 +179,7 @@ func runACPServer(ctx context.Context, cfg *config.Config, client *openaiclient.
 		mode:           prompt.ModeAuto,
 		client:         client,
 		agentLog:       agentLog,
+		errorLog:       errorLog,
 		version:        Version,
 		maxTurns:       maxTurns,
 		maxCostUSD:     maxCostUSD,
@@ -273,6 +290,7 @@ type acpServer struct {
 	mode           prompt.Mode
 	client         *openaiclient.Client
 	agentLog       *agentlog.Logger
+	errorLog       *errorsink.Sink
 	version        string
 	maxTurns       int
 	maxCostUSD     float64
@@ -734,6 +752,21 @@ func (s *acpServer) acpWarmSessionModel(ctx context.Context, sessionID string, l
 }
 
 func (s *acpServer) handleSessionPrompt(ctx context.Context, params json.RawMessage, id int) {
+	defer func() {
+		if r := recover(); r != nil {
+			stack := debug.Stack()
+			if s.errorLog != nil {
+				s.errorLog.LogPanic(r, stack)
+			}
+			msg := fmt.Sprintf("internal error: panic: %v", r)
+			if s.errorLog != nil {
+				if p := s.errorLog.Path(); p != "" {
+					msg += " (details in " + p + ")"
+				}
+			}
+			_ = s.tr.WriteError(id, -32603, msg)
+		}
+	}()
 	if !s.initialized {
 		_ = s.tr.WriteError(id, -32002, "not initialized")
 		return
@@ -805,6 +838,9 @@ func (s *acpServer) handleSessionPrompt(ctx context.Context, params json.RawMess
 		return
 	}
 	if runErr != nil {
+		if s.errorLog != nil {
+			s.errorLog.LogError(fmt.Sprintf("acp:session/prompt session_id=%s", p.SessionID), runErr)
+		}
 		_ = s.tr.WriteError(id, -32603, runErr.Error())
 		return
 	}
@@ -942,18 +978,37 @@ func (s *acpServer) applyACPMode(sess *acpChatSession, target prompt.Mode) {
 // Errors are folded into the returned Identification (fallback path = QUERY).
 func (s *acpServer) classifyACPIntent(ctx context.Context, userText string) intent.Identification {
 	cli := openaiclient.NewForTier(s.cfg, config.TierLow)
-	id, _ := intent.IdentifyIntent(ctx, cli, userText, intent.Options{Tracker: s.tokenTracker})
+	id, err := intent.IdentifyIntent(ctx, cli, userText, intent.Options{
+		Tracker:             s.tokenTracker,
+		MaxCompletionTokens: s.cfg.LowReasoning.MaxCompletionTokens,
+		DisableHeuristic:    s.cfg.DisableIntentHeuristic,
+	})
+	if err != nil && s.errorLog != nil {
+		s.errorLog.LogError("acp:intent_identify", err)
+	}
 	return id
 }
 
 // emitIntentNotification fires the session/intent_identified notification so
 // Codient Unity can show the orchestrator's decision in its transcript.
+// The `source` field is one of "supervisor" (LLM-classified), "heuristic"
+// (pre-LLM fast-path), or "heuristic-fallback" (post-LLM-failure safety
+// net). Older clients that ignore the field still get the same
+// category / reasoning / fallback payload.
 func (s *acpServer) emitIntentNotification(sessionID string, id intent.Identification) {
+	source := id.Source
+	if source == "" {
+		// Older code paths (and the empty-prompt / nil-client guard) leave
+		// Source unset. Treat as supervisor for the wire format so clients
+		// always see a populated source string.
+		source = intent.SourceSupervisor
+	}
 	_ = s.tr.SendNotification("session/intent_identified", map[string]any{
 		"sessionId": sessionID,
 		"category":  string(id.Category),
 		"reasoning": id.Reasoning,
 		"fallback":  id.Fallback,
+		"source":    string(source),
 	})
 }
 
@@ -1169,6 +1224,7 @@ func (s *acpServer) newACPRunnerLocked(sess *acpChatSession) *agent.Runner {
 		Cfg:           s.cfg,
 		Tools:         reg,
 		Log:           s.agentLog,
+		ErrorLog:      s.errorLog,
 		Progress:      s.progressWriter,
 		ProgressPlain: s.cfg.Plain,
 		ProgressMode:  string(sess.mode),

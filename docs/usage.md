@@ -39,7 +39,7 @@ codient -image a.png,b.png -prompt "Compare these mockups"
 
 ## Intent-Driven Orchestrator
 
-Codient runs the orchestrator on **every** turn — there are no manual mode flags or slash commands. Each user turn starts with a tiny supervisor LLM call (`internal/intent.IdentifyIntent`) that returns a JSON object such as `{"category":"COMPLEX_TASK","reasoning":"multi-file refactor"}` and uses it to pick the internal mode, tool registry, and reasoning tier:
+Codient runs the orchestrator on **every** turn — there are no manual mode flags or slash commands. Each user turn classifies the prompt as one of four categories and routes it through the matching internal mode, tool registry, and reasoning tier:
 
 | Category | Internal mode | Notes |
 |----------|---------------|-------|
@@ -48,7 +48,13 @@ Codient runs the orchestrator on **every** turn — there are no manual mode fla
 | **SIMPLE_FIX** | build path (low tier) | Goes straight to write tools. |
 | **COMPLEX_TASK** | plan -> build | Plan first, then auto hand off into build (interactive prompt or **`-force`**; **`-print`** without **`-force`** stops at the plan). |
 
-The supervisor uses the **low** reasoning tier; planning and design use the **high** reasoning tier. Configure them with **`low_reasoning_model`** / **`high_reasoning_model`** (and optional `_base_url` / `_api_key` siblings) in [`config.json`](configuration.md). The classification is logged as `intent: <CATEGORY>` (or `intent (fallback): <CATEGORY>` when the supervisor reply could not be parsed and codient defaults to QUERY). In `-print` you also get a one-line `intent:` notice on stderr before the turn runs.
+Classification has three tiers:
+
+1. **Heuristic fast path** — a deterministic pattern matcher (`heuristicQuickClassify`) checks the prompt first. High-confidence patterns like "create a plan …", "please fix the typo on line 42", "refactor X across every file", or "what does Y do?" map directly to a category and skip the LLM entirely. The status line shows `codient: intent: SIMPLE_FIX (heuristic) — polite imperative: fix`. Disable with `disable_intent_heuristic: true` in [`config.json`](configuration.md) to consult the model on every turn.
+2. **Supervisor LLM** — when the heuristic doesn't fire, a tiny JSON-only request to the **low** reasoning tier (`internal/intent.IdentifyIntent`) returns `{"category":"COMPLEX_TASK","reasoning":"multi-file refactor"}` and drives the routing. Configure tiers with **`low_reasoning_model`** / **`high_reasoning_model`** (and optional `_base_url` / `_api_key` siblings).
+3. **Heuristic fallback** — when the supervisor LLM fails to produce parseable JSON, the same heuristic re-runs on the original prompt and either picks a confident category or defaults to `QUERY` (read-only, safe). The status line shows `(fallback)` with diagnostic per-attempt info.
+
+The classification is always logged as `intent: <CATEGORY>` with an optional `(heuristic)` or `(fallback)` tag identifying which tier produced the decision. In `-print` you also get a one-line `intent:` notice on stderr before the turn runs.
 
 There is no escape hatch: every REPL turn, every `-print` invocation, and every ACP **`session/prompt`** runs through the orchestrator. Use **`-force`** / **`-yes`** to auto-approve plan -> build hand-offs in non-interactive runs. Older configs that contained a top-level **`mode`** key (or per-mode **`models`** overrides) still load: codient logs a one-time deprecation notice, ignores the value, and uses the auto-only path.
 
@@ -69,7 +75,7 @@ When stdin is a TTY and `-plain` is **not** set, codient launches a Bubble Tea s
 
 **Scrolling:** the conversation viewport scrolls with **Page Up/Page Down** (half a page), **Alt+Up/Alt+Down** (three lines), or the mouse wheel. (Plain **Up/Down** and **Home/End** now belong to the input editor; use the modifier or paging keys for transcript navigation.)
 
-**Selecting text:** the TUI captures mouse events so wheel scrolling works, which prevents native click-and-drag selection. In most modern terminals (xterm, GNOME Terminal, Konsole, alacritty, kitty, wezterm, iTerm2) **hold Shift** while dragging to bypass the capture; Windows Terminal uses **Alt+drag**. If your terminal doesn't honor that, disable mouse capture entirely with **`-mouse=false`** (single run) or **`/config mouse_enabled false`** (persistent — see [configuration](configuration.md#config-reference-codientconfigjson)). Keyboard scrolling still works.
+**Selecting and copying text:** the TUI captures mouse events so wheel scrolling works, which prevents native click-and-drag selection. In most modern terminals (xterm, GNOME Terminal, Konsole, alacritty, kitty, wezterm, iTerm2) **hold Shift** while dragging to bypass the capture; Windows Terminal uses **Alt+drag**. To copy the selection use **Ctrl+Shift+C** (not Ctrl+C — that interrupts or quits the agent and is intercepted by the TUI regardless of selection state). On macOS use **Cmd+C**. If your terminal doesn't honor Shift+drag, disable mouse capture entirely with **`-mouse=false`** (single run) or **`/config mouse_enabled false`** (persistent — see [configuration](configuration.md#config-reference-codientconfigjson)); with mouse disabled, normal click-and-drag selection and Ctrl+C copy work as usual. Keyboard scrolling is unaffected either way.
 
 **Slash command autocomplete:** type **`/`** at the start of a line to open a dropdown of available commands. Navigate with **Up/Down** arrows, press **Enter** to select (inserts the command name followed by a space), or **Escape** to dismiss. The list filters as you type.
 
@@ -163,7 +169,7 @@ Use a **vision-capable** model (e.g. GPT-4o, Claude 3.5+, many local multimodal 
 
 - **CLI:** `-image path` or repeat `-image` for multiple paths. Comma-separated lists work (`-image a.png,b.png`). Applies to the **first user message** in a REPL session, or to a **single-shot** `-prompt` / stdin run. Combines with `-stream` (no tools).
 - **REPL:** `/image path/to.png` queues an image for your **next** message (repeat to attach several). You can also embed paths in text: `@image:screenshot.png` or `@image:"C:\path\with spaces.png"` (paths are relative to the workspace when not absolute).
-- **Clipboard:** `/paste` grabs an image from the OS clipboard and attaches it to your next message. In the TUI, **Ctrl+V** does the same thing. Requires a clipboard tool on Linux: **`wl-paste`** (Wayland) or **`xclip`** (X11). macOS and Windows use built-in APIs (`osascript` / PowerShell).
+- **Clipboard:** `/paste` grabs an image from the OS clipboard and attaches it to your next message. In the TUI, **Ctrl+V** does the same thing. Both **raw image data** (e.g. a browser "Copy Image" or a screenshot tool that writes to the clipboard) **and a copied image file** (file managers like Nautilus, Dolphin, Finder, or Explorer place a file reference on the clipboard rather than the bytes) are accepted; for file references the original on-disk path is loaded without being copied. Requires a clipboard tool on Linux: **`wl-paste`** (Wayland) or **`xclip`** (X11). macOS and Windows use built-in APIs (`osascript` / PowerShell).
 - **Limits:** PNG, JPEG, GIF, WebP; max **20 MiB** per file (warning above **5 MiB**). Large images still count toward context—use `/compact` if needed.
 
 Use `-help` for all flags. Notable options:
@@ -179,6 +185,7 @@ Use `-help` for all flags. Notable options:
 - **`-stream` / `-stream-reply`** — streaming behavior
 - **`-plain`** — raw assistant text
 - **`-progress`** — agent progress on stderr
+- **Default error log** — unless disabled, codient appends **plain-text** timestamped lines (failed agent turns, orchestrator supervisor errors during intent classification, ACP `session/prompt` failures, and **panics with stack traces**) under `<state dir>/logs/errors-<UTC>-<pid>.log` (state dir is `~/.codient` or **`CODIENT_STATE_DIR`**). Disable with **`CODIENT_ERROR_LOG=0`** (also `false`, `off`, or `no`). Separate from **`-log`** JSONL below.
 - **`-log`** — append JSONL events (LLM rounds, tools; each `llm` event may include `prompt_tokens`, `completion_tokens`, `total_tokens` when the server reports usage)
 - **`-goal` / `-task-file`** — merged into the first user turn as a task directive
 - **`-image`** — attach one or more image files to the first user turn (REPL) or to a one-shot prompt (`-stream` supported); see [Images and vision](#images-and-vision)
@@ -250,7 +257,7 @@ Inside a session you can use slash commands to control the agent:
 | `/lsp [server]` | List LSP servers and capabilities |
 | `/status` | Show session state (orchestrator's resolved mode for the last turn, model, turns, estimated context, API token totals, resolved **auto-check** build/lint/test commands, exec policy) |
 | `/cost` (or `/tokens`) | Show session token counts (prompt/completion/total) and estimated cost |
-| `/log [path]` | Show logging status or enable JSONL logging to a file |
+| `/log [path]` | Show **JSONL** telemetry status or enable append-only **`-log`**-style logging to a file (LLM/tool events). The default **error log** (failures and panics under `<state dir>/logs/`) is separate; use **`CODIENT_ERROR_LOG=0`** to disable it |
 | `/undo` | Undo the last build turn. With **`git_auto_commit`** (default): removes the last codient commit (`HEAD~1`). Otherwise: restores tracked files and deletes new files from that turn. `/undo all` resets the repo to the commit at session start (auto-commit) or reverts all working-tree changes (legacy). Requires a git repo. |
 | `/checkpoint` (or `/cp`) | Save a **named snapshot** of the conversation, mode, model, plan state, and current git `HEAD` (default name `turn-N`). With **`git_auto_commit`** in build mode, uncommitted changes are committed first so the snapshot points at a real commit. |
 | `/checkpoints` (or `/cps`) | List checkpoints for this session as a tree (`*` marks the current checkpoint id). |

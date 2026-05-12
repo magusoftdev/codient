@@ -199,7 +199,7 @@ func TestHasImage_DarwinNoImage(t *testing.T) {
 func TestHasImage_WindowsTrue(t *testing.T) {
 	e := &fakeExec{
 		runResults: map[string]runResult{
-			"powershell": {out: "True\n"},
+			"powershell": {out: "image=True;files=False\n"},
 		},
 	}
 	b := backend{platform: "windows", tool: "powershell"}
@@ -215,7 +215,7 @@ func TestHasImage_WindowsTrue(t *testing.T) {
 func TestHasImage_WindowsFalse(t *testing.T) {
 	e := &fakeExec{
 		runResults: map[string]runResult{
-			"powershell": {out: "False\n"},
+			"powershell": {out: "image=False;files=False\n"},
 		},
 	}
 	b := backend{platform: "windows", tool: "powershell"}
@@ -255,6 +255,233 @@ func TestHasImage_CommandError(t *testing.T) {
 	if has {
 		t.Fatal("expected false on command error")
 	}
+}
+
+func TestHasImage_WaylandURIListImage(t *testing.T) {
+	dir := t.TempDir()
+	imgPath := filepath.Join(dir, "diagram.png")
+	if err := os.WriteFile(imgPath, []byte("PNG\x00"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	uriList := "file://" + imgPath + "\n"
+	e := &fakeExec{
+		runResults: map[string]runResult{
+			"wl-paste --list-types": {out: "text/uri-list\ntext/plain;charset=utf-8\n"},
+			"wl-paste --no-newline --type text/uri-list": {out: uriList},
+		},
+	}
+	b := backend{platform: "wayland", tool: "wl-paste"}
+	has, err := hasImage(context.Background(), e, b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !has {
+		t.Fatal("expected true for uri-list pointing at an image file")
+	}
+}
+
+func TestHasImage_X11URIListImage(t *testing.T) {
+	dir := t.TempDir()
+	imgPath := filepath.Join(dir, "shot.jpg")
+	if err := os.WriteFile(imgPath, []byte("JPG"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	uriList := "file://" + imgPath + "\n"
+	e := &fakeExec{
+		runResults: map[string]runResult{
+			"xclip -selection clipboard -t TARGETS -o":       {out: "TARGETS\ntext/uri-list\nUTF8_STRING\n"},
+			"xclip -selection clipboard -t text/uri-list -o": {out: uriList},
+		},
+	}
+	b := backend{platform: "x11", tool: "xclip"}
+	has, err := hasImage(context.Background(), e, b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !has {
+		t.Fatal("expected true for uri-list pointing at an image file")
+	}
+}
+
+func TestHasImage_URIListNonImage(t *testing.T) {
+	dir := t.TempDir()
+	txtPath := filepath.Join(dir, "notes.txt")
+	if err := os.WriteFile(txtPath, []byte("hi"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	uriList := "file://" + txtPath + "\n"
+	e := &fakeExec{
+		runResults: map[string]runResult{
+			"wl-paste --list-types": {out: "text/uri-list\ntext/plain\n"},
+			"wl-paste --no-newline --type text/uri-list": {out: uriList},
+		},
+	}
+	b := backend{platform: "wayland", tool: "wl-paste"}
+	has, err := hasImage(context.Background(), e, b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if has {
+		t.Fatal("expected false for uri-list with non-image entries")
+	}
+}
+
+func TestHasImage_URIListMissingFile(t *testing.T) {
+	uriList := "file:///tmp/does-not-exist-codient-clipboard-test.png\n"
+	e := &fakeExec{
+		runResults: map[string]runResult{
+			"wl-paste --list-types": {out: "text/uri-list\n"},
+			"wl-paste --no-newline --type text/uri-list": {out: uriList},
+		},
+	}
+	b := backend{platform: "wayland", tool: "wl-paste"}
+	has, err := hasImage(context.Background(), e, b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if has {
+		t.Fatal("expected false when uri-list entry refers to a missing file")
+	}
+}
+
+func TestSaveImage_WaylandURIList(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("linux-only resolve test")
+	}
+	t.Setenv("XDG_SESSION_TYPE", "wayland")
+	srcDir := t.TempDir()
+	imgPath := filepath.Join(srcDir, "hero.png")
+	if err := os.WriteFile(imgPath, []byte("PNG\x00"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	uriList := "file://" + imgPath + "\n"
+
+	e := &fakeExec{
+		lookPathResults: map[string]bool{"wl-paste": true},
+		runResults: map[string]runResult{
+			"wl-paste --list-types": {out: "text/uri-list\ntext/plain\n"},
+			"wl-paste --no-newline --type text/uri-list": {out: uriList},
+		},
+	}
+
+	clipDir := t.TempDir()
+	got, err := SaveImage(context.Background(), e, clipDir)
+	if err != nil {
+		t.Fatalf("SaveImage: %v", err)
+	}
+	if got != imgPath {
+		t.Fatalf("expected original path %q, got %q", imgPath, got)
+	}
+}
+
+func TestSaveImage_X11URIList(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("linux-only resolve test")
+	}
+	t.Setenv("XDG_SESSION_TYPE", "x11")
+	srcDir := t.TempDir()
+	imgPath := filepath.Join(srcDir, "graph.jpeg")
+	if err := os.WriteFile(imgPath, []byte("JPG"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	uriList := "file://" + imgPath + "\n"
+
+	e := &fakeExec{
+		lookPathResults: map[string]bool{"xclip": true},
+		runResults: map[string]runResult{
+			"xclip -selection clipboard -t TARGETS -o":       {out: "TARGETS\ntext/uri-list\n"},
+			"xclip -selection clipboard -t text/uri-list -o": {out: uriList},
+		},
+	}
+
+	clipDir := t.TempDir()
+	got, err := SaveImage(context.Background(), e, clipDir)
+	if err != nil {
+		t.Fatalf("SaveImage: %v", err)
+	}
+	if got != imgPath {
+		t.Fatalf("expected original path %q, got %q", imgPath, got)
+	}
+}
+
+func TestSaveImage_NoImageNoFiles(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("linux-only resolve test")
+	}
+	t.Setenv("XDG_SESSION_TYPE", "wayland")
+	e := &fakeExec{
+		lookPathResults: map[string]bool{"wl-paste": true},
+		runResults: map[string]runResult{
+			"wl-paste --list-types": {out: "text/plain\n"},
+		},
+	}
+	clipDir := t.TempDir()
+	_, err := SaveImage(context.Background(), e, clipDir)
+	if err == nil {
+		t.Fatal("expected error when clipboard has no image and no file URIs")
+	}
+}
+
+func TestParseURIList(t *testing.T) {
+	t.Run("multiple URIs with comments", func(t *testing.T) {
+		input := "# comment\nfile:///tmp/a.png\nfile:///tmp/b.jpg\n\nhttp://example.com/c.png\n"
+		got := parseURIList(input)
+		want := []string{"/tmp/a.png", "/tmp/b.jpg"}
+		if len(got) != len(want) {
+			t.Fatalf("got %d paths, want %d (%v)", len(got), len(want), got)
+		}
+		for i := range got {
+			if got[i] != want[i] {
+				t.Errorf("got[%d]=%q want %q", i, got[i], want[i])
+			}
+		}
+	})
+	t.Run("percent-encoded path", func(t *testing.T) {
+		got := parseURIList("file:///tmp/my%20pic.png\n")
+		want := []string{"/tmp/my pic.png"}
+		if len(got) != 1 || got[0] != want[0] {
+			t.Fatalf("got %v, want %v", got, want)
+		}
+	})
+	t.Run("CRLF line endings", func(t *testing.T) {
+		got := parseURIList("file:///tmp/a.png\r\nfile:///tmp/b.png\r\n")
+		if len(got) != 2 || got[0] != "/tmp/a.png" || got[1] != "/tmp/b.png" {
+			t.Fatalf("unexpected: %v", got)
+		}
+	})
+	t.Run("non-file URIs ignored", func(t *testing.T) {
+		got := parseURIList("ftp://example.com/x.png\nhttp://example.com/y.png\n")
+		if len(got) != 0 {
+			t.Fatalf("expected empty, got %v", got)
+		}
+	})
+}
+
+func TestFileURIToPath(t *testing.T) {
+	t.Run("simple path", func(t *testing.T) {
+		p, ok := fileURIToPath("file:///home/me/pic.png")
+		if !ok || p != "/home/me/pic.png" {
+			t.Fatalf("got (%q, %v)", p, ok)
+		}
+	})
+	t.Run("encoded path", func(t *testing.T) {
+		p, ok := fileURIToPath("file:///home/me/a%20b.png")
+		if !ok || p != "/home/me/a b.png" {
+			t.Fatalf("got (%q, %v)", p, ok)
+		}
+	})
+	t.Run("non-file scheme", func(t *testing.T) {
+		_, ok := fileURIToPath("http://example.com/x.png")
+		if ok {
+			t.Fatal("expected http:// to be rejected")
+		}
+	})
+	t.Run("malformed", func(t *testing.T) {
+		_, ok := fileURIToPath("not a url")
+		if ok {
+			t.Fatal("expected garbage to be rejected")
+		}
+	})
 }
 
 func TestSaveImage_ViaPipe(t *testing.T) {

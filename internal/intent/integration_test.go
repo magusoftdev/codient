@@ -87,3 +87,65 @@ func TestIntegration_IdentifyIntent_Categories(t *testing.T) {
 		})
 	}
 }
+
+// TestIntegration_IdentifyIntent_RetryOnTinyBudget exercises the hardened
+// retry path against a real model: it forces a tiny initial completion budget
+// so a thinking model is almost certain to truncate inside its <think> block,
+// and asserts that the second attempt (with the larger default retry budget)
+// still recovers a valid classification without a fallback.
+//
+// This test is opt-in (`CODIENT_INTEGRATION_THINKING=1`) because non-thinking
+// models on the low tier finish well under 16 tokens and would not exercise
+// the retry path at all — leaving it gated keeps `make test-integration` fast
+// for the common case.
+//
+// Run:
+//
+//	CODIENT_INTEGRATION=1 CODIENT_INTEGRATION_THINKING=1 \
+//	  go test -tags=integration -run TestIntegration_IdentifyIntent_RetryOnTinyBudget \
+//	  ./internal/intent/...
+func TestIntegration_IdentifyIntent_RetryOnTinyBudget(t *testing.T) {
+	if os.Getenv("CODIENT_INTEGRATION") != "1" {
+		t.Skip("set CODIENT_INTEGRATION=1 to run live API tests")
+	}
+	if os.Getenv("CODIENT_INTEGRATION_THINKING") != "1" {
+		t.Skip("set CODIENT_INTEGRATION_THINKING=1 to exercise the retry-on-length path against a thinking model")
+	}
+	if testing.Short() {
+		t.Skip("skipping live LLM call in -short mode")
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.RequireModel(); err != nil {
+		t.Fatal(err)
+	}
+	client := openaiclient.NewForTier(cfg, "low")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	id, err := intent.IdentifyIntent(ctx, client,
+		"Refactor the authentication module across every file to use the new session API.",
+		intent.Options{
+			// Force the initial budget below what a thinking model needs for
+			// the JSON answer so the retry path is exercised. The package
+			// default retry budget (4× capped at 2048, with a 1024 floor) is
+			// large enough to recover.
+			MaxCompletionTokens: 16,
+		})
+	if err != nil {
+		t.Fatalf("IdentifyIntent error: %v (id=%+v)", err, id)
+	}
+	t.Logf("category=%s reasoning=%s fallback=%v", id.Category, id.Reasoning, id.Fallback)
+	if id.Fallback {
+		t.Fatalf("expected retry path to recover a classification; got fallback (reason=%s)", id.Reasoning)
+	}
+	switch id.Category {
+	case intent.CategoryComplexTask, intent.CategoryDesign, intent.CategorySimpleFix, intent.CategoryQuery:
+		// any valid category is acceptable; models classify subjectively.
+	default:
+		t.Fatalf("unexpected category %q", id.Category)
+	}
+}

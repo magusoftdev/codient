@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -31,6 +32,12 @@ type EstimateSessionCostFn func(u tokentracker.Usage) (costUSD float64, ok bool)
 type ChatClient interface {
 	ChatCompletion(ctx context.Context, params openai.ChatCompletionNewParams) (*openai.ChatCompletion, error)
 	Model() string
+}
+
+// ErrorLogger receives turn-level failures and panics for optional process error logs.
+type ErrorLogger interface {
+	LogError(context string, err error)
+	LogPanic(recovered any, stack []byte)
 }
 
 // streamChatClient is implemented by *openaiclient.Client for token streaming during agent turns.
@@ -73,6 +80,8 @@ type Runner struct {
 	Cfg   *config.Config
 	Tools *tools.Registry
 	Log   *agentlog.Logger
+	// ErrorLog receives panics from RunConversation and optional error lines; nil skips.
+	ErrorLog ErrorLogger
 	// Tracker accumulates API-reported token usage; optional.
 	Tracker *tokentracker.Tracker
 	// Progress, when non-nil (e.g. os.Stderr), receives human-readable lines during the tool loop.
@@ -137,7 +146,24 @@ func (r *Runner) Run(ctx context.Context, system string, user openai.ChatComplet
 // Returns the assistant's final text and updated history (including this turn), suitable for REPL.
 // streamTo selects streaming for this turn only (nil = non-streaming completion).
 // streamed is true when the final reply was produced via streaming (skip glamour in the caller).
-func (r *Runner) RunConversation(ctx context.Context, system string, history []openai.ChatCompletionMessageParamUnion, user openai.ChatCompletionMessageParamUnion, streamTo io.Writer) (string, []openai.ChatCompletionMessageParamUnion, bool, error) {
+func (r *Runner) RunConversation(ctx context.Context, system string, history []openai.ChatCompletionMessageParamUnion, user openai.ChatCompletionMessageParamUnion, streamTo io.Writer) (reply string, newHist []openai.ChatCompletionMessageParamUnion, streamed bool, err error) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			stack := debug.Stack()
+			if r != nil && r.ErrorLog != nil {
+				r.ErrorLog.LogPanic(rec, stack)
+			}
+			reply = ""
+			newHist = nil
+			streamed = false
+			err = fmt.Errorf("agent panic: %v", rec)
+		}
+	}()
+	reply, newHist, streamed, err = r.runConversationBody(ctx, system, history, user, streamTo)
+	return
+}
+
+func (r *Runner) runConversationBody(ctx context.Context, system string, history []openai.ChatCompletionMessageParamUnion, user openai.ChatCompletionMessageParamUnion, streamTo io.Writer) (string, []openai.ChatCompletionMessageParamUnion, bool, error) {
 	r.StopHookActive = false
 	r.toolUseSeq.Store(0)
 	r.autoCheckAttempts = 0

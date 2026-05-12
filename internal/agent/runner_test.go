@@ -1616,3 +1616,45 @@ func TestRunner_AutoCheckLoopNoProgressShortCircuit(t *testing.T) {
 		t.Fatal("expected no-progress notice in one of the LLM requests")
 	}
 }
+
+type panicCaptureLog struct {
+	mu    sync.Mutex
+	panics int
+}
+
+func (p *panicCaptureLog) LogError(context string, err error) {}
+
+func (p *panicCaptureLog) LogPanic(recovered any, stack []byte) {
+	p.mu.Lock()
+	p.panics++
+	p.mu.Unlock()
+}
+
+type panicOnChatLLM struct{}
+
+func (panicOnChatLLM) Model() string { return "panic-model" }
+
+func (panicOnChatLLM) ChatCompletion(ctx context.Context, params openai.ChatCompletionNewParams) (*openai.ChatCompletion, error) {
+	panic("simulated")
+}
+
+func TestRunConversation_RecoversPanic(t *testing.T) {
+	reg := tools.NewRegistry()
+	var lg panicCaptureLog
+	r := &Runner{
+		LLM:      panicOnChatLLM{},
+		Cfg:      &config.Config{},
+		Tools:    reg,
+		ErrorLog: &lg,
+	}
+	_, _, _, err := r.RunConversation(context.Background(), "", nil, openai.UserMessage("hi"), nil)
+	if err == nil || !strings.Contains(err.Error(), "agent panic") {
+		t.Fatalf("expected agent panic error, got %v", err)
+	}
+	lg.mu.Lock()
+	n := lg.panics
+	lg.mu.Unlock()
+	if n != 1 {
+		t.Fatalf("expected 1 panic log, got %d", n)
+	}
+}

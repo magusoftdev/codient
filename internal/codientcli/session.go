@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/rand"
+	"runtime/debug"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -29,6 +30,7 @@ import (
 	"codient/internal/codeindex"
 	"codient/internal/config"
 	"codient/internal/designstore"
+	"codient/internal/errorsink"
 	"codient/internal/fileref"
 	"codient/internal/gitutil"
 	"codient/internal/hooks"
@@ -55,6 +57,7 @@ type session struct {
 	client           *openaiclient.Client
 	registry         *tools.Registry
 	agentLog         *agentlog.Logger
+	errorLog         *errorsink.Sink
 	progressOut      io.Writer
 	mode             prompt.Mode
 	systemPrompt     string
@@ -302,7 +305,7 @@ func (s *session) newRunner() *agent.Runner {
 	s.client = openaiclient.NewForTier(s.cfg, tierForResolvedMode(s.mode))
 	r := &agent.Runner{
 		LLM: s.client, Cfg: s.cfg, Tools: s.registry,
-		Log: s.agentLog, Progress: s.progressOut,
+		Log: s.agentLog, ErrorLog: s.errorLog, Progress: s.progressOut,
 		ProgressPlain: s.cfg.Plain,
 		ProgressMode:  string(s.mode),
 		Tracker:       s.tokenTracker,
@@ -429,6 +432,7 @@ func (s *session) delegateTaskFn() tools.DelegateRunner {
 			Context:               extraContext,
 			RepoMap:               repoMap,
 			Log:                   s.agentLog,
+			ErrorLog:              s.errorLog,
 			Progress:              progress,
 			OnTranscriptEvent:     onTranscript,
 			Tracker:               s.tokenTracker,
@@ -597,6 +601,9 @@ func (s *session) executeTurn(ctx context.Context, runner *agent.Runner, user op
 		var used bool
 		reply, newHist, streamed, used, runErr = agent.RunPlanModeTot(ctx, runner, totClient, sysPrompt, s.history, user, streamTo)
 		if runErr != nil {
+			if s.errorLog != nil {
+				s.errorLog.LogError(fmt.Sprintf("execute_turn mode=%s plan_tot", s.mode), runErr)
+			}
 			return "", runErr
 		}
 		if !used {
@@ -606,6 +613,9 @@ func (s *session) executeTurn(ctx context.Context, runner *agent.Runner, user op
 		reply, newHist, streamed, runErr = runner.RunConversation(ctx, sysPrompt, s.history, user, streamTo)
 	}
 	if runErr != nil {
+		if s.errorLog != nil {
+			s.errorLog.LogError(fmt.Sprintf("execute_turn mode=%s", s.mode), runErr)
+		}
 		return "", runErr
 	}
 	s.history = newHist
@@ -701,6 +711,28 @@ func postReplyGateWantsVerification(ctx context.Context, client *openaiclient.Cl
 		content = c
 	}
 	return parsePostReplyGateAnswer(content), nil
+}
+
+func (s *session) logSessionPanic(r any, stack []byte) {
+	if s != nil && s.errorLog != nil {
+		s.errorLog.LogPanic(r, stack)
+	}
+	w := os.Stderr
+	if s != nil && s.tui != nil && s.tui.origErr != nil {
+		w = s.tui.origErr
+	}
+	path := ""
+	if s != nil && s.errorLog != nil {
+		path = s.errorLog.Path()
+	}
+	if path != "" {
+		fmt.Fprintf(w, "codient: session panic (details in %s): %v\n", path, r)
+	} else {
+		fmt.Fprintf(w, "codient: session panic: %v\n", r)
+		if len(stack) > 0 {
+			fmt.Fprintf(w, "%s", stack)
+		}
+	}
 }
 
 const postReplyGateMaxReplyChars = 12000
@@ -996,7 +1028,13 @@ func (s *session) syncTodosToTUI() {
 	s.tui.prog.Send(tuiTodosMsg{items: items})
 }
 
-func (s *session) runSingleTurn(ctx context.Context, user string, extra []imageutil.ImageAttachment) int {
+func (s *session) runSingleTurn(ctx context.Context, user string, extra []imageutil.ImageAttachment) (exitCode int) {
+	defer func() {
+		if r := recover(); r != nil {
+			s.logSessionPanic(r, debug.Stack())
+			exitCode = 1
+		}
+	}()
 	if s.mcpMgr != nil {
 		defer s.mcpMgr.Close()
 	}
@@ -1039,6 +1077,9 @@ func (s *session) runSingleTurn(ctx context.Context, user string, extra []imageu
 	}
 	if s.convBranch == "" {
 		s.convBranch = "main"
+	}
+	if s.errorLog != nil {
+		s.errorLog.SetSessionID(s.sessionID)
 	}
 
 	if hm, herr := hooks.LoadForConfig(s.cfg.HooksEnabled, wsEarly, s.cfg.Model, s.sessionID); herr != nil {
@@ -1097,10 +1138,15 @@ func (s *session) runSingleTurn(ctx context.Context, user string, extra []imageu
 		if err == nil {
 			maybeSaveDesign(os.Stderr, s.cfg.EffectiveWorkspace(), s.designSaveDir, s.sessionID, s.lastTurnMode, reply, designstore.TaskSlug(s.goal, s.taskFile, rawUser), s.cfg.DesignSave)
 			s.showGitDiffIfBuild()
+		} else if s.errorLog != nil {
+			s.errorLog.LogError("run_single_turn(print)", err)
 		}
 		return s.finishHeadlessTurn(reply, err)
 	}
 	if err != nil {
+		if s.errorLog != nil {
+			s.errorLog.LogError("run_single_turn", err)
+		}
 		fmt.Fprintf(os.Stderr, "agent: %v\n", err)
 		return 1
 	}
@@ -1149,7 +1195,13 @@ func (s *session) maybePromptUpdate(sc *bufio.Scanner) {
 }
 
 // runSession is the main persistent REPL loop with slash commands and session persistence.
-func (s *session) runSession(ctx context.Context, initialPrompt string, newSession bool) int {
+func (s *session) runSession(ctx context.Context, initialPrompt string, newSession bool) (exitCode int) {
+	defer func() {
+		if r := recover(); r != nil {
+			s.logSessionPanic(r, debug.Stack())
+			exitCode = 1
+		}
+	}()
 	ws := s.cfg.EffectiveWorkspace()
 
 	var resumeSummary string
@@ -1187,6 +1239,9 @@ func (s *session) runSession(ctx context.Context, initialPrompt string, newSessi
 	}
 	if s.convBranch == "" {
 		s.convBranch = "main"
+	}
+	if s.errorLog != nil {
+		s.errorLog.SetSessionID(s.sessionID)
 	}
 
 	if hm, herr := hooks.LoadForConfig(s.cfg.HooksEnabled, ws, s.cfg.Model, s.sessionID); herr != nil {
@@ -1314,6 +1369,9 @@ func (s *session) runSession(ctx context.Context, initialPrompt string, newSessi
 			if isInterruptErr(err) {
 				fmt.Fprintf(os.Stderr, "\ncodient: interrupted\n")
 			} else {
+				if s.errorLog != nil {
+					s.errorLog.LogError("run_session:initial_turn", err)
+				}
 				fmt.Fprintf(os.Stderr, "agent: %v\n", err)
 				return 1
 			}
@@ -1401,6 +1459,9 @@ func (s *session) runSession(ctx context.Context, initialPrompt string, newSessi
 				// Parent context cancelled (e.g. second Ctrl+C in plain mode) — exit.
 				return 0
 			} else {
+				if s.errorLog != nil {
+					s.errorLog.LogError("run_session:repl_turn", err)
+				}
 				fmt.Fprintf(os.Stderr, "agent: %v\n", err)
 				return 1
 			}

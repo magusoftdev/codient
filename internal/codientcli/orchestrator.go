@@ -21,7 +21,9 @@ import (
 // build phase using the existing plan->build handoff machinery. The session is
 // restored to ModeAuto when the turn returns so the next prompt is re-classified.
 func (s *session) orchestratedTurn(ctx context.Context, userMsg openai.ChatCompletionMessageParamUnion, userText string) (string, error) {
+	stopSupervisorIndicator := s.startSupervisorIndicator()
 	id := s.identifyIntent(ctx, userText)
+	stopSupervisorIndicator()
 	s.printIntentStatus(id)
 
 	target := mapCategoryToMode(id.Category)
@@ -87,9 +89,18 @@ func (s *session) runOrchestratedBuildPhase(ctx context.Context, planReply strin
 // fallback path returns CategoryQuery, which is the safest read-only mode).
 func (s *session) identifyIntent(ctx context.Context, userText string) intent.Identification {
 	cli := openaiclient.NewForTier(s.cfg, config.TierLow)
-	id, err := intent.IdentifyIntent(ctx, cli, userText, intent.Options{Tracker: s.tokenTracker})
-	if err != nil && s.cfg.Verbose {
-		fmt.Fprintf(s.intentStatusWriter(), "codient: orchestrator: supervisor error: %v (falling back to %s)\n", err, id.Category)
+	id, err := intent.IdentifyIntent(ctx, cli, userText, intent.Options{
+		Tracker:             s.tokenTracker,
+		MaxCompletionTokens: s.cfg.LowReasoning.MaxCompletionTokens,
+		DisableHeuristic:    s.cfg.DisableIntentHeuristic,
+	})
+	if err != nil {
+		if s.errorLog != nil {
+			s.errorLog.LogError("orchestrator:intent_identify", err)
+		}
+		if s.cfg.Verbose {
+			fmt.Fprintf(s.intentStatusWriter(), "codient: orchestrator: supervisor error: %v (falling back to %s)\n", err, id.Category)
+		}
 	}
 	return id
 }
@@ -110,24 +121,57 @@ func mapCategoryToMode(c intent.Category) prompt.Mode {
 	}
 }
 
-// printIntentStatus writes the supervisor decision to the user via stderr (or
-// the TUI viewport when active). Suppressed in headless -print non-text output.
+// startSupervisorIndicator begins a "working" indicator while the orchestrator's
+// supervisor LLM call is in flight. Without this, the user sees no feedback
+// between submitting a prompt and the `codient: intent: …` line that prints
+// AFTER the supervisor returns — a noticeable gap for thinking models on
+// local hardware (several seconds while the supervisor retries on length
+// truncation).
+//
+// The returned stop function clears the stderr spinner so the intent line
+// renders cleanly on its own line. It intentionally leaves the TUI working
+// state set: the subsequent executeTurn keeps re-asserting it through the
+// rest of the turn, so the on-screen "Agent is working…" indicator never
+// flickers off between the supervisor phase and the agent loop.
+func (s *session) startSupervisorIndicator() func() {
+	if s.tui != nil {
+		s.tui.prog.Send(tuiWorkingMsg(true))
+	}
+	return startWorkingSpinner(os.Stderr)
+}
+
+// printIntentStatus writes the supervisor decision to the user via stderr
+// (or the TUI viewport when active). Suppressed in headless -print non-text
+// output. The line text is built by formatIntentStatusLine so the
+// formatting can be tested without capturing stderr.
 func (s *session) printIntentStatus(id intent.Identification) {
 	out := s.intentStatusWriter()
 	if out == nil {
 		return
 	}
+	fmt.Fprintln(out, formatIntentStatusLine(id))
+}
+
+// formatIntentStatusLine renders the on-screen `codient: intent: …` line
+// for the orchestrator's classification. The parenthetical tag tells the
+// user which classifier produced the decision:
+//   - `(heuristic)` — pre-LLM fast-path matched a high-confidence pattern.
+//   - `(fallback)`  — post-LLM-failure safety net (heuristic or QUERY default).
+//   - (no tag)      — the supervisor LLM classified normally; expected case.
+func formatIntentStatusLine(id intent.Identification) string {
 	cat := string(id.Category)
 	reason := strings.TrimSpace(id.Reasoning)
 	suffix := ""
-	if id.Fallback {
+	switch {
+	case id.Fallback:
 		suffix = " (fallback)"
+	case id.Source == intent.SourceHeuristic:
+		suffix = " (heuristic)"
 	}
 	if reason == "" {
-		fmt.Fprintf(out, "codient: intent: %s%s\n", cat, suffix)
-		return
+		return fmt.Sprintf("codient: intent: %s%s", cat, suffix)
 	}
-	fmt.Fprintf(out, "codient: intent: %s%s — %s\n", cat, suffix, reason)
+	return fmt.Sprintf("codient: intent: %s%s — %s", cat, suffix, reason)
 }
 
 // intentStatusWriter returns the writer for orchestrator status lines, or nil
