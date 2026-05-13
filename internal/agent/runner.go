@@ -127,10 +127,10 @@ type Runner struct {
 	// Signature is unchanged between consecutive attempts.
 	AutoCheckStopOnNoProgress bool
 
-	toolUseSeq          atomic.Uint64
-	autoCheckAttempts   int
-	autoCheckLastSig    string
-	autoCheckExhausted  bool
+	toolUseSeq         atomic.Uint64
+	autoCheckAttempts  int
+	autoCheckLastSig   string
+	autoCheckExhausted bool
 }
 
 // Run carries out one user turn (no prior conversation history).
@@ -247,9 +247,9 @@ func (r *Runner) runConversationBody(ctx context.Context, system string, history
 		}
 		if err != nil {
 			r.emitProgress(&TranscriptEvent{
-				Kind:         TranscriptModelError,
-				Text:         progressErrShort(err),
-				RoundLLMDur:  llmDur,
+				Kind:        TranscriptModelError,
+				Text:        progressErrShort(err),
+				RoundLLMDur: llmDur,
 			})
 			return "", nil, false, err
 		}
@@ -265,12 +265,12 @@ func (r *Runner) runConversationBody(ctx context.Context, system string, history
 			// is stuck and parsing more text tool calls will loop forever.
 			if toolCallSource != "" && consecutiveToolFails < maxConsecutiveToolFails && containsTextToolCalls(toolCallSource) {
 				if parsed := parseTextToolCalls(toolCallSource); len(parsed) > 0 {
-				if r.OnIntent != nil {
-					intent := strings.TrimSpace(stripTextToolCallFragments(toolCallSource))
-					if intent != "" {
-						r.OnIntent(intent)
+					if r.OnIntent != nil {
+						intent := strings.TrimSpace(stripTextToolCallFragments(toolCallSource))
+						if intent != "" {
+							r.OnIntent(intent)
+						}
 					}
-				}
 					assistantHistoryText := strings.TrimSpace(msg.Content)
 					if assistantHistoryText == "" {
 						assistantHistoryText = strings.TrimSpace(stripTextToolCallFragments(toolCallSource))
@@ -279,13 +279,13 @@ func (r *Runner) runConversationBody(ctx context.Context, system string, history
 						msgs = append(msgs, openai.AssistantMessage(assistantHistoryText))
 					}
 
-				if line := FormatThinkingProgressLine(r.ProgressPlain, r.ProgressMode, toolCallSource); line != "" {
-					r.emitProgress(&TranscriptEvent{
-						Kind:           TranscriptAssistantPreface,
-						AssistantProse: toolCallSource,
-						ThinkingFull:   FormatFullThinkingProse(toolCallSource),
-					})
-				}
+					if line := FormatThinkingProgressLine(r.ProgressPlain, r.ProgressMode, toolCallSource); line != "" {
+						r.emitProgress(&TranscriptEvent{
+							Kind:           TranscriptAssistantPreface,
+							AssistantProse: toolCallSource,
+							ThinkingFull:   FormatFullThinkingProse(toolCallSource),
+						})
+					}
 
 					type toolResult struct {
 						name     string
@@ -701,8 +701,6 @@ func (r *Runner) autoCheckAfterMutations(ctx context.Context, results []autoChec
 		return out.Inject, out.Progress
 	}
 
-	r.autoCheckAttempts++
-
 	if r.AutoCheckStopOnNoProgress && r.autoCheckLastSig != "" && out.Signature == r.autoCheckLastSig {
 		r.autoCheckExhausted = true
 		r.emitProgress(&TranscriptEvent{
@@ -726,6 +724,7 @@ func (r *Runner) autoCheckAfterMutations(ctx context.Context, results []autoChec
 		return notice, out.Progress
 	}
 
+	r.autoCheckAttempts++
 	r.autoCheckLastSig = out.Signature
 	decorated := fmt.Sprintf("%s\n\n[auto-check fix attempt %d/%d]", out.Inject, r.autoCheckAttempts, maxFixes)
 	return decorated, out.Progress

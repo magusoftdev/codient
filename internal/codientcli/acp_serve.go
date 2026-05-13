@@ -1244,7 +1244,7 @@ func (s *acpServer) newACPRunnerLocked(sess *acpChatSession) *agent.Runner {
 		steps := buildAutoCheckSteps(s.cfg)
 		if len(steps) > 0 {
 			sec := autoCheckTimeoutSec(s.cfg)
-			r.AutoCheck = makeAutoCheckSequence(s.cfg.EffectiveWorkspace(), steps, time.Duration(sec)*time.Second, s.cfg.ExecMaxOutputBytes, s.progressWriter)
+			r.AutoCheck = makeAutoCheckSequenceWithConfig(s.cfg, s.cfg.EffectiveWorkspace(), steps, time.Duration(sec)*time.Second, s.cfg.ExecMaxOutputBytes, s.progressWriter)
 		}
 		r.AutoCheckMaxFixes = s.cfg.AutoCheckFixMaxRetries
 		r.AutoCheckStopOnNoProgress = s.cfg.AutoCheckFixStopOnNoProgress

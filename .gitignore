@@ -33,6 +33,11 @@ go.work.sum
 # env file
 .env
 
+# Terminal-Bench local venv and default run output directory
+.venv-tbench/
+runs/
+benchmarks/
+
 # Codient session/design state (workspace-specific)
 .codient/
 

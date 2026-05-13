@@ -3,7 +3,6 @@ package codientcli
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -15,6 +14,7 @@ import (
 
 	"codient/internal/agent"
 	"codient/internal/config"
+	"codient/internal/sandbox"
 	"codient/internal/tools"
 )
 
@@ -60,6 +60,13 @@ func effectiveTestCmd(cfg *config.Config) string {
 type autoCheckStep struct {
 	label   string
 	cmdLine string
+}
+
+type autoCheckExec struct {
+	runner  sandbox.Runner
+	policy  sandbox.Policy
+	env     []string
+	workDir string
 }
 
 // buildAutoCheckSteps returns ordered build → lint → test steps (skips empty commands).
@@ -268,6 +275,11 @@ func makeAutoCheck(workspace, cmdLine string, timeout time.Duration, maxOut int,
 
 // makeAutoCheckSequence runs build → lint → test in order (fail-fast). Progress aggregates successful steps.
 func makeAutoCheckSequence(workspace string, steps []autoCheckStep, timeout time.Duration, maxOut int, progress io.Writer) func(context.Context) agent.AutoCheckOutcome {
+	return makeAutoCheckSequenceWithConfig(nil, workspace, steps, timeout, maxOut, progress)
+}
+
+func makeAutoCheckSequenceWithConfig(cfg *config.Config, workspace string, steps []autoCheckStep, timeout time.Duration, maxOut int, progress io.Writer) func(context.Context) agent.AutoCheckOutcome {
+	execCfg := buildAutoCheckExec(cfg, workspace)
 	return func(ctx context.Context) agent.AutoCheckOutcome {
 		if len(steps) == 0 {
 			return agent.AutoCheckOutcome{Passed: true}
@@ -278,7 +290,7 @@ func makeAutoCheckSequence(workspace string, steps []autoCheckStep, timeout time
 			if cmdLine == "" {
 				continue
 			}
-			out := execOneAutoCheck(ctx, workspace, st.label, cmdLine, timeout, maxOut, progress)
+			out := execOneAutoCheck(ctx, execCfg, st.label, cmdLine, timeout, maxOut, progress)
 			if out.Progress != "" {
 				progLines = append(progLines, out.Progress)
 			}
@@ -296,48 +308,56 @@ func makeAutoCheckSequence(workspace string, steps []autoCheckStep, timeout time
 	}
 }
 
-func execOneAutoCheck(ctx context.Context, workspace, label, cmdLine string, timeout time.Duration, maxOut int, progress io.Writer) agent.AutoCheckOutcome {
+func buildAutoCheckExec(cfg *config.Config, workspace string) autoCheckExec {
+	runner := sandbox.Runner(sandbox.NoopRunner{})
+	policy := sandbox.Policy{}
+	if cfg != nil {
+		runner = sandbox.SelectRunner(cfg.SandboxMode, sandbox.SelectOptions{
+			ContainerImage: cfg.SandboxContainerImage,
+		})
+		policy.EnvPassthrough = append([]string(nil), cfg.ExecEnvPassthrough...)
+		policy.ReadOnlyPaths = append([]string(nil), cfg.SandboxReadOnlyPaths...)
+	}
+	if abs, err := filepath.Abs(workspace); err == nil {
+		policy.ReadWritePaths = append(policy.ReadWritePaths, abs)
+		workspace = abs
+	}
+	env := sandbox.ScrubOSEnviron(policy.EnvPassthrough)
+	return autoCheckExec{runner: runner, policy: policy, env: env, workDir: workspace}
+}
+
+func execOneAutoCheck(ctx context.Context, execCfg autoCheckExec, label, cmdLine string, timeout time.Duration, maxOut int, progress io.Writer) agent.AutoCheckOutcome {
 	cmdLine = strings.TrimSpace(cmdLine)
 	if cmdLine == "" {
 		return agent.AutoCheckOutcome{}
 	}
 	t0 := time.Now()
-	runCtx := ctx
-	var cancel context.CancelFunc
-	if timeout > 0 {
-		runCtx, cancel = context.WithTimeout(ctx, timeout)
-		defer cancel()
-	}
 	argv, err := tools.ShellArgv(cmdLine)
 	if err != nil {
 		return agent.AutoCheckOutcome{}
 	}
-	cmd := exec.CommandContext(runCtx, argv[0], argv[1:]...)
-	cmd.Dir = workspace
+	if execCfg.runner == nil {
+		execCfg.runner = sandbox.NoopRunner{}
+	}
 
 	var out []byte
+	exitCode := 0
 	if progress != nil {
 		ls := tools.NewLineStreamer(progress)
-		cmd.Stdout = ls
-		cmd.Stderr = ls
-		err = cmd.Run()
+		exitCode, err = execCfg.runner.Exec(ctx, execCfg.policy, execCfg.workDir, argv, execCfg.env, timeout, ls, ls)
 		ls.Flush()
 		out = ls.Bytes()
 	} else {
-		out, err = cmd.CombinedOutput()
+		var buf strings.Builder
+		exitCode, err = execCfg.runner.Exec(ctx, execCfg.policy, execCfg.workDir, argv, execCfg.env, timeout, &buf, &buf)
+		out = []byte(buf.String())
 	}
 
 	dur := time.Since(t0)
-	exitCode := 0
 	if err != nil {
-		var ee *exec.ExitError
-		if errors.As(err, &ee) {
-			exitCode = ee.ExitCode()
-		} else {
-			inject := fmt.Sprintf("[auto-check] %s check failed to run.\n\nerror: %v", label, err)
-			prog := fmt.Sprintf("auto-check [%s]: %s · %v (spawn error)", label, cmdLine, dur.Round(time.Millisecond))
-			return agent.AutoCheckOutcome{Inject: inject, Progress: prog}
-		}
+		inject := fmt.Sprintf("[auto-check] %s check failed to run.\n\nerror: %v", label, err)
+		prog := fmt.Sprintf("auto-check [%s]: %s · %v (spawn error)", label, cmdLine, dur.Round(time.Millisecond))
+		return agent.AutoCheckOutcome{Inject: inject, Progress: prog}
 	}
 	body := string(out)
 	if maxOut > 0 && len(body) > maxOut {
@@ -352,7 +372,7 @@ func execOneAutoCheck(ctx context.Context, workspace, label, cmdLine string, tim
 	pf := parser.Parse(label, cmdLine, body, exitCode)
 
 	inject := fmt.Sprintf("[auto-check] %s errors after file changes:\n\nexit_code: %d\ncmd: %s\ncwd: %s\n\n%s",
-		label, exitCode, cmdLine, workspace, body)
+		label, exitCode, cmdLine, execCfg.workDir, body)
 	if len(pf.Highlights) > 0 {
 		inject += "\n\n[parsed failures]\n" + strings.Join(pf.Highlights, "\n")
 	}

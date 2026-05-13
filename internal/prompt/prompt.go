@@ -19,10 +19,10 @@ type Params struct {
 	Mode                   Mode // zero / empty treated as ModeBuild
 	UserSystem             string
 	RepoInstructions       string // optional, already truncated by caller
-	AutoCheckBuildResolved  string // resolved build command (autocheck_cmd), empty when disabled
-	AutoCheckLintResolved   string // resolved lint command, empty when disabled
-	AutoCheckTestResolved   string // resolved test command, empty when disabled
-	AutoCheckFixMaxRetries  int    // 0 = single-shot (no loop info in prompt)
+	AutoCheckBuildResolved string // resolved build command (autocheck_cmd), empty when disabled
+	AutoCheckLintResolved  string // resolved lint command, empty when disabled
+	AutoCheckTestResolved  string // resolved test command, empty when disabled
+	AutoCheckFixMaxRetries int    // 0 = single-shot (no loop info in prompt)
 	ProjectContext         string // auto-detected project summary (language, framework, etc.)
 	RepoMap                string // structural overview (paths + symbols), optional
 	Memory                 string // cross-session memory (global + workspace), already loaded and truncated
@@ -250,7 +250,7 @@ func sectionCodeChanges() string {
 		"- Before editing an **existing** file, **read** the relevant sections so you do not clobber context.\n" +
 		"- Keep changes **runnable**: fix imports, respect existing style, and run checks (e.g. `go test`) via **run_command**; use **ensure_dir** to create directories portably; use **run_shell** only when you need shell features (pipelines, env vars).\n" +
 		"- Avoid unnecessary churn or unrelated refactors.\n" +
-		"- After creating a new function, type, or package, use **grep** or **search_files** to verify it is referenced from at least one existing code path. Code that exists only alongside its own tests is dead code—either wire it into the system or do not create it.\n" +
+		"- After creating a new function, type, or package, use **grep** or **search_files** to verify how it is reached: wired into an existing code path, exported for external/library use, registered by configuration/reflection, or covered by focused tests. Do not add artificial call sites just to satisfy this check.\n" +
 		"- Never use **run_command** or **run_shell** to create or write source code files. If **write_file** returns an error or produces unexpected results, read the file back and diagnose the issue. Shell escaping makes multi-line code unreliable—do not attempt it.\n" +
 		"- Before writing tests for a function, **read its implementation** to understand its exact behavior. Do not guess at expected values—verify them from the code or by running the function first."
 }

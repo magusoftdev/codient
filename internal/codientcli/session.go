@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"context"
 	"crypto/rand"
-	"runtime/debug"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -13,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime/debug"
 	"slices"
 	"strconv"
 	"strings"
@@ -128,8 +128,8 @@ type session struct {
 	codeIndex *codeindex.Index // semantic search index; nil when embedding_model is not configured
 	repoMap   *repomap.Map     // structural repo map; nil when repo_map_tokens is -1
 
-	mcpMgr *mcpclient.Manager    // MCP server connections; nil when no mcp_servers configured
-	lspMgr *lspclient.Manager    // LSP server connections; nil when no lsp_servers configured
+	mcpMgr *mcpclient.Manager // MCP server connections; nil when no mcp_servers configured
+	lspMgr *lspclient.Manager // LSP server connections; nil when no lsp_servers configured
 
 	// acpRegistryMu guards stub.registry / stub.systemPrompt while async MCP connect finishes (-acp).
 	acpRegistryMu sync.RWMutex
@@ -332,7 +332,7 @@ func (s *session) newRunner() *agent.Runner {
 		steps := buildAutoCheckSteps(s.cfg)
 		if len(steps) > 0 {
 			sec := autoCheckTimeoutSec(s.cfg)
-			r.AutoCheck = makeAutoCheckSequence(s.cfg.EffectiveWorkspace(), steps, time.Duration(sec)*time.Second, s.cfg.ExecMaxOutputBytes, s.progressOut)
+			r.AutoCheck = makeAutoCheckSequenceWithConfig(s.cfg, s.cfg.EffectiveWorkspace(), steps, time.Duration(sec)*time.Second, s.cfg.ExecMaxOutputBytes, s.progressOut)
 		}
 		r.AutoCheckMaxFixes = s.cfg.AutoCheckFixMaxRetries
 		r.AutoCheckStopOnNoProgress = s.cfg.AutoCheckFixStopOnNoProgress
@@ -442,7 +442,7 @@ func (s *session) delegateTaskFn() tools.DelegateRunner {
 			steps := buildAutoCheckSteps(cfg)
 			if len(steps) > 0 {
 				sec := autoCheckTimeoutSec(cfg)
-				rp.AutoCheck = makeAutoCheckSequence(cfg.EffectiveWorkspace(), steps, time.Duration(sec)*time.Second, cfg.ExecMaxOutputBytes, progress)
+				rp.AutoCheck = makeAutoCheckSequenceWithConfig(cfg, cfg.EffectiveWorkspace(), steps, time.Duration(sec)*time.Second, cfg.ExecMaxOutputBytes, progress)
 			}
 			rp.AutoCheckMaxFixes = cfg.AutoCheckFixMaxRetries
 			rp.AutoCheckStopOnNoProgress = cfg.AutoCheckFixStopOnNoProgress

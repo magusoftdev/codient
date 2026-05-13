@@ -120,6 +120,54 @@ func TestShouldAutoBuildAfterPlan_ACPNoScannerAutoBuilds(t *testing.T) {
 	}
 }
 
+func TestCapturePlanReplyForHandoff_ParsesFreshReadyPlan(t *testing.T) {
+	s := newTestSessionForModeSwitch(t, prompt.ModePlan)
+	s.sessionID = "sess_ready_plan"
+	reply := `## Goal
+
+Do the work.
+
+## Implementation steps
+
+1. Update the runner.
+2. Add tests.
+
+## Ready to implement
+
+- Start now.`
+
+	s.capturePlanReplyForHandoff(reply, "fix the runner")
+	if s.lastReply == "" {
+		t.Fatal("expected lastReply to be captured")
+	}
+	if s.currentPlan == nil {
+		t.Fatal("expected currentPlan to be parsed")
+	}
+	if len(s.currentPlan.Steps) != 2 {
+		t.Fatalf("steps = %d, want 2", len(s.currentPlan.Steps))
+	}
+	if s.currentPlan.UserRequest != "fix the runner" {
+		t.Fatalf("user request = %q", s.currentPlan.UserRequest)
+	}
+}
+
+func TestCapturePlanReplyForHandoff_ClearsStalePlanWhenNotReady(t *testing.T) {
+	s := newTestSessionForModeSwitch(t, prompt.ModePlan)
+	s.currentPlan = &planstore.Plan{Steps: []planstore.Step{{ID: "old", Title: "stale"}}}
+	s.planPhase = planstore.PhaseDraft
+
+	s.capturePlanReplyForHandoff("## Question\n\nA) Pick one\n\n**Waiting for your answer**", "new task")
+	if s.currentPlan != nil {
+		t.Fatalf("expected stale plan to be cleared, got %#v", s.currentPlan)
+	}
+	if s.planPhase != "" {
+		t.Fatalf("expected planPhase cleared, got %q", s.planPhase)
+	}
+	if s.shouldAutoBuildAfterPlan() {
+		t.Fatal("not-ready reply must not auto-build via stale plan state")
+	}
+}
+
 // TestApplyOrchestratedMode_ResetTransition verifies that going back to a
 // resolved mode (e.g. Plan -> Build -> Plan within a single orchestrator chain)
 // continues to rebuild the registry to the correct contents. Used as a safety

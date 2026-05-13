@@ -1543,7 +1543,8 @@ func TestRunner_AutoCheckLoopCapExhausted(t *testing.T) {
 	llm := &captureLLM{model: "m", script: []string{
 		toolRoundWriteFile, // round 1
 		toolRoundWriteFile, // round 2
-		finalReply,         // round 3: model stops
+		toolRoundWriteFile, // round 3
+		finalReply,         // round 4: model stops
 	}}
 	reg := tools.NewRegistry()
 	reg.Register(mustWriteFileTool(t))
@@ -1576,6 +1577,48 @@ func TestRunner_AutoCheckLoopCapExhausted(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("expected max-retries-exhausted notice in one of the LLM requests")
+	}
+}
+
+func TestRunner_AutoCheckLoopOneFixMeansOneAttempt(t *testing.T) {
+	llm := &captureLLM{model: "m", script: []string{
+		toolRoundWriteFile, // round 1
+		toolRoundWriteFile, // round 2
+		finalReply,         // round 3
+	}}
+	reg := tools.NewRegistry()
+	reg.Register(mustWriteFileTool(t))
+	attempt := 0
+	r := &Runner{
+		LLM: llm, Cfg: &config.Config{}, Tools: reg,
+		AutoCheck: func(context.Context) AutoCheckOutcome {
+			attempt++
+			return AutoCheckOutcome{
+				Inject: "[auto-check] FAIL", Progress: "exit=1",
+				Signature: "sig-" + strings.Repeat("x", attempt), FailingStep: "build",
+			}
+		},
+		AutoCheckMaxFixes: 1,
+	}
+	reply, _, err := r.Run(context.Background(), "", openai.UserMessage("edit"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reply != "done" {
+		t.Fatalf("expected final reply 'done', got %q", reply)
+	}
+	if !strings.Contains(string(llm.MsgJSON[1]), "fix attempt 1/1") {
+		t.Fatalf("second request should offer the one configured fix attempt: %s", string(llm.MsgJSON[1]))
+	}
+	foundExhausted := false
+	for _, raw := range llm.MsgJSON {
+		if strings.Contains(string(raw), "max retries (1) exhausted") {
+			foundExhausted = true
+			break
+		}
+	}
+	if !foundExhausted {
+		t.Fatal("expected exhaustion after the configured fix attempt was used")
 	}
 }
 
@@ -1618,7 +1661,7 @@ func TestRunner_AutoCheckLoopNoProgressShortCircuit(t *testing.T) {
 }
 
 type panicCaptureLog struct {
-	mu    sync.Mutex
+	mu     sync.Mutex
 	panics int
 }
 

@@ -44,6 +44,27 @@ func TestRemoveMoveCopyWorkspace(t *testing.T) {
 	}
 }
 
+func TestRemovePathWorkspaceRefusesRoot(t *testing.T) {
+	for _, rel := range []string{"", ".", "./"} {
+		t.Run(rel, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "keep.txt"), []byte("x"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			err := removePathWorkspace(dir, rel)
+			if err == nil {
+				t.Fatalf("expected root removal to be rejected for %q", rel)
+			}
+			if !strings.Contains(err.Error(), "workspace root") {
+				t.Fatalf("expected workspace root error, got %v", err)
+			}
+			if _, statErr := os.Stat(filepath.Join(dir, "keep.txt")); statErr != nil {
+				t.Fatalf("workspace contents should remain after rejected remove: %v", statErr)
+			}
+		})
+	}
+}
+
 func TestPathStatWorkspace(t *testing.T) {
 	dir := t.TempDir()
 	p := filepath.Join(dir, "f.go")

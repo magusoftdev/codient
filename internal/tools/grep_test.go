@@ -59,3 +59,13 @@ func TestGrepStdlib_InvalidRegex(t *testing.T) {
 		t.Fatalf("expected invalid regex error, got %v", err)
 	}
 }
+
+func TestCapGrepOutputLines(t *testing.T) {
+	out := capGrepOutputLines("a:1:x\nb:2:x\nc:3:x", 2)
+	if strings.Contains(out, "c:3:x") {
+		t.Fatalf("expected output capped before third match: %q", out)
+	}
+	if !strings.Contains(out, "[truncated at 2 matches]") {
+		t.Fatalf("expected truncation note: %q", out)
+	}
+}

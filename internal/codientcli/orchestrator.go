@@ -9,7 +9,9 @@ import (
 
 	"github.com/openai/openai-go/v3"
 
+	"codient/internal/assistout"
 	"codient/internal/config"
+	"codient/internal/designstore"
 	"codient/internal/intent"
 	"codient/internal/openaiclient"
 	"codient/internal/prompt"
@@ -43,6 +45,7 @@ func (s *session) orchestratedTurn(ctx context.Context, userMsg openai.ChatCompl
 	if err != nil || target != prompt.ModePlan || id.Category != intent.CategoryComplexTask {
 		return reply, err
 	}
+	s.capturePlanReplyForHandoff(reply, userText)
 
 	// Plan turn finished. Decide whether to auto-continue into build.
 	if !s.shouldAutoBuildAfterPlan() {
@@ -50,6 +53,23 @@ func (s *session) orchestratedTurn(ctx context.Context, userMsg openai.ChatCompl
 		return reply, nil
 	}
 	return s.runOrchestratedBuildPhase(ctx, reply)
+}
+
+// capturePlanReplyForHandoff records the plan-mode reply before the
+// orchestrator decides whether it can immediately hand off to build mode. The
+// outer REPL loop also saves plan replies, but that happens after runTurn
+// returns; auto-build decisions inside this function need the fresh reply now.
+func (s *session) capturePlanReplyForHandoff(reply, userText string) {
+	designText := assistout.PrepareAssistantText(reply, true)
+	s.lastReply = designText
+	if !designstore.LooksLikeReadyToImplement(designText) {
+		// Prevent a stale plan from a previous turn from satisfying the
+		// immediate handoff check for a fresh, not-yet-ready plan reply.
+		s.currentPlan = nil
+		s.planPhase = ""
+		return
+	}
+	s.updatePlanFromReply(designText, userText)
 }
 
 // applyOrchestratedMode swaps mode-specific session state (mode, client,

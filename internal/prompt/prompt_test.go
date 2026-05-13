@@ -148,3 +148,15 @@ func TestBuild_AutoCheckFixLoopNote(t *testing.T) {
 		t.Fatalf("expected exhaustion guidance in auto-check note: %s", s)
 	}
 }
+
+func TestBuild_CodeReachabilityGuidanceAllowsLibraryAPIs(t *testing.T) {
+	cfg := &config.Config{Workspace: "/tmp/w"}
+	reg := tools.Default("/tmp/w", "", nil, nil, nil, "", nil, nil, nil, nil, nil)
+	s := Build(Params{Cfg: cfg, Reg: reg, Mode: ModeBuild})
+	if !strings.Contains(s, "exported for external/library use") {
+		t.Fatalf("expected library/export guidance: %s", s)
+	}
+	if strings.Contains(s, "Code that exists only alongside its own tests is dead code") {
+		t.Fatalf("prompt should not force artificial production call sites: %s", s)
+	}
+}

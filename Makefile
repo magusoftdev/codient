@@ -16,7 +16,7 @@ else
   INSTALL_DIR := $(DEFAULT_INSTALL_DIR)
 endif
 
-.PHONY: all help build install clean test test-unit test-short test-race test-integration test-integration-strict test-acp vet fmt mod-tidy check lint govulncheck run release major minor patch
+.PHONY: all help build install clean test test-unit test-short test-race test-integration test-integration-strict test-acp vet fmt mod-tidy check lint govulncheck run release major minor patch terminal-bench-codient
 
 all: build
 
@@ -26,6 +26,7 @@ help:
 	@echo "  make build          Same as all"
 	@echo "  make install        copy $(BIN) to $(INSTALL_DIR) (same as install scripts; CODIENT_INSTALL_DIR overrides)"
 	@echo "  make run ARGS='…'   go run ./cmd/codient -- …"
+	@echo "  make terminal-bench-codient ARGS='…'  Terminal-Bench full suite with codient (Unix; needs tb + Docker; see docs/terminal-bench.md)"
 	@echo "  make test           full suite: unit + live integration (needs model + API; see test-unit for CI)"
 	@echo "  make test-unit      unit tests only (go test ./...; no live LLM)"
 	@echo "  make test-short     go test -short ./..."
@@ -110,6 +111,11 @@ check: vet test-unit
 
 run:
 	$(GO) run ./cmd/codient -- $(ARGS)
+
+# Terminal-Bench (terminal-bench-core 0.1.1) with the codient adapter. Unix shell only.
+# Uses scripts/run-terminal-bench-codient.sh (timeouts, concurrency). Pass extra tb flags: make terminal-bench-codient ARGS='--task-id hello-world'
+terminal-bench-codient:
+	./scripts/run-terminal-bench-codient.sh $(ARGS)
 
 VERSION_FILE := internal/codientcli/version.go
 CUR_VERSION   = $(shell sed -n 's/.*Version = "\(.*\)"/\1/p' $(VERSION_FILE))

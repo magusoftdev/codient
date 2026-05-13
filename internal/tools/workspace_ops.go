@@ -16,9 +16,31 @@ const (
 )
 
 func removePathWorkspace(root, rel string) error {
+	if strings.TrimSpace(rel) == "" {
+		return fmt.Errorf("remove_path refuses to remove the workspace root")
+	}
 	abs, err := absUnderRoot(root, rel)
 	if err != nil {
 		return err
+	}
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		return err
+	}
+	cleanAbs, err := filepath.Abs(abs)
+	if err != nil {
+		return err
+	}
+	resolvedRoot, rootErr := filepath.EvalSymlinks(absRoot)
+	if rootErr != nil {
+		resolvedRoot = absRoot
+	}
+	resolvedAbs, absErr := filepath.EvalSymlinks(cleanAbs)
+	if absErr != nil {
+		resolvedAbs = cleanAbs
+	}
+	if filepath.Clean(resolvedAbs) == filepath.Clean(resolvedRoot) {
+		return fmt.Errorf("remove_path refuses to remove the workspace root")
 	}
 	return os.RemoveAll(abs)
 }

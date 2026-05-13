@@ -62,14 +62,26 @@ func grepRipgrep(ctx context.Context, rgPath, searchRoot, pattern string, litera
 			return "(no matches)", nil
 		}
 		if strings.TrimSpace(s) != "" {
-			return strings.TrimSpace(s), nil
+			return capGrepOutputLines(strings.TrimSpace(s), maxMatches), nil
 		}
 		return "", fmt.Errorf("rg: %w", err)
 	}
 	if strings.TrimSpace(s) == "" {
 		return "(no matches)", nil
 	}
-	return strings.TrimSpace(s), nil
+	return capGrepOutputLines(strings.TrimSpace(s), maxMatches), nil
+}
+
+func capGrepOutputLines(s string, maxMatches int) string {
+	if maxMatches <= 0 {
+		maxMatches = defaultGrepMax
+	}
+	lines := strings.Split(strings.TrimSpace(s), "\n")
+	if len(lines) <= maxMatches {
+		return strings.TrimSpace(s)
+	}
+	out := strings.Join(lines[:maxMatches], "\n")
+	return out + fmt.Sprintf("\n\n[truncated at %d matches]\n", maxMatches)
 }
 
 func grepStdlib(searchRoot, pattern string, literal bool, glob string, maxMatches int) (string, error) {

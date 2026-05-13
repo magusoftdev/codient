@@ -234,6 +234,37 @@ func TestMakeAutoCheckSequence_TwoStepsPass(t *testing.T) {
 	}
 }
 
+func TestBuildAutoCheckExecUsesSandboxPolicyAndScrubbedEnv(t *testing.T) {
+	t.Setenv("CODIENT_TEST_SECRET_TOKEN", "secret")
+	dir := t.TempDir()
+	cfg := &config.Config{
+		Workspace:             dir,
+		SandboxMode:           "off",
+		ExecEnvPassthrough:    []string{"CODIENT_TEST_ALLOWED"},
+		SandboxReadOnlyPaths:  []string{"/tmp/read-only-example"},
+		SandboxContainerImage: "ignored-for-off",
+	}
+	t.Setenv("CODIENT_TEST_ALLOWED", "ok")
+
+	ex := buildAutoCheckExec(cfg, dir)
+	if ex.runner == nil {
+		t.Fatal("expected runner")
+	}
+	if len(ex.policy.ReadWritePaths) != 1 || ex.policy.ReadWritePaths[0] != dir {
+		t.Fatalf("read-write paths = %#v, want workspace %q", ex.policy.ReadWritePaths, dir)
+	}
+	if len(ex.policy.ReadOnlyPaths) != 1 || ex.policy.ReadOnlyPaths[0] != "/tmp/read-only-example" {
+		t.Fatalf("read-only paths = %#v", ex.policy.ReadOnlyPaths)
+	}
+	env := strings.Join(ex.env, "\n")
+	if strings.Contains(env, "CODIENT_TEST_SECRET_TOKEN=") {
+		t.Fatalf("secret env should be scrubbed: %s", env)
+	}
+	if !strings.Contains(env, "CODIENT_TEST_ALLOWED=ok") {
+		t.Fatalf("passthrough env missing: %s", env)
+	}
+}
+
 func TestDetectAutoCheckCmd_Unity_NoSln(t *testing.T) {
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "ProjectSettings"), 0o755); err != nil {
