@@ -23,7 +23,7 @@ func (s *session) runListSkillsCommand() {
 		return
 	}
 	if len(entries) == 0 {
-		fmt.Fprintf(os.Stderr, "No skills found. User: <state-dir>/%s/<id>/SKILL.md  Workspace: %s/<id>/SKILL.md\n",
+		fmt.Fprintf(os.Stderr, "No skills found. User: <state-dir>/%s/<id>/{skill.yaml,SKILL.md}  Workspace: %s/<id>/{skill.yaml,SKILL.md}\n",
 			skills.UserSkillsSubdir, skills.WorkspaceSkillsRelDir)
 		fmt.Fprintf(os.Stderr, "Create one with /create-skill\n")
 		return
@@ -36,7 +36,7 @@ func (s *session) runListSkillsCommand() {
 
 func (s *session) runCreateSkillWizard(sc *bufio.Scanner) {
 	fmt.Fprintf(os.Stderr, "\n  ** Create a codient skill **\n\n")
-	fmt.Fprintf(os.Stderr, "  Skills are folders with SKILL.md (YAML frontmatter + markdown). See codient docs for details.\n\n")
+	fmt.Fprintf(os.Stderr, "  Skills are folders with skill.yaml or SKILL.md (YAML frontmatter + markdown). See codient docs for details.\n\n")
 
 	purpose := strings.TrimSpace(promptWithDefault(sc, "  Purpose / when the agent should use this (fills ## Instructions starter)", ""))
 	if purpose == "" {
@@ -143,7 +143,7 @@ func (s *session) runCreateSkillWizard(sc *bufio.Scanner) {
 	}
 
 	fmt.Fprintf(os.Stderr, "\n  Wrote %s\n", skillPath)
-	fmt.Fprintf(os.Stderr, "  Edit SKILL.md to refine. The agent sees your skill in **Agent skills** and should read_file this path when relevant.\n\n")
+	fmt.Fprintf(os.Stderr, "  Edit the instructions to refine. The agent sees your skill in **Agent skills** and should read_file this path when relevant.\n\n")
 
 	s.refreshSkillsCatalog()
 }

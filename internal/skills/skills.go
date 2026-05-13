@@ -38,15 +38,27 @@ func ValidSkillID(id string) bool {
 
 // Entry is one discovered skill for catalog / listing.
 type Entry struct {
-	ID          string // directory name under the skills root
-	Name        string // from frontmatter, or ID
-	Description string
-	Scope       string // "workspace" or "user"
-	// ReadPath is the path to pass to read_file: workspace-relative for workspace skills,
-	// or path relative to the user skills library root for user skills (read_file resolves
-	// workspace first, then the user skills directory).
+	ID                     string // directory name under the skills root
+	Name                   string // from frontmatter, or ID
+	Description            string
+	Scope                  string // "workspace" or "user"
 	ReadPath               string
 	DisableModelInvocation bool
+	MCP                    *MCPConfig
+}
+
+type MCPConfig struct {
+	Command string            `yaml:"command"`
+	Args    []string          `yaml:"args"`
+	Env     map[string]string `yaml:"env"`
+}
+
+type Manifest struct {
+	Name                   string     `yaml:"name"`
+	Description            string     `yaml:"description"`
+	Instructions           string     `yaml:"instructions"`
+	DisableModelInvocation bool       `yaml:"disable-model-invocation"`
+	MCP                    *MCPConfig `yaml:"mcp"`
 }
 
 type skillFrontmatter struct {
@@ -96,8 +108,43 @@ func ParseFrontmatter(data []byte) (skillFrontmatter, string, error) {
 
 func normKey(s string) string { return strings.ToLower(strings.TrimSpace(s)) }
 
-func readSkillEntry(scope, skillID, skillPath string) (Entry, error) {
-	data, err := os.ReadFile(skillPath)
+func readSkillEntry(scope, skillID, skillDir string) (Entry, error) {
+	manifestPath := filepath.Join(skillDir, "skill.yaml")
+	data, err := os.ReadFile(manifestPath)
+	if err == nil {
+		var m Manifest
+		if err := yaml.Unmarshal(data, &m); err != nil {
+			return Entry{}, fmt.Errorf("skill.yaml: %w", err)
+		}
+		name := strings.TrimSpace(m.Name)
+		if name == "" {
+			name = skillID
+		}
+		readPath := m.Instructions
+		if readPath == "" {
+			readPath = "SKILL.md"
+		}
+		// Resolve ReadPath relative to the skill directory for the catalog
+		switch scope {
+		case "workspace":
+			readPath = filepath.ToSlash(filepath.Join(WorkspaceSkillsRelDir, skillID, readPath))
+		default:
+			readPath = filepath.ToSlash(filepath.Join(skillID, readPath))
+		}
+
+		return Entry{
+			ID:                     skillID,
+			Name:                   name,
+			Description:            strings.TrimSpace(m.Description),
+			Scope:                  scope,
+			ReadPath:               readPath,
+			DisableModelInvocation: m.DisableModelInvocation,
+			MCP:                    m.MCP,
+		}, nil
+	}
+
+	skillPath := filepath.Join(skillDir, "SKILL.md")
+	data, err = os.ReadFile(skillPath)
 	if err != nil {
 		return Entry{}, err
 	}
@@ -109,7 +156,6 @@ func readSkillEntry(scope, skillID, skillPath string) (Entry, error) {
 	if name == "" {
 		name = skillID
 	}
-	desc := strings.TrimSpace(fm.Description)
 	var readPath string
 	switch scope {
 	case "workspace":
@@ -120,7 +166,7 @@ func readSkillEntry(scope, skillID, skillPath string) (Entry, error) {
 	return Entry{
 		ID:                     skillID,
 		Name:                   name,
-		Description:            desc,
+		Description:            strings.TrimSpace(fm.Description),
 		Scope:                  scope,
 		ReadPath:               readPath,
 		DisableModelInvocation: fm.DisableModelInvocation,
@@ -154,14 +200,15 @@ func scanSkillsRoot(scope, root string) ([]Entry, error) {
 		if !ValidSkillID(id) {
 			continue
 		}
-		skillPath := filepath.Join(root, id, "SKILL.md")
-		if _, err := os.Stat(skillPath); err != nil {
-			if os.IsNotExist(err) {
-				continue
-			}
-			return nil, err
+		skillDir := filepath.Join(root, id)
+		// Check for either skill.yaml or SKILL.md
+		_, errYAML := os.Stat(filepath.Join(skillDir, "skill.yaml"))
+		_, errMD := os.Stat(filepath.Join(skillDir, "SKILL.md"))
+		if errYAML != nil && errMD != nil {
+			continue
 		}
-		ent, err := readSkillEntry(scope, id, skillPath)
+
+		ent, err := readSkillEntry(scope, id, skillDir)
 		if err != nil {
 			continue
 		}
@@ -217,8 +264,8 @@ func FormatCatalog(entries []Entry) string {
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString("These optional **agent skills** live on disk. Each is a folder with `SKILL.md` (YAML frontmatter + markdown instructions).\n\n")
-	b.WriteString("When a task matches a skill’s description, **read that skill’s file with read_file** using the path shown before relying on it. ")
+	b.WriteString("These optional **agent skills** live on disk. Each is a folder with `skill.yaml` or `SKILL.md` (YAML frontmatter + markdown instructions).\n\n")
+	b.WriteString("When a task matches a skill’s description, **read that skill’s instructions with read_file** using the path shown before relying on it. ")
 	b.WriteString("For **user** skills, `read_file` checks the workspace first, then the codient user skills library if the path is not found under the workspace.\n\n")
 	for _, e := range entries {
 		scopeNote := ""

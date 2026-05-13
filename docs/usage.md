@@ -323,18 +323,50 @@ These are read-only from the agent's perspective (capped at 32 KiB total) and co
 
 ## Agent skills
 
-**Skills** are optional folders containing **`SKILL.md`**: YAML frontmatter (`name`, `description`, and optionally `disable-model-invocation`) plus markdown instructions. They behave like Cursor-style agent skills: a short **Agent skills** section is injected into the system prompt listing each skill’s name, description, and the path to pass to **`read_file`**. When a task matches a skill, the model should read that file before following it.
+**Skills** are optional folders containing **`skill.yaml`** or **`SKILL.md`**. They behave like Cursor-style agent skills: a short **Agent skills** section is injected into the system prompt listing each skill’s name, description, and the path to pass to **`read_file`**. When a task matches a skill, the model should read that file before following it.
+
+Modern skills use **`skill.yaml`** to define metadata and optional **MCP servers** (Model Context Protocol). Legacy skills use **`SKILL.md`** with YAML frontmatter (`name`, `description`, and optionally `disable-model-invocation`) followed by markdown instructions.
 
 | Scope | Location |
 |-------|----------|
-| **User (global)** | `<state-dir>/skills/<skill-id>/SKILL.md` (default state dir `~/.codient`, or `CODIENT_STATE_DIR`) |
-| **Workspace** | `<workspace>/.codient/skills/<skill-id>/SKILL.md` |
+| **User (global)** | `<state-dir>/skills/<skill-id>/` |
+| **Workspace** | `<workspace>/.codient/skills/<skill-id>/` |
 
 If the same **`name`** appears in both places, the **workspace** skill wins. The catalog is capped in size; very large lists may show `[truncated]`.
 
-**`read_file`:** Paths under the workspace work as usual. Paths for **user** skills (shown in the catalog) are resolved under `<state-dir>/skills/` when the file is not found under the workspace—so global skills remain readable without widening access to arbitrary files outside the workspace. Optional tool argument **`view`**: set to **`"outline"`** to get declaration-only text (Go: AST-backed signatures and types; other common languages: a lightweight heuristic) instead of the full file—useful when context is tight; **`"full"`** is the default. Outline reads the whole file up to **`max_bytes`** and ignores line ranges.
+### Managing skills
 
-**REPL:** **`/create-skill`** walks you through scope, folder id, description, and optional `disable-model-invocation`, then writes **`SKILL.md`**. **`/skills`** prints what codient discovered on disk. Starting a new session with **`/new`** reloads the skill catalog from disk (as does restarting codient). Editing skills manually without **`/new`** takes effect after restart unless you run **`/create-skill`** again or use **`/new`** (which reloads skills).
+Use the **`codient skill`** CLI command to manage user-wide skills:
+
+```bash
+# List all discovered user and workspace skills
+codient skill list
+
+# Install a skill from a local path or git URL
+codient skill install https://github.com/user/my-skill
+codient skill install ./path/to/skill
+
+# Remove an installed user skill
+codient skill remove my-skill
+```
+
+**MCP Servers:** If a skill contains an `mcp` section in its `skill.yaml`, codient automatically connects to that MCP server when the skill is discovered. This allows skills to provide their own custom tools.
+
+```yaml
+# skill.yaml example
+name: github-helper
+description: Tools for interacting with GitHub
+instructions: instructions.md
+mcp:
+  command: npx
+  args: ["-y", "@modelcontextprotocol/server-github"]
+  env:
+    GITHUB_PERSONAL_ACCESS_TOKEN: "your-token"
+```
+
+**`read_file`:** Paths under the workspace work as usual. Paths for **user** skills (shown in the catalog) are resolved under `<state-dir>/skills/` when the file is not found under the workspace—so global skills remain readable without widening access to arbitrary files outside the workspace.
+
+**REPL:** **`/create-skill`** walks you through scope, folder id, description, and optional `disable-model-invocation`, then writes **`SKILL.md`**. **`/skills`** prints what codient discovered on disk.
 
 **Cursor rules:** **`/create-rule`** writes **`.cursor/rules/<stem>.mdc`** with YAML frontmatter (`description`, **`alwaysApply`**, optional **`globs`**) like Cursor’s rule editor. The codient CLI does not inject these files into its system prompt; use **`AGENTS.md`**, **`.codient/instructions.md`**, or **skills** for codient-native guidance.
 

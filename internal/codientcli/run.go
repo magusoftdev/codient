@@ -93,6 +93,10 @@ func Run() int {
 	})
 	flag.Parse()
 
+	if args := flag.Args(); len(args) > 0 && args[0] == "skill" {
+		return runSkillCommand(*workspace, args[1:])
+	}
+
 	selfupdate.CleanupOldBinary()
 
 	if *showVersion {
@@ -244,8 +248,20 @@ func Run() int {
 			agentLog = agentlog.New(logFile)
 		}
 		// MCP/LSP connect can take minutes on bad networks; never block the ACP stdio loop.
+		stateDir, _ := config.StateDir()
+		var hasSkillMCP bool
+		if stateDir != "" {
+			if entries, err := skills.Discover(stateDir, cfg.EffectiveWorkspace()); err == nil {
+				for _, e := range entries {
+					if e.MCP != nil {
+						hasSkillMCP = true
+						break
+					}
+				}
+			}
+		}
 		var mcpMgr *mcpclient.Manager
-		if len(cfg.MCPServers) > 0 {
+		if len(cfg.MCPServers) > 0 || hasSkillMCP {
 			mcpMgr = mcpclient.NewManager(Version)
 		}
 		var lspMgr *lspclient.Manager
@@ -325,9 +341,14 @@ func Run() int {
 		fmt.Fprintf(os.Stderr, "memory: %v\n", err)
 		return 2
 	}
+	var skillEntries []skills.Entry
 	skillsCat := ""
 	if stateDir != "" {
-		skillsCat, _ = skills.LoadCatalogMarkdown(stateDir, cfg.EffectiveWorkspace())
+		var err error
+		skillEntries, err = skills.Discover(stateDir, cfg.EffectiveWorkspace())
+		if err == nil {
+			skillsCat = skills.CatalogMarkdown(skillEntries)
+		}
 	}
 	var memOpts *tools.MemoryOptions
 	if stateDir != "" || cfg.EffectiveWorkspace() != "" {
@@ -369,9 +390,24 @@ func Run() int {
 		singleTurnExplicitSessionID: strings.TrimSpace(*sessionIDFlag),
 		orchestratorForce:           orchestratorForce,
 	}
-	if len(cfg.MCPServers) > 0 {
+
+	mcpServers := make(map[string]config.MCPServerConfig)
+	for id, c := range cfg.MCPServers {
+		mcpServers[id] = c
+	}
+	for _, ent := range skillEntries {
+		if ent.MCP != nil {
+			mcpServers["skill__"+ent.ID] = config.MCPServerConfig{
+				Command: ent.MCP.Command,
+				Args:    ent.MCP.Args,
+				Env:     ent.MCP.Env,
+			}
+		}
+	}
+
+	if len(mcpServers) > 0 {
 		mgr := mcpclient.NewManager(Version)
-		warns := mgr.Connect(ctx, cfg.MCPServers)
+		warns := mgr.Connect(ctx, mcpServers)
 		for _, w := range warns {
 			fmt.Fprintf(os.Stderr, "codient: %s\n", w)
 		}

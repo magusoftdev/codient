@@ -124,9 +124,14 @@ func runACPServer(ctx context.Context, cfg *config.Config, client *openaiclient.
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "memory: %v\n", err)
 	}
+	var skillEntries []skills.Entry
 	skillsCat := ""
 	if stateDir != "" {
-		skillsCat, _ = skills.LoadCatalogMarkdown(stateDir, cfg.EffectiveWorkspace())
+		var err error
+		skillEntries, err = skills.Discover(stateDir, cfg.EffectiveWorkspace())
+		if err == nil {
+			skillsCat = skills.CatalogMarkdown(skillEntries)
+		}
 	}
 	var memOpts *tools.MemoryOptions
 	if stateDir != "" || cfg.EffectiveWorkspace() != "" {
@@ -148,6 +153,20 @@ func runACPServer(ctx context.Context, cfg *config.Config, client *openaiclient.
 	}
 
 	progressOut := resolveProgressOut(cfg.Progress, strings.TrimSpace(cfg.LogPath) != "")
+
+	mcpServers := make(map[string]config.MCPServerConfig)
+	for id, c := range cfg.MCPServers {
+		mcpServers[id] = c
+	}
+	for _, ent := range skillEntries {
+		if ent.MCP != nil {
+			mcpServers["skill__"+ent.ID] = config.MCPServerConfig{
+				Command: ent.MCP.Command,
+				Args:    ent.MCP.Args,
+				Env:     ent.MCP.Env,
+			}
+		}
+	}
 
 	tracker := &tokentracker.Tracker{}
 	stub := &session{
@@ -222,12 +241,12 @@ func runACPServer(ctx context.Context, cfg *config.Config, client *openaiclient.
 		stub.acpRegistryMu.Unlock()
 
 		needRebuild := false
-		if stub.mcpMgr != nil && len(cfg.MCPServers) > 0 {
+		if stub.mcpMgr != nil && len(mcpServers) > 0 {
 			mgr := stub.mcpMgr
 			go func() {
 				mcpCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 				defer cancel()
-				warns := mgr.Connect(mcpCtx, cfg.MCPServers)
+				warns := mgr.Connect(mcpCtx, mcpServers)
 				for _, w := range warns {
 					fmt.Fprintf(os.Stderr, "codient: %s\n", w)
 				}

@@ -60,7 +60,9 @@ func absUnderRoot(root, rel string) (abs string, err error) {
 		return "", err
 	}
 	// Re-resolve root in case root itself is a symlink (e.g. /tmp on macOS).
-	resolvedRoot, err := filepath.EvalSymlinks(absRoot)
+	// We use evalExistingSymlinks so that even if the root doesn't exist,
+	// its existing parents (like /tmp) are resolved consistently with the target.
+	resolvedRoot, err := evalExistingSymlinks(absRoot)
 	if err != nil {
 		resolvedRoot = absRoot
 	}

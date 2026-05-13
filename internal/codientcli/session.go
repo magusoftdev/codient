@@ -1727,7 +1727,7 @@ func (s *session) buildSlashCommands(ctx context.Context, sc *bufio.Scanner) *sl
 	cmds.Register(slashcmd.Command{
 		Name:        "create-skill",
 		Usage:       "/create-skill",
-		Description: "guided wizard to create a SKILL.md agent skill (workspace or user scope)",
+		Description: "guided wizard to create an agent skill (workspace or user scope)",
 		Run: func(string) error {
 			s.runCreateSkillWizard(sc)
 			return nil
