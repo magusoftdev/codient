@@ -176,15 +176,17 @@ func addPathsFromToolJSON(toolName, argsJSON string, fileSet map[string]struct{}
 	}
 	pathKeys := []string{"path", "from", "to", "under"}
 	switch toolName {
-	case "write_file", "read_file", "str_replace", "patch_file", "insert_lines", "remove_path", "path_stat", "glob_files":
+	case "write_file", "str_replace", "patch_file", "insert_lines", "remove_path":
 		for _, k := range pathKeys {
 			if p, ok := args[k].(string); ok && p != "" {
 				fileSet[p] = struct{}{}
 			}
 		}
 	case "move_path", "copy_path":
-		if p, ok := args["from"].(string); ok && p != "" {
-			fileSet[p] = struct{}{}
+		if toolName == "move_path" {
+			if p, ok := args["from"].(string); ok && p != "" {
+				fileSet[p] = struct{}{}
+			}
 		}
 		if p, ok := args["to"].(string); ok && p != "" {
 			fileSet[p] = struct{}{}

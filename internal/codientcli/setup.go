@@ -61,15 +61,16 @@ func (s *session) runSetupWizard(ctx context.Context, sc *bufio.Scanner) bool {
 		}
 		n, err := strconv.Atoi(input)
 		if err != nil || n < 1 || n > len(models) {
+			matched := false
 			for _, m := range models {
 				if strings.EqualFold(m, input) {
 					s.cfg.Model = m
-					if err := saveCurrentConfig(s.cfg); err != nil {
-						fmt.Fprintf(os.Stderr, "  Warning: could not save config: %v\n", err)
-					}
-					fmt.Fprintf(os.Stderr, "\n  Configuration saved. Model set to %s.\n\n", s.cfg.Model)
-					return true
+					matched = true
+					break
 				}
+			}
+			if matched {
+				break
 			}
 			fmt.Fprintf(os.Stderr, "  Please enter a number between 1 and %d.\n", len(models))
 			continue
@@ -193,12 +194,22 @@ func (s *session) setupEmbeddingServerOverride(sc *bufio.Scanner) {
 // top-level model unless explicitly overridden via /config.
 func (s *session) setupReasoningTierOverrides(ctx context.Context, sc *bufio.Scanner) {
 	fmt.Fprintf(os.Stderr, "\n  Use a different model/server for the high-reasoning tier?\n")
-	fmt.Fprintf(os.Stderr, "  (Used for design advice and complex-task plans; the supervisor and simple fixes use %s.) (y/N): ", s.cfg.Model)
+	hasExisting := reasoningTierConfigured(s.cfg.HighReasoning)
+	if hasExisting {
+		fmt.Fprintf(os.Stderr, "  Current high-reasoning override: %s\n", describeReasoningTier(s.cfg, s.cfg.HighReasoning))
+		fmt.Fprintf(os.Stderr, "  Answer no to clear it and inherit %s. (y/N): ", s.cfg.Model)
+	} else {
+		fmt.Fprintf(os.Stderr, "  (Used for design advice and complex-task plans; the supervisor and simple fixes use %s.) (y/N): ", s.cfg.Model)
+	}
 	if !sc.Scan() {
 		return
 	}
 	ans := strings.TrimSpace(strings.ToLower(sc.Text()))
 	if ans != "y" && ans != "yes" {
+		if hasExisting {
+			s.cfg.HighReasoning = config.ReasoningTier{}
+			fmt.Fprintf(os.Stderr, "  High-reasoning tier will inherit %s.\n", s.cfg.Model)
+		}
 		return
 	}
 
@@ -263,18 +274,41 @@ func (s *session) setupReasoningTierOverrides(ctx context.Context, sc *bufio.Sca
 		break
 	}
 
+	if hiBase == s.cfg.BaseURL && hiKey == s.cfg.APIKey && hiModel == s.cfg.Model {
+		s.cfg.HighReasoning = config.ReasoningTier{}
+		fmt.Fprintf(os.Stderr, "  High-reasoning tier will inherit %s.\n", s.cfg.Model)
+		return
+	}
+	s.cfg.HighReasoning = config.ReasoningTier{Model: hiModel}
 	if hiBase != s.cfg.BaseURL {
 		s.cfg.HighReasoning.BaseURL = hiBase
-	} else {
-		s.cfg.HighReasoning.BaseURL = ""
 	}
 	if hiKey != s.cfg.APIKey {
 		s.cfg.HighReasoning.APIKey = hiKey
-	} else {
-		s.cfg.HighReasoning.APIKey = ""
 	}
-	s.cfg.HighReasoning.Model = hiModel
 	fmt.Fprintf(os.Stderr, "  High-reasoning tier will use model %s.\n", hiModel)
+}
+
+func reasoningTierConfigured(t config.ReasoningTier) bool {
+	return strings.TrimSpace(t.BaseURL) != "" || strings.TrimSpace(t.APIKey) != "" || strings.TrimSpace(t.Model) != ""
+}
+
+func describeReasoningTier(cfg *config.Config, t config.ReasoningTier) string {
+	base := strings.TrimSpace(t.BaseURL)
+	if base == "" {
+		base = strings.TrimSpace(cfg.BaseURL)
+	}
+	model := strings.TrimSpace(t.Model)
+	if model == "" {
+		model = strings.TrimSpace(cfg.Model)
+	}
+	if base == "" {
+		return model
+	}
+	if model == "" {
+		return base
+	}
+	return fmt.Sprintf("%s at %s", model, base)
 }
 
 func promptWithDefault(sc *bufio.Scanner, label, def string) string {

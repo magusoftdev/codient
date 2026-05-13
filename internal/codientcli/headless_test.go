@@ -76,16 +76,16 @@ func TestExitReasonForError(t *testing.T) {
 
 func TestSummarizeToolsAndFilesFromHistory(t *testing.T) {
 	// Minimal assistant message with tool_calls as produced by json.Marshal on union.
-	raw := `{"tool_calls":[{"function":{"arguments":"{\"path\":\"a.go\"}","name":"read_file"},"id":"1","index":0,"type":"function"}],"role":"assistant"}`
+	raw := `{"tool_calls":[{"function":{"arguments":"{\"path\":\"a.go\"}","name":"read_file"},"id":"1","index":0,"type":"function"},{"function":{"arguments":"{\"path\":\"b.go\",\"old\":\"x\",\"new\":\"y\"}","name":"str_replace"},"id":"2","index":1,"type":"function"}],"role":"assistant"}`
 	var u openai.ChatCompletionMessageParamUnion
 	if err := u.UnmarshalJSON([]byte(raw)); err != nil {
 		t.Fatal(err)
 	}
 	tools, files := summarizeToolsAndFilesFromHistory([]openai.ChatCompletionMessageParamUnion{u})
-	if len(tools) != 1 || tools[0] != "read_file" {
+	if len(tools) != 2 || tools[0] != "read_file" || tools[1] != "str_replace" {
 		t.Fatalf("tools: %#v", tools)
 	}
-	if len(files) != 1 || files[0] != "a.go" {
+	if len(files) != 1 || files[0] != "b.go" {
 		t.Fatalf("files: %#v", files)
 	}
 }
@@ -95,6 +95,17 @@ func TestAddPathsFromToolJSON(t *testing.T) {
 	addPathsFromToolJSON("write_file", `{"path":"x.go","content":"z"}`, m)
 	if _, ok := m["x.go"]; !ok {
 		t.Fatal()
+	}
+	addPathsFromToolJSON("read_file", `{"path":"read-only.go"}`, m)
+	if _, ok := m["read-only.go"]; ok {
+		t.Fatal("read_file should not be reported as files_modified")
+	}
+	addPathsFromToolJSON("copy_path", `{"from":"source.go","to":"dest.go"}`, m)
+	if _, ok := m["source.go"]; ok {
+		t.Fatal("copy_path source should not be reported as files_modified")
+	}
+	if _, ok := m["dest.go"]; !ok {
+		t.Fatal("copy_path destination should be reported as files_modified")
 	}
 }
 

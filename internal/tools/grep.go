@@ -62,7 +62,10 @@ func grepRipgrep(ctx context.Context, rgPath, searchRoot, pattern string, litera
 			return "(no matches)", nil
 		}
 		if strings.TrimSpace(s) != "" {
-			return capGrepOutputLines(strings.TrimSpace(s), maxMatches), nil
+			if strings.Contains(s, "regex parse error") {
+				return "", fmt.Errorf("invalid regex: %w\n%s", err, strings.TrimSpace(s))
+			}
+			return "", fmt.Errorf("rg: %w\n%s", err, strings.TrimSpace(s))
 		}
 		return "", fmt.Errorf("rg: %w", err)
 	}

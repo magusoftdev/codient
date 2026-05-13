@@ -243,3 +243,136 @@ func TestSlashSetup_SaveAsProfile(t *testing.T) {
 		t.Fatal("profile 'test-prof' should exist on disk")
 	}
 }
+
+func TestSetupClearsStaleHighReasoningOverrideWhenDeclined(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CODIENT_STATE_DIR", dir)
+	t.Setenv("CODIENT_PROFILE", "")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v1/models" && r.Method == http.MethodGet:
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"local-coder"}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	cfg := &config.Config{
+		BaseURL:   srv.URL + "/v1",
+		APIKey:    "sk-test",
+		Model:     "old-model",
+		Workspace: t.TempDir(),
+		HighReasoning: config.ReasoningTier{
+			BaseURL: "https://api.example.com/v1",
+			APIKey:  "old-key",
+			Model:   "stale-high-model",
+		},
+	}
+	s := &session{cfg: cfg, mode: prompt.ModeAuto}
+
+	// Base URL, API key, main model, embedding model, high override? no, save profile? no.
+	input := strings.Join([]string{"", "", "1", "", "n", "n"}, "\n") + "\n"
+	if ok := s.runSetupWizard(context.Background(), bufio.NewScanner(strings.NewReader(input))); !ok {
+		t.Fatal("setup wizard should succeed")
+	}
+	if s.cfg.Model != "local-coder" {
+		t.Fatalf("model after setup = %q, want local-coder", s.cfg.Model)
+	}
+	if s.cfg.HighReasoning != (config.ReasoningTier{}) {
+		t.Fatalf("high reasoning override should be cleared when declined, got %#v", s.cfg.HighReasoning)
+	}
+
+	pc, err := config.LoadPersistentConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pc.HighReasoningModel != "" || pc.HighReasoningBaseURL != "" || pc.HighReasoningAPIKey != "" {
+		t.Fatalf("persisted high reasoning override should be cleared, got model=%q base=%q key=%q", pc.HighReasoningModel, pc.HighReasoningBaseURL, pc.HighReasoningAPIKey)
+	}
+}
+
+func TestSetupSelectingModelByNameContinuesWizard(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("CODIENT_STATE_DIR", dir)
+	t.Setenv("CODIENT_PROFILE", "")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v1/models" && r.Method == http.MethodGet:
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"first-model"},{"id":"second-model"}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	cfg := &config.Config{
+		BaseURL:   srv.URL + "/v1",
+		APIKey:    "sk-test",
+		Model:     "first-model",
+		Workspace: t.TempDir(),
+		HighReasoning: config.ReasoningTier{
+			Model: "stale-high-model",
+		},
+	}
+	s := &session{cfg: cfg, mode: prompt.ModeAuto}
+
+	// Model is selected by name, then the wizard must still ask embedding,
+	// high-reasoning, and profile questions. Answering no to the high tier
+	// clears the stale override.
+	input := strings.Join([]string{"", "", "second-model", "", "n", "n"}, "\n") + "\n"
+	if ok := s.runSetupWizard(context.Background(), bufio.NewScanner(strings.NewReader(input))); !ok {
+		t.Fatal("setup wizard should succeed")
+	}
+	if s.cfg.Model != "second-model" {
+		t.Fatalf("model after setup = %q, want second-model", s.cfg.Model)
+	}
+	if s.cfg.HighReasoning != (config.ReasoningTier{}) {
+		t.Fatalf("high reasoning override should be cleared after model-name selection path, got %#v", s.cfg.HighReasoning)
+	}
+}
+
+func TestSetupHighReasoningSameAsMainClearsOverride(t *testing.T) {
+	t.Setenv("CODIENT_STATE_DIR", t.TempDir())
+	t.Setenv("CODIENT_PROFILE", "")
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v1/models" && r.Method == http.MethodGet:
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"main-model"},{"id":"other-model"}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	cfg := &config.Config{
+		BaseURL:   srv.URL + "/v1",
+		APIKey:    "sk-test",
+		Model:     "old-model",
+		Workspace: t.TempDir(),
+		HighReasoning: config.ReasoningTier{
+			Model: "stale-high-model",
+		},
+	}
+	s := &session{cfg: cfg, mode: prompt.ModeAuto}
+
+	// Select main-model, choose to configure high reasoning, keep inherited
+	// base/key, and select main-model again. That should collapse back to
+	// inheritance instead of persisting a redundant override.
+	input := strings.Join([]string{"", "", "1", "", "y", "", "", "1", "n"}, "\n") + "\n"
+	if ok := s.runSetupWizard(context.Background(), bufio.NewScanner(strings.NewReader(input))); !ok {
+		t.Fatal("setup wizard should succeed")
+	}
+	if s.cfg.Model != "main-model" {
+		t.Fatalf("model after setup = %q, want main-model", s.cfg.Model)
+	}
+	if s.cfg.HighReasoning != (config.ReasoningTier{}) {
+		t.Fatalf("same-model high reasoning override should collapse to inherit, got %#v", s.cfg.HighReasoning)
+	}
+}
