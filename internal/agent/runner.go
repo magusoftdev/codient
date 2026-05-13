@@ -326,10 +326,26 @@ func (r *Runner) runConversationBody(ctx context.Context, system string, history
 					}
 					var wg sync.WaitGroup
 					for i, tc := range parsed {
+						// Multi-step planning: check for wait_for_previous flag in arguments.
+						args := textToolCallArgsJSON(tc.Args)
+						var argsMap map[string]json.RawMessage
+						if err := json.Unmarshal(args, &argsMap); err == nil {
+							if wfpRaw, ok := argsMap["wait_for_previous"]; ok {
+								var wfp bool
+								if err := json.Unmarshal(wfpRaw, &wfp); err == nil && wfp {
+									wg.Wait()
+								}
+								delete(argsMap, "wait_for_previous")
+								if cleaned, err := json.Marshal(argsMap); err == nil {
+									args = json.RawMessage(cleaned)
+								}
+							}
+						}
+
 						wg.Add(1)
-						go func(idx int, tc textToolCall) {
+						go func(idx int, tc textToolCall, cleanedArgs json.RawMessage) {
 							defer wg.Done()
-							args := textToolCallArgsJSON(tc.Args)
+							args := cleanedArgs
 							if r.Log != nil {
 								r.Log.ToolStart(tc.Name, agentlog.SummarizeArgs(tc.Name, args))
 							}
@@ -352,7 +368,7 @@ func (r *Runner) runConversationBody(ctx context.Context, system string, history
 								content = fmt.Sprintf("error: %v", toolErr)
 							}
 							results[idx] = toolResult{name: tc.Name, content: content, progress: prog}
-						}(i, tc)
+						}(i, tc, args)
 					}
 					wg.Wait()
 
@@ -541,10 +557,26 @@ func (r *Runner) runConversationBody(ctx context.Context, system string, history
 		}
 		var wg sync.WaitGroup
 		for i, v := range calls {
+			// Multi-step planning: check for wait_for_previous flag in arguments.
+			args := json.RawMessage(v.Function.Arguments)
+			var argsMap map[string]json.RawMessage
+			if err := json.Unmarshal(args, &argsMap); err == nil {
+				if wfpRaw, ok := argsMap["wait_for_previous"]; ok {
+					var wfp bool
+					if err := json.Unmarshal(wfpRaw, &wfp); err == nil && wfp {
+						wg.Wait()
+					}
+					delete(argsMap, "wait_for_previous")
+					if cleaned, err := json.Marshal(argsMap); err == nil {
+						args = json.RawMessage(cleaned)
+					}
+				}
+			}
+
 			wg.Add(1)
-			go func(idx int, v openai.ChatCompletionMessageFunctionToolCall) {
+			go func(idx int, v openai.ChatCompletionMessageFunctionToolCall, cleanedArgs json.RawMessage) {
 				defer wg.Done()
-				args := json.RawMessage(v.Function.Arguments)
+				args := cleanedArgs
 				if r.Log != nil {
 					r.Log.ToolStart(v.Function.Name, agentlog.SummarizeArgs(v.Function.Name, args))
 				}
@@ -582,7 +614,7 @@ func (r *Runner) runConversationBody(ctx context.Context, system string, history
 					content = fmt.Sprintf("error: %v", toolErr)
 				}
 				results[idx] = toolResult{id: v.ID, name: v.Function.Name, content: content, progress: prog}
-			}(i, v)
+			}(i, v, args)
 		}
 		wg.Wait()
 

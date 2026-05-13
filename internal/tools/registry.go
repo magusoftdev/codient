@@ -65,12 +65,34 @@ func (r *Registry) OpenAITools() []openai.ChatCompletionToolUnionParam {
 	out := make([]openai.ChatCompletionToolUnionParam, 0, len(r.order))
 	for _, name := range r.order {
 		t := r.by[name]
+
+		// Inject wait_for_previous parameter into every tool schema.
+		// Deep copy the top-level parameters and the properties map to avoid
+		// mutating the original tool definition (race risk).
+		params := shared.FunctionParameters{}
+		if t.Parameters != nil {
+			for k, v := range t.Parameters {
+				params[k] = v
+			}
+		}
+		if props, ok := params["properties"].(map[string]any); ok {
+			newProps := make(map[string]any, len(props)+1)
+			for k, v := range props {
+				newProps[k] = v
+			}
+			newProps["wait_for_previous"] = map[string]any{
+				"type":        "boolean",
+				"description": "Set to true to wait for all previously requested tools in this turn to complete before starting. Set to false (or omit) to run in parallel. Use true when this tool depends on side-effects (e.g. file writes) of previous tools in the same turn.",
+			}
+			params["properties"] = newProps
+		}
+
 		out = append(out, openai.ChatCompletionToolUnionParam{
 			OfFunction: &openai.ChatCompletionFunctionToolParam{
 				Function: shared.FunctionDefinitionParam{
 					Name:        t.Name,
 					Description: openai.String(t.Description),
-					Parameters:  t.Parameters,
+					Parameters:  params,
 				},
 			},
 		})
