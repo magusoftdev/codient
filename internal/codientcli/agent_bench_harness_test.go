@@ -22,13 +22,16 @@ import (
 type agentBenchScenario struct {
 	Name                  string
 	Prompt                string
+	Prompts               []string
 	Files                 map[string]string
 	PublicTestCmd         string
 	AutoCheckCmd          string
 	HiddenVerifier        func(*agentBenchRun) error
+	BeforeRun             func(*agentBenchRun) error
 	MaxTurns              int
 	Timeout               time.Duration
 	RepoMapTokens         int
+	RequiredPrograms      []string
 	WantChangedPaths      []string
 	ForbiddenChangedPaths []string
 	WantTools             []string
@@ -49,6 +52,7 @@ type agentBenchRun struct {
 	Diff      string
 	Changed   []string
 	Headless  agentBenchHeadlessResult
+	Turns     []agentBenchHeadlessResult
 	Duration  time.Duration
 }
 
@@ -296,6 +300,35 @@ func agentBenchVerifyToolExpectations(got, want []string, wantAnyGroups [][]stri
 	return nil
 }
 
+func agentBenchMergeHeadlessTurns(turns []agentBenchHeadlessResult) agentBenchHeadlessResult {
+	if len(turns) == 0 {
+		return agentBenchHeadlessResult{}
+	}
+	out := turns[len(turns)-1]
+	toolSet := map[string]struct{}{}
+	fileSet := map[string]struct{}{}
+	for _, turn := range turns {
+		for _, tool := range turn.ToolsUsed {
+			toolSet[tool] = struct{}{}
+		}
+		for _, file := range turn.FilesModified {
+			fileSet[file] = struct{}{}
+		}
+	}
+	out.ToolsUsed = agentBenchSortedKeys(toolSet)
+	out.FilesModified = agentBenchSortedKeys(fileSet)
+	return out
+}
+
+func agentBenchSortedKeys(m map[string]struct{}) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
 func agentBenchParseHeadlessJSON(s string) (agentBenchHeadlessResult, error) {
 	var out agentBenchHeadlessResult
 	if err := json.Unmarshal([]byte(strings.TrimSpace(s)), &out); err != nil {
@@ -448,7 +481,7 @@ func agentBenchWriteArtifacts(t *testing.T, r *agentBenchRun) {
 		return
 	}
 	r.Artifacts = target
-	_ = os.WriteFile(filepath.Join(target, "prompt.txt"), []byte(r.Scenario.Prompt), 0o644)
+	_ = os.WriteFile(filepath.Join(target, "prompt.txt"), []byte(agentBenchScenarioPromptText(r.Scenario)), 0o644)
 	_ = os.WriteFile(filepath.Join(target, "stdout.json"), []byte(r.Stdout), 0o644)
 	_ = os.WriteFile(filepath.Join(target, "stderr.txt"), []byte(r.Stderr), 0o644)
 	_ = os.WriteFile(filepath.Join(target, "diff.patch"), []byte(r.Diff), 0o644)
@@ -458,6 +491,22 @@ func agentBenchWriteArtifacts(t *testing.T, r *agentBenchRun) {
 		}
 	}
 	t.Logf("agent-bench artifacts: %s", target)
+}
+
+func agentBenchScenarioPromptText(sc agentBenchScenario) string {
+	if len(sc.Prompts) == 0 {
+		return sc.Prompt
+	}
+	var b strings.Builder
+	for i, p := range sc.Prompts {
+		if i > 0 {
+			b.WriteString("\n\n--- turn ")
+			b.WriteString(fmt.Sprint(i + 1))
+			b.WriteString(" ---\n")
+		}
+		b.WriteString(p)
+	}
+	return b.String()
 }
 
 func agentBenchAppendResult(path string, r *agentBenchRun, runErr error) {
@@ -579,5 +628,12 @@ func TestAgentBenchFixtureDiffAndVerifier(t *testing.T) {
 	}
 	if err := agentBenchVerifyToolExpectations([]string{"grep", "read_file"}, nil, [][]string{{"search_files", "grep"}}); err != nil {
 		t.Fatal(err)
+	}
+	merged := agentBenchMergeHeadlessTurns([]agentBenchHeadlessResult{
+		{ToolsUsed: []string{"read_file"}, FilesModified: []string{"a.go"}},
+		{ToolsUsed: []string{"str_replace"}, FilesModified: []string{"b.go"}, Reply: "done", ExitReason: "complete"},
+	})
+	if merged.Reply != "done" || strings.Join(merged.ToolsUsed, ",") != "read_file,str_replace" || strings.Join(merged.FilesModified, ",") != "a.go,b.go" {
+		t.Fatalf("unexpected merged headless turns: %#v", merged)
 	}
 }

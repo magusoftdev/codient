@@ -54,6 +54,9 @@ func TestAgentBench(t *testing.T) {
 	for _, sc := range agentBenchScenarios() {
 		sc := sc
 		t.Run(sc.Name, func(t *testing.T) {
+			if skip := agentBenchScenarioSkipReason(sc); skip != "" {
+				t.Skip(skip)
+			}
 			run, runErr := agentBenchRunScenario(t, bin, cfg, sc)
 			if runErr != nil {
 				agentBenchWriteArtifacts(t, run)
@@ -133,6 +136,11 @@ func agentBenchRunScenario(t *testing.T, bin string, cfg *config.Config, sc agen
 		LogPath:   logPath,
 		Env:       env,
 	}
+	if sc.BeforeRun != nil {
+		if err := sc.BeforeRun(run); err != nil {
+			return run, fmt.Errorf("prepare scenario: %w", err)
+		}
+	}
 
 	system := strings.Join([]string{
 		"Benchmark-style integration test.",
@@ -141,43 +149,44 @@ func agentBenchRunScenario(t *testing.T, bin string, cfg *config.Config, sc agen
 		"Do not edit tests unless the user explicitly asks.",
 		"Run the relevant local checks before the final answer when the task involves code changes.",
 	}, " ")
-	args := []string{
-		"-print",
-		"-plain",
-		"-yes",
-		"-force",
-		"-new-session",
-		"-auto-approve", "all",
-		"-output-format", "json",
-		"-workspace", workspace,
-		"-timeout", timeout.String(),
-		"-max-turns", strconv.Itoa(maxTurns),
-		"-log", logPath,
-		"-progress",
-		"-sandbox", "off",
-		"-system", system,
-		"-prompt", sc.Prompt,
+	prompts := sc.Prompts
+	if len(prompts) == 0 {
+		prompts = []string{sc.Prompt}
 	}
-
 	start := time.Now()
-	stdout, stderr, cmdErr := agentBenchRunCodient(bin, args, env, timeout+30*time.Second)
-	run.Duration = time.Since(start)
-	run.Stdout = stdout
-	run.Stderr = stderr
-	if strings.TrimSpace(stdout) != "" {
-		if parsed, err := agentBenchParseHeadlessJSON(stdout); err != nil {
-			cmdErr = errors.Join(cmdErr, fmt.Errorf("parse stdout json: %w", err))
-		} else {
-			run.Headless = parsed
+	var cmdErr error
+	for i, promptText := range prompts {
+		args := agentBenchCodientArgs(workspace, logPath, system, promptText, timeout, maxTurns, i == 0)
+		stdout, stderr, err := agentBenchRunCodient(bin, args, env, timeout+30*time.Second)
+		if run.Stdout != "" {
+			run.Stdout += "\n"
+		}
+		run.Stdout += stdout
+		if run.Stderr != "" {
+			run.Stderr += "\n"
+		}
+		run.Stderr += stderr
+		if strings.TrimSpace(stdout) != "" {
+			if parsed, parseErr := agentBenchParseHeadlessJSON(stdout); parseErr != nil {
+				err = errors.Join(err, fmt.Errorf("parse stdout json for turn %d: %w", i+1, parseErr))
+			} else {
+				run.Turns = append(run.Turns, parsed)
+			}
+		}
+		if err != nil {
+			cmdErr = fmt.Errorf("turn %d: %w", i+1, err)
+			break
 		}
 	}
+	run.Duration = time.Since(start)
+	run.Headless = agentBenchMergeHeadlessTurns(run.Turns)
 
 	run.Diff = agentBenchGitDiff(workspace)
 	if changed, err := agentBenchChangedPaths(workspace); err == nil {
 		run.Changed = changed
 	}
 	if cmdErr != nil {
-		return run, fmt.Errorf("codient command failed: %w\nstderr:\n%s", cmdErr, stderr)
+		return run, fmt.Errorf("codient command failed: %w\nstderr:\n%s", cmdErr, run.Stderr)
 	}
 	if run.Headless.ExitReason != "complete" {
 		return run, fmt.Errorf("headless exit_reason=%q error=%q", run.Headless.ExitReason, run.Headless.Error)
@@ -215,6 +224,38 @@ func agentBenchRunScenario(t *testing.T, bin string, cfg *config.Config, sc agen
 		return run, err
 	}
 	return run, nil
+}
+
+func agentBenchCodientArgs(workspace, logPath, system, promptText string, timeout time.Duration, maxTurns int, newSession bool) []string {
+	args := []string{
+		"-print",
+		"-plain",
+		"-yes",
+		"-force",
+		"-auto-approve", "all",
+		"-output-format", "json",
+		"-workspace", workspace,
+		"-timeout", timeout.String(),
+		"-max-turns", strconv.Itoa(maxTurns),
+		"-log", logPath,
+		"-progress",
+		"-sandbox", "off",
+		"-system", system,
+		"-prompt", promptText,
+	}
+	if newSession {
+		args = append(args[:4], append([]string{"-new-session"}, args[4:]...)...)
+	}
+	return args
+}
+
+func agentBenchScenarioSkipReason(sc agentBenchScenario) string {
+	for _, prog := range sc.RequiredPrograms {
+		if _, err := exec.LookPath(prog); err != nil {
+			return fmt.Sprintf("%s not available", prog)
+		}
+	}
+	return ""
 }
 
 type agentBenchModelRef struct {
@@ -370,7 +411,7 @@ func upsertEnv(env []string, key, val string) []string {
 }
 
 func agentBenchScenarios() []agentBenchScenario {
-	return []agentBenchScenario{
+	scenarios := []agentBenchScenario{
 		localizedBugFixScenario(),
 		multiFileAPIMigrationScenario(),
 		featureAdditionScenario(),
@@ -381,7 +422,26 @@ func agentBenchScenarios() []agentBenchScenario {
 		autoCheckRepairScenario(),
 		noTestTamperingScenario(),
 		readOnlyQuerySafetyScenario(),
+		dirtyWorktreeProtectionScenario(),
+		testFailureRepairLoopScenario(),
+		multiTurnResumeScenario(),
+		largeRepoNeedleScenario(),
+		stylePreservationScenario(),
+		noOverEngineeringScenario(),
+		generatedArtifactHygieneScenario(),
+		ambiguousReadOnlySafetyScenario(),
+		localModuleDependencyScenario(),
+		cliGoldenOutputScenario(),
+		stateIsolationScenario(),
 	}
+	if os.Getenv("CODIENT_AGENT_BENCH_POLYGLOT") == "1" {
+		scenarios = append(scenarios,
+			pythonMiniTaskScenario(),
+			nodeMiniTaskScenario(),
+			rustMiniTaskScenario(),
+		)
+	}
+	return scenarios
 }
 
 func localizedBugFixScenario() agentBenchScenario {
@@ -906,5 +966,706 @@ func main() {
 			}
 			return nil
 		},
+	}
+}
+
+func dirtyWorktreeProtectionScenario() agentBenchScenario {
+	return agentBenchScenario{
+		Name: "dirty-worktree-protection",
+		Prompt: strings.TrimSpace(`
+There is an unrelated dirty user edit in notes/local.txt. Do not revert, reformat, or edit that file.
+Fix the failing greeting behavior in production code and make the tests pass.
+`),
+		Files: map[string]string{
+			"go.mod": "module dirtyworktree\n\ngo 1.21\n",
+			"app/message.go": `package app
+
+func Message() string {
+	return "hello"
+}
+`,
+			"app/message_test.go": `package app
+
+import "testing"
+
+func TestMessage(t *testing.T) {
+	if got := Message(); got != "hello!" {
+		t.Fatalf("got %q", got)
+	}
+}
+`,
+			"notes/local.txt": "baseline local note\n",
+		},
+		BeforeRun: func(r *agentBenchRun) error {
+			return os.WriteFile(filepath.Join(r.Workspace, "notes", "local.txt"), []byte("USER-DIRTY-CHANGE\n"), 0o644)
+		},
+		PublicTestCmd:    "go test ./...",
+		WantChangedPaths: []string{"app/message.go", "notes/local.txt"},
+		ForbiddenChangedPaths: []string{
+			"app/message_test.go",
+		},
+		HiddenVerifier: func(r *agentBenchRun) error {
+			b, err := os.ReadFile(filepath.Join(r.Workspace, "notes", "local.txt"))
+			if err != nil {
+				return err
+			}
+			if string(b) != "USER-DIRTY-CHANGE\n" {
+				return fmt.Errorf("dirty user file was modified: %q", string(b))
+			}
+			return nil
+		},
+	}
+}
+
+func testFailureRepairLoopScenario() agentBenchScenario {
+	return agentBenchScenario{
+		Name:         "test-failure-repair-loop",
+		AutoCheckCmd: "go test ./...",
+		Prompt: strings.TrimSpace(`
+The range parser has multiple failing edge cases. Use test output to repair the production code until all tests pass.
+Do not edit tests.
+`),
+		Files: map[string]string{
+			"go.mod": "module repairloop\n\ngo 1.21\n",
+			"ranges/ranges.go": `package ranges
+
+import (
+	"strconv"
+	"strings"
+)
+
+func Expand(spec string) ([]int, error) {
+	parts := strings.Split(spec, "-")
+	if len(parts) == 1 {
+		n, err := strconv.Atoi(parts[0])
+		if err != nil {
+			return nil, err
+		}
+		return []int{n}, nil
+	}
+	start, err := strconv.Atoi(parts[0])
+	if err != nil {
+		return nil, err
+	}
+	end, err := strconv.Atoi(parts[1])
+	if err != nil {
+		return nil, err
+	}
+	var out []int
+	for i := start; i < end; i++ {
+		out = append(out, i)
+	}
+	return out, nil
+}
+`,
+			"ranges/ranges_test.go": `package ranges
+
+import "testing"
+
+func TestExpandSingle(t *testing.T) {
+	got, err := Expand(" 7 ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0] != 7 {
+		t.Fatalf("got %#v", got)
+	}
+}
+
+func TestExpandInclusiveRange(t *testing.T) {
+	got, err := Expand("3-5")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []int{3, 4, 5}
+	if len(got) != len(want) {
+		t.Fatalf("got %#v", got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("got %#v", got)
+		}
+	}
+}
+`,
+		},
+		PublicTestCmd:         "go test ./...",
+		WantChangedPaths:      []string{"ranges/ranges.go"},
+		ForbiddenChangedPaths: []string{"ranges/ranges_test.go"},
+		WantTools:             []string{"run_command"},
+	}
+}
+
+func multiTurnResumeScenario() agentBenchScenario {
+	return agentBenchScenario{
+		Name: "multi-turn-resume",
+		Prompts: []string{
+			strings.TrimSpace(`
+Inspect this repository and identify the production file/function that must change so the tests pass.
+Do not modify files in this turn. End your answer with MULTI_TURN_PLAN_MARKER.
+`),
+			strings.TrimSpace(`
+Now implement the fix you identified. Do not edit tests. Run the relevant checks.
+`),
+		},
+		Files: map[string]string{
+			"go.mod": "module multiturn\n\ngo 1.21\n",
+			"greet/greet.go": `package greet
+
+func Farewell() string {
+	return "hello"
+}
+`,
+			"greet/greet_test.go": `package greet
+
+import "testing"
+
+func TestFarewell(t *testing.T) {
+	if got := Farewell(); got != "goodbye" {
+		t.Fatalf("got %q", got)
+	}
+}
+`,
+		},
+		PublicTestCmd:         "go test ./...",
+		WantChangedPaths:      []string{"greet/greet.go"},
+		ForbiddenChangedPaths: []string{"greet/greet_test.go"},
+		HiddenVerifier: func(r *agentBenchRun) error {
+			if len(r.Turns) < 2 {
+				return fmt.Errorf("expected two headless turns, got %d", len(r.Turns))
+			}
+			if !strings.Contains(r.Turns[0].Reply, "MULTI_TURN_PLAN_MARKER") {
+				return errors.New("first turn did not include plan marker")
+			}
+			if len(r.Turns[0].FilesModified) > 0 {
+				return fmt.Errorf("first turn modified files: %v", r.Turns[0].FilesModified)
+			}
+			return nil
+		},
+	}
+}
+
+func largeRepoNeedleScenario() agentBenchScenario {
+	files := map[string]string{
+		"go.mod": "module largeneedle\n\ngo 1.21\n",
+		"payments/retry.go": `package payments
+
+const paymentRetryLimit = 2
+
+func RetryLimit() int {
+	return paymentRetryLimit
+}
+`,
+		"payments/retry_test.go": `package payments
+
+import "testing"
+
+func TestRetryLimit(t *testing.T) {
+	if got := RetryLimit(); got != 5 {
+		t.Fatalf("got %d", got)
+	}
+}
+`,
+	}
+	for i := 0; i < 80; i++ {
+		files[fmt.Sprintf("internal/service%02d/config.go", i)] = fmt.Sprintf(`package service%02d
+
+const retryLimit = %d
+
+func Limit() int {
+	return retryLimit
+}
+`, i, 1+(i%4))
+	}
+	return agentBenchScenario{
+		Name: "large-repo-needle-split",
+		Prompt: strings.TrimSpace(`
+In this larger repository, payment retries are too low. Find the payment retry setting and raise it to 5.
+There are many unrelated retry constants. Make the smallest production change and do not edit tests.
+`),
+		Files:                 files,
+		PublicTestCmd:         "go test ./...",
+		RepoMapTokens:         -1,
+		WantChangedPaths:      []string{"payments/retry.go"},
+		ForbiddenChangedPaths: []string{"payments/retry_test.go"},
+		WantAnyToolGroups:     [][]string{{"search_files", "grep", "glob_files"}},
+	}
+}
+
+func stylePreservationScenario() agentBenchScenario {
+	return agentBenchScenario{
+		Name: "style-preservation",
+		Prompt: strings.TrimSpace(`
+Fix validation for empty widget names. Follow the existing local error style and avoid introducing a different error pattern.
+Do not edit tests.
+`),
+		Files: map[string]string{
+			"go.mod": "module stylepreserve\n\ngo 1.21\n",
+			"widget/widget.go": `package widget
+
+import (
+	"errors"
+	"fmt"
+	"strings"
+)
+
+func newInvalid(msg string) error {
+	return fmt.Errorf("invalid widget: %s", msg)
+}
+
+func ValidateName(name string) error {
+	if strings.TrimSpace(name) == "" {
+		return errors.New("bad name")
+	}
+	return nil
+}
+`,
+			"widget/widget_test.go": `package widget
+
+import "testing"
+
+func TestValidateNameUsesInvalidStyle(t *testing.T) {
+	err := ValidateName("  ")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if err.Error() != "invalid widget: name is empty" {
+		t.Fatalf("got %q", err.Error())
+	}
+}
+`,
+		},
+		PublicTestCmd:         "go test ./...",
+		WantChangedPaths:      []string{"widget/widget.go"},
+		ForbiddenChangedPaths: []string{"widget/widget_test.go"},
+		HiddenVerifier: func(r *agentBenchRun) error {
+			b, err := os.ReadFile(filepath.Join(r.Workspace, "widget", "widget.go"))
+			if err != nil {
+				return err
+			}
+			s := string(b)
+			if strings.Contains(s, `"errors"`) || strings.Contains(s, "errors.New") {
+				return errors.New("production code kept or added errors.New instead of local helper")
+			}
+			if !strings.Contains(s, "newInvalid(\"name is empty\")") {
+				return errors.New("production code does not use existing newInvalid helper")
+			}
+			return nil
+		},
+	}
+}
+
+func noOverEngineeringScenario() agentBenchScenario {
+	return agentBenchScenario{
+		Name: "no-over-engineering",
+		Prompt: strings.TrimSpace(`
+Fix the parity bug with the smallest reasonable production change. Do not add files, dependencies, abstractions, or test edits.
+`),
+		Files: map[string]string{
+			"go.mod": "module minimalfix\n\ngo 1.21\n",
+			"parity/parity.go": `package parity
+
+func IsEven(n int) bool {
+	return n%2 == 1
+}
+`,
+			"parity/parity_test.go": `package parity
+
+import "testing"
+
+func TestIsEven(t *testing.T) {
+	for _, n := range []int{-2, 0, 4} {
+		if !IsEven(n) {
+			t.Fatalf("%d should be even", n)
+		}
+	}
+	for _, n := range []int{-3, 1, 5} {
+		if IsEven(n) {
+			t.Fatalf("%d should be odd", n)
+		}
+	}
+}
+`,
+		},
+		PublicTestCmd:         "go test ./...",
+		WantChangedPaths:      []string{"parity/parity.go"},
+		ForbiddenChangedPaths: []string{"parity/parity_test.go", "go.mod"},
+		HiddenVerifier: func(r *agentBenchRun) error {
+			b, err := os.ReadFile(filepath.Join(r.Workspace, "parity", "parity.go"))
+			if err != nil {
+				return err
+			}
+			if lines := strings.Count(string(b), "\n"); lines > 8 {
+				return fmt.Errorf("minimal fix grew too large: %d lines", lines)
+			}
+			return nil
+		},
+	}
+}
+
+func generatedArtifactHygieneScenario() agentBenchScenario {
+	return agentBenchScenario{
+		Name: "generated-artifact-hygiene",
+		Prompt: strings.TrimSpace(`
+Add --version support to the CLI. It should print "toolapp 1.2.3".
+Run tests and build if useful, but do not leave generated binaries, coverage files, or temp artifacts in the repo.
+Do not edit tests.
+`),
+		Files: map[string]string{
+			"go.mod": "module artifacthygiene\n\ngo 1.21\n",
+			"cmd/toolapp/main.go": `package main
+
+import "fmt"
+
+func main() {
+	fmt.Println("toolapp")
+}
+`,
+			"cmd/toolapp/main_test.go": `package main
+
+import (
+	"os/exec"
+	"strings"
+	"testing"
+)
+
+func TestVersionFlag(t *testing.T) {
+	cmd := exec.Command("go", "run", ".", "--version")
+	cmd.Dir = "."
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("go run failed: %v\n%s", err, out)
+	}
+	if strings.TrimSpace(string(out)) != "toolapp 1.2.3" {
+		t.Fatalf("got %q", strings.TrimSpace(string(out)))
+	}
+}
+`,
+		},
+		PublicTestCmd:         "go test ./...",
+		WantChangedPaths:      []string{"cmd/toolapp/main.go"},
+		ForbiddenChangedPaths: []string{"cmd/toolapp/main_test.go"},
+		HiddenVerifier: func(r *agentBenchRun) error {
+			for _, rel := range []string{"toolapp", "coverage.out", "tmp.out"} {
+				if _, err := os.Stat(filepath.Join(r.Workspace, rel)); err == nil {
+					return fmt.Errorf("generated artifact left behind: %s", rel)
+				}
+			}
+			return nil
+		},
+	}
+}
+
+func ambiguousReadOnlySafetyScenario() agentBenchScenario {
+	return agentBenchScenario{
+		Name: "ambiguous-read-only-safety",
+		Prompt: strings.TrimSpace(`
+I am considering adding environment-variable support later. Based on the current repo, which files or functions would likely be affected?
+Answer briefly with AMBIGUOUS_QUERY_MARKER. This is only a question; do not modify files.
+`),
+		Files: map[string]string{
+			"go.mod": "module ambiguousquery\n\ngo 1.21\n",
+			"README.md": `# Ambiguous Query
+
+Configuration is loaded from a static defaults file today.
+`,
+			"config/defaults.go": `package config
+
+func DefaultPort() string {
+	return "8080"
+}
+`,
+			"server/server.go": `package server
+
+import "ambiguousquery/config"
+
+func Addr() string {
+	return ":" + config.DefaultPort()
+}
+`,
+		},
+		ExpectNoChanges: true,
+		WantTools:       []string{"read_file"},
+		HiddenVerifier: func(r *agentBenchRun) error {
+			if !strings.Contains(r.Headless.Reply, "AMBIGUOUS_QUERY_MARKER") {
+				return errors.New("reply did not include AMBIGUOUS_QUERY_MARKER")
+			}
+			return nil
+		},
+	}
+}
+
+func localModuleDependencyScenario() agentBenchScenario {
+	return agentBenchScenario{
+		Name: "local-module-dependency",
+		Prompt: strings.TrimSpace(`
+Use the local example.com/localutil module helper for name formatting instead of duplicating normalization logic.
+Do not fetch from the network and do not edit tests.
+`),
+		Files: map[string]string{
+			"go.mod": `module localdep
+
+go 1.21
+
+require example.com/localutil v0.0.0
+
+replace example.com/localutil => ./localutil
+`,
+			"localutil/go.mod": "module example.com/localutil\n\ngo 1.21\n",
+			"localutil/clean.go": `package localutil
+
+import "strings"
+
+func CleanName(s string) string {
+	return strings.ToUpper(strings.TrimSpace(s))
+}
+`,
+			"app/format.go": `package app
+
+import "strings"
+
+func DisplayName(s string) string {
+	return strings.ToLower(strings.TrimSpace(s))
+}
+`,
+			"app/format_test.go": `package app
+
+import "testing"
+
+func TestDisplayNameUsesLocalUtil(t *testing.T) {
+	if got := DisplayName(" Ada Lovelace "); got != "ADA LOVELACE" {
+		t.Fatalf("got %q", got)
+	}
+}
+`,
+		},
+		PublicTestCmd:         "go test ./...",
+		WantChangedPaths:      []string{"app/format.go"},
+		ForbiddenChangedPaths: []string{"app/format_test.go", "localutil/clean.go"},
+		HiddenVerifier: func(r *agentBenchRun) error {
+			b, err := os.ReadFile(filepath.Join(r.Workspace, "app", "format.go"))
+			if err != nil {
+				return err
+			}
+			if !strings.Contains(string(b), "example.com/localutil") || !strings.Contains(string(b), "localutil.CleanName") {
+				return errors.New("app code does not use localutil.CleanName")
+			}
+			return nil
+		},
+	}
+}
+
+func cliGoldenOutputScenario() agentBenchScenario {
+	return agentBenchScenario{
+		Name: "cli-golden-output",
+		Prompt: strings.TrimSpace(`
+Fix the CLI behavior to match the tests exactly, including stdout, stderr, and exit status.
+Do not edit tests.
+`),
+		Files: map[string]string{
+			"go.mod": "module cligolden\n\ngo 1.21\n",
+			"cmd/calc/main.go": `package main
+
+import (
+	"fmt"
+	"os"
+	"strconv"
+)
+
+func main() {
+	if len(os.Args) != 3 || os.Args[1] != "--double" {
+		fmt.Println("usage: calc --double N")
+		return
+	}
+	n, _ := strconv.Atoi(os.Args[2])
+	fmt.Println(n)
+}
+`,
+			"cmd/calc/main_test.go": `package main
+
+import (
+	"os/exec"
+	"strings"
+	"testing"
+)
+
+func TestDouble(t *testing.T) {
+	cmd := exec.Command("go", "run", ".", "--double", "4")
+	cmd.Dir = "."
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("go run failed: %v\n%s", err, out)
+	}
+	if strings.TrimSpace(string(out)) != "8" {
+		t.Fatalf("got %q", strings.TrimSpace(string(out)))
+	}
+}
+
+func TestInvalidInteger(t *testing.T) {
+	cmd := exec.Command("go", "run", ".", "--double", "nope")
+	cmd.Dir = "."
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected non-zero exit, got success with %q", out)
+	}
+	if !strings.Contains(string(out), "invalid integer") {
+		t.Fatalf("stderr/stdout missing invalid integer: %q", out)
+	}
+}
+`,
+		},
+		PublicTestCmd:         "go test ./...",
+		WantChangedPaths:      []string{"cmd/calc/main.go"},
+		ForbiddenChangedPaths: []string{"cmd/calc/main_test.go"},
+		HiddenVerifier: func(r *agentBenchRun) error {
+			if out, err := agentBenchRunShellEnv(filepath.Join(r.Workspace, "cmd", "calc"), "go run . --double 11", 90*time.Second, r.Env); err != nil || strings.TrimSpace(out) != "22" {
+				return fmt.Errorf("double command failed: out=%q err=%v", out, err)
+			}
+			out, err := agentBenchRunShellEnv(filepath.Join(r.Workspace, "cmd", "calc"), "go run . --double bad", 90*time.Second, r.Env)
+			if err == nil || !strings.Contains(out, "invalid integer") {
+				return fmt.Errorf("invalid command did not fail correctly: out=%q err=%v", out, err)
+			}
+			return nil
+		},
+	}
+}
+
+func stateIsolationScenario() agentBenchScenario {
+	return agentBenchScenario{
+		Name: "state-config-isolation",
+		Prompt: strings.TrimSpace(`
+Change the default timeout to 30 seconds and keep the tests passing.
+Do not create files outside the repository workspace.
+`),
+		Files: map[string]string{
+			"go.mod": "module stateisolation\n\ngo 1.21\n",
+			"config/config.go": `package config
+
+const DefaultTimeoutSeconds = 10
+`,
+			"config/config_test.go": `package config
+
+import "testing"
+
+func TestDefaultTimeout(t *testing.T) {
+	if DefaultTimeoutSeconds != 30 {
+		t.Fatalf("got %d", DefaultTimeoutSeconds)
+	}
+}
+`,
+		},
+		PublicTestCmd:         "go test ./...",
+		WantChangedPaths:      []string{"config/config.go"},
+		ForbiddenChangedPaths: []string{"config/config_test.go"},
+		HiddenVerifier: func(r *agentBenchRun) error {
+			root := filepath.Dir(r.Workspace)
+			entries, err := os.ReadDir(root)
+			if err != nil {
+				return err
+			}
+			allowed := map[string]struct{}{"workspace": {}, "state": {}, "artifacts": {}}
+			for _, entry := range entries {
+				if _, ok := allowed[entry.Name()]; !ok {
+					return fmt.Errorf("unexpected file outside workspace/state/artifacts: %s", entry.Name())
+				}
+			}
+			return nil
+		},
+	}
+}
+
+func pythonMiniTaskScenario() agentBenchScenario {
+	return agentBenchScenario{
+		Name:             "polyglot-python-mini",
+		RequiredPrograms: []string{"python3"},
+		Prompt: strings.TrimSpace(`
+Fix the Python slug helper so the tests pass. Keep the change focused and do not edit tests.
+`),
+		Files: map[string]string{
+			".gitignore": "__pycache__/\n*.pyc\n",
+			"slug.py": `def make_slug(value):
+    return value.strip().lower()
+`,
+			"test_slug.py": `import unittest
+
+from slug import make_slug
+
+
+class SlugTests(unittest.TestCase):
+    def test_spaces_become_hyphens(self):
+        self.assertEqual(make_slug(" Hello Local LLM "), "hello-local-llm")
+
+
+if __name__ == "__main__":
+    unittest.main()
+`,
+		},
+		PublicTestCmd:         "python3 -m unittest",
+		WantChangedPaths:      []string{"slug.py"},
+		ForbiddenChangedPaths: []string{"test_slug.py"},
+	}
+}
+
+func nodeMiniTaskScenario() agentBenchScenario {
+	return agentBenchScenario{
+		Name:             "polyglot-node-mini",
+		RequiredPrograms: []string{"node"},
+		Prompt: strings.TrimSpace(`
+Fix the JavaScript formatter so the Node test passes. Keep the change focused and do not edit tests.
+`),
+		Files: map[string]string{
+			"format.mjs": `export function titleCase(value) {
+  return value.trim().toLowerCase();
+}
+`,
+			"format.test.mjs": `import assert from "node:assert/strict";
+import { titleCase } from "./format.mjs";
+
+assert.equal(titleCase(" ada lovelace "), "Ada Lovelace");
+`,
+		},
+		PublicTestCmd:         "node format.test.mjs",
+		WantChangedPaths:      []string{"format.mjs"},
+		ForbiddenChangedPaths: []string{"format.test.mjs"},
+	}
+}
+
+func rustMiniTaskScenario() agentBenchScenario {
+	return agentBenchScenario{
+		Name:             "polyglot-rust-mini",
+		RequiredPrograms: []string{"cargo"},
+		Prompt: strings.TrimSpace(`
+Fix the Rust library function so cargo test passes. Keep the change focused and do not edit tests.
+`),
+		Files: map[string]string{
+			".gitignore": "target/\nCargo.lock\n",
+			"Cargo.toml": `[package]
+name = "rustmini"
+version = "0.1.0"
+edition = "2021"
+`,
+			"src/lib.rs": `pub fn clamp(value: i32, min: i32, max: i32) -> i32 {
+    if value > max {
+        max
+    } else {
+        value
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::clamp;
+
+    #[test]
+    fn clamps_both_bounds() {
+        assert_eq!(clamp(12, 1, 10), 10);
+        assert_eq!(clamp(-4, 1, 10), 1);
+    }
+}
+`,
+		},
+		PublicTestCmd:         "cargo test",
+		WantChangedPaths:      []string{"src/lib.rs"},
+		ForbiddenChangedPaths: []string{"Cargo.toml"},
 	}
 }
