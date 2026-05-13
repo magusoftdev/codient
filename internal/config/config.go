@@ -137,6 +137,10 @@ type Config struct {
 	DesignSave bool
 	// PlanTot enables parallel Tree-of-Thoughts plan generation on selected plan-mode turns (default true).
 	PlanTot bool
+	// PlanReflection enables low-tier reflection after mutating batches while executing a structured plan (default true).
+	PlanReflection bool
+	// BuildSelfCritique enables one-shot build-mode self-critique after file mutations (default true).
+	BuildSelfCritique bool
 	// ProjectContext opt-out: "off" to disable auto-detected project hints.
 	ProjectContext string
 	// AstGrep is the resolved ast-grep binary path, empty if unavailable, or "off" to disable.
@@ -201,12 +205,12 @@ type Config struct {
 
 // DelegateSandboxProfile describes container isolation settings for a delegate_task invocation.
 type DelegateSandboxProfile struct {
-	Image         string   `json:"image,omitempty"`
-	NetworkPolicy string   `json:"network_policy,omitempty"`
-	MaxMemoryMB   int      `json:"max_memory_mb,omitempty"`
-	MaxCPUPercent int      `json:"max_cpu_percent,omitempty"`
-	MaxProcesses  int      `json:"max_processes,omitempty"`
-	ReadOnlyPaths []string `json:"read_only_paths,omitempty"`
+	Image          string   `json:"image,omitempty"`
+	NetworkPolicy  string   `json:"network_policy,omitempty"`
+	MaxMemoryMB    int      `json:"max_memory_mb,omitempty"`
+	MaxCPUPercent  int      `json:"max_cpu_percent,omitempty"`
+	MaxProcesses   int      `json:"max_processes,omitempty"`
+	ReadOnlyPaths  []string `json:"read_only_paths,omitempty"`
 	EnvPassthrough []string `json:"env_passthrough,omitempty"`
 	// LongLived keeps a single container running for the delegate's lifetime
 	// instead of spawning one per run_command (avoids losing caches between

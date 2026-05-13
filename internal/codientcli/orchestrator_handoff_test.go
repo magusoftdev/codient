@@ -1,6 +1,7 @@
 package codientcli
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -88,9 +89,9 @@ func TestMarkPlanApprovedForHandoff_SetsApprovedPhase(t *testing.T) {
 // even when the plan has steps and no scanner is attached.
 func TestShouldAutoBuildAfterPlan_ForceFlagBypassesPrompt(t *testing.T) {
 	s := newTestSessionForModeSwitch(t, prompt.ModePlan)
-	s.currentPlan = &planstore.Plan{Steps: []planstore.Step{{ID: "1", Title: "x"}}}
+	s.currentPlan = &planstore.Plan{Steps: []planstore.Step{{ID: "1", Title: "x"}}, Verification: []string{"go test ./..."}}
 	s.orchestratorForce = true
-	if !s.shouldAutoBuildAfterPlan() {
+	if !s.shouldAutoBuildAfterPlan(context.Background()) {
 		t.Fatal("expected -force to auto-approve plan->build")
 	}
 }
@@ -100,9 +101,9 @@ func TestShouldAutoBuildAfterPlan_ForceFlagBypassesPrompt(t *testing.T) {
 // (the user should re-run to commit, matching the print-mode pause hint).
 func TestShouldAutoBuildAfterPlan_PrintModeRequiresForce(t *testing.T) {
 	s := newTestSessionForModeSwitch(t, prompt.ModePlan)
-	s.currentPlan = &planstore.Plan{Steps: []planstore.Step{{ID: "1", Title: "x"}}}
+	s.currentPlan = &planstore.Plan{Steps: []planstore.Step{{ID: "1", Title: "x"}}, Verification: []string{"go test ./..."}}
 	s.printMode = true
-	if s.shouldAutoBuildAfterPlan() {
+	if s.shouldAutoBuildAfterPlan(context.Background()) {
 		t.Fatal("expected print mode without -force to NOT auto-build")
 	}
 }
@@ -112,10 +113,10 @@ func TestShouldAutoBuildAfterPlan_PrintModeRequiresForce(t *testing.T) {
 // Unity drives the picker, so the orchestrator should not block on stdin.
 func TestShouldAutoBuildAfterPlan_ACPNoScannerAutoBuilds(t *testing.T) {
 	s := newTestSessionForModeSwitch(t, prompt.ModePlan)
-	s.currentPlan = &planstore.Plan{Steps: []planstore.Step{{ID: "1", Title: "x"}}}
+	s.currentPlan = &planstore.Plan{Steps: []planstore.Step{{ID: "1", Title: "x"}}, Verification: []string{"go test ./..."}}
 	s.printMode = false
 	s.scanner = nil
-	if !s.shouldAutoBuildAfterPlan() {
+	if !s.shouldAutoBuildAfterPlan(context.Background()) {
 		t.Fatal("ACP / sub-agent path should auto-build when plan applies")
 	}
 }
@@ -163,7 +164,7 @@ func TestCapturePlanReplyForHandoff_ClearsStalePlanWhenNotReady(t *testing.T) {
 	if s.planPhase != "" {
 		t.Fatalf("expected planPhase cleared, got %q", s.planPhase)
 	}
-	if s.shouldAutoBuildAfterPlan() {
+	if s.shouldAutoBuildAfterPlan(context.Background()) {
 		t.Fatal("not-ready reply must not auto-build via stale plan state")
 	}
 }

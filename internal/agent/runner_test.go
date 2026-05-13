@@ -1660,6 +1660,27 @@ func TestRunner_AutoCheckLoopNoProgressShortCircuit(t *testing.T) {
 	}
 }
 
+func TestRunner_PlanReflectionAfterSuccessfulMutation(t *testing.T) {
+	calls := 0
+	r := &Runner{
+		PlanReflection: func(_ context.Context, info PlanReflectionInfo) PlanReflectionOutcome {
+			calls++
+			if len(info.Results) != 1 || info.Results[0].Name != "write_file" {
+				t.Fatalf("unexpected reflection info: %+v", info)
+			}
+			return PlanReflectionOutcome{Inject: "reflect", Progress: "checked"}
+		},
+	}
+	inject, progress := r.reflectAfterMutations(context.Background(), []autoCheckInput{{name: "write_file", content: "ok"}}, "user", []string{"write_file"})
+	if inject != "reflect" || progress != "checked" || calls != 1 {
+		t.Fatalf("unexpected reflection result inject=%q progress=%q calls=%d", inject, progress, calls)
+	}
+	inject, progress = r.reflectAfterMutations(context.Background(), []autoCheckInput{{name: "write_file", content: "error: denied"}}, "user", []string{"write_file"})
+	if inject != "" || progress != "" || calls != 1 {
+		t.Fatalf("failed mutation should not reflect: inject=%q progress=%q calls=%d", inject, progress, calls)
+	}
+}
+
 type panicCaptureLog struct {
 	mu     sync.Mutex
 	panics int

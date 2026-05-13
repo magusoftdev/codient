@@ -99,6 +99,15 @@ type Options struct {
 	// the two paths. The post-LLM-failure heuristic fallback path is NOT
 	// affected — a faulty supervisor still needs the safety net.
 	DisableHeuristic bool
+	// LastAssistantReply is a bounded summary/text of the previous assistant
+	// reply. It helps classify follow-up prompts like "go" or "the other file".
+	LastAssistantReply string
+	// ActivePlanSummary is a bounded summary of the current structured plan
+	// and progress, if any.
+	ActivePlanSummary string
+	// LastResolvedMode is the previous concrete mode label (ask, plan, build)
+	// when the caller is running the intent-driven orchestrator.
+	LastResolvedMode string
 }
 
 // SupervisorSystemPrompt is exported so callers (and tests) can reference the
@@ -133,6 +142,8 @@ Do NOT think out loud, use <think> blocks, or emit chain-of-thought before the J
 // "/no_think" suffix can't shift the classification).
 const supervisorUserSuffix = " /no_think"
 
+const supervisorContextMaxChars = 1600
+
 // defaultSupervisorMaxCompletionTokens is the initial completion budget for
 // IdentifyIntent. It is intentionally tight so non-thinking models return the
 // JSON answer in well under a second. Thinking models that need more headroom
@@ -151,6 +162,44 @@ const (
 	minSupervisorRetryBudget = 1024
 	maxSupervisorRetryBudget = 2048
 )
+
+func buildSupervisorUserPrompt(userPrompt string, opts Options) string {
+	var b strings.Builder
+	b.WriteString(strings.TrimSpace(userPrompt))
+
+	var ctxLines []string
+	if mode := strings.TrimSpace(opts.LastResolvedMode); mode != "" {
+		ctxLines = append(ctxLines, "Last resolved mode: "+truncateContextField(mode, 80))
+	}
+	if plan := strings.TrimSpace(opts.ActivePlanSummary); plan != "" {
+		ctxLines = append(ctxLines, "Active plan: "+truncateContextField(plan, supervisorContextMaxChars))
+	}
+	if reply := strings.TrimSpace(opts.LastAssistantReply); reply != "" {
+		ctxLines = append(ctxLines, "Previous assistant reply: "+truncateContextField(reply, supervisorContextMaxChars))
+	}
+	if len(ctxLines) > 0 {
+		b.WriteString("\n\nConversation context for classification only:\n")
+		for _, line := range ctxLines {
+			b.WriteString("- ")
+			b.WriteString(line)
+			b.WriteByte('\n')
+		}
+		b.WriteString("\nClassify the current user prompt, using the context only to resolve references and follow-ups.")
+	}
+	b.WriteString(supervisorUserSuffix)
+	return b.String()
+}
+
+func truncateContextField(s string, max int) string {
+	s = strings.TrimSpace(strings.Join(strings.Fields(s), " "))
+	if max <= 0 || len(s) <= max {
+		return s
+	}
+	if max <= 1 {
+		return s[:max]
+	}
+	return s[:max-1] + "…"
+}
 
 // finishReasonLength is the openai-compatible finish_reason emitted when the
 // server truncated the response because MaxCompletionTokens was reached.
@@ -191,7 +240,7 @@ func IdentifyIntent(ctx context.Context, client *openaiclient.Client, userPrompt
 
 	// 1. Heuristic fast path — skip the LLM entirely when intent is
 	// unambiguous from the prompt's structure alone.
-	if !opts.DisableHeuristic {
+	if !opts.DisableHeuristic && !isContextDependentFollowup(trimmed) {
 		if cat, reason, ok := heuristicQuickClassify(trimmed); ok {
 			return Identification{
 				Category:  cat,
@@ -216,7 +265,8 @@ func IdentifyIntent(ctx context.Context, client *openaiclient.Client, userPrompt
 		}
 	}
 
-	id, first, err := runSupervisor(ctx, client, trimmed, initialBudget, opts.Tracker)
+	supervisorPrompt := buildSupervisorUserPrompt(trimmed, opts)
+	id, first, err := runSupervisor(ctx, client, supervisorPrompt, initialBudget, opts.Tracker)
 	if err != nil {
 		return id, err
 	}
@@ -232,7 +282,7 @@ func IdentifyIntent(ctx context.Context, client *openaiclient.Client, userPrompt
 		return heuristicFallback(trimmed, "parse error: "+formatAttempt(first)), nil
 	}
 
-	retryID, second, retryErr := runSupervisor(ctx, client, trimmed, retryBudget, opts.Tracker)
+	retryID, second, retryErr := runSupervisor(ctx, client, supervisorPrompt, retryBudget, opts.Tracker)
 	if retryErr != nil {
 		// Network/chat error on retry — preserve the chat error for callers.
 		return heuristicFallback(trimmed, fmt.Sprintf("chat error on retry: %v; first %s", retryErr, formatAttempt(first))), retryErr
@@ -777,6 +827,42 @@ func heuristicQuickClassify(userPrompt string) (Category, string, bool) {
 	}
 
 	return "", "", false
+}
+
+func isContextDependentFollowup(userPrompt string) bool {
+	p := strings.TrimSpace(strings.ToLower(userPrompt))
+	if p == "" {
+		return false
+	}
+	trimmed := strings.Trim(p, " \t\r\n.!?")
+	switch trimmed {
+	case "go", "continue", "proceed", "do it", "implement it", "ship it", "yes", "y", "ok", "okay":
+		return true
+	}
+	if strings.HasPrefix(p, "actually") || strings.HasPrefix(p, "instead") || strings.HasPrefix(p, "but ") {
+		return true
+	}
+	phrases := []string{
+		"that file", "this file", "the file", "other file", "the other file",
+		"that function", "this function", "the function", "that one", "this one",
+		"same thing", "those changes", "these changes", "previous", "above",
+	}
+	for _, phrase := range phrases {
+		if strings.Contains(p, phrase) {
+			return true
+		}
+	}
+	fields := strings.Fields(p)
+	if len(fields) <= 8 {
+		for _, f := range fields {
+			f = strings.Trim(f, "\"'.,:;!?()[]{}*_`")
+			switch f {
+			case "it", "that", "this", "those", "these", "them":
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // containsAny reports the first member of needles that is a substring of

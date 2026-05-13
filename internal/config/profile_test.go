@@ -211,9 +211,11 @@ func TestProfileBoolOverrides(t *testing.T) {
 		BaseURL:       "http://top/v1",
 		Profiles: map[string]ProfileOverride{
 			"strict": {
-				GitAutoCommit: boolPtr(false),
-				PlanTot:       boolPtr(false),
-				Plain:         boolPtr(true),
+				GitAutoCommit:     boolPtr(false),
+				PlanTot:           boolPtr(false),
+				PlanReflection:    boolPtr(false),
+				BuildSelfCritique: boolPtr(false),
+				Plain:             boolPtr(true),
 			},
 		},
 		ActiveProfile: "strict",
@@ -229,6 +231,12 @@ func TestProfileBoolOverrides(t *testing.T) {
 	}
 	if c.PlanTot {
 		t.Fatal("expected PlanTot=false from profile")
+	}
+	if c.PlanReflection {
+		t.Fatal("expected PlanReflection=false from profile")
+	}
+	if c.BuildSelfCritique {
+		t.Fatal("expected BuildSelfCritique=false from profile")
 	}
 	if !c.Plain {
 		t.Fatal("expected Plain=true from profile")

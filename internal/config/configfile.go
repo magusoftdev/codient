@@ -103,6 +103,10 @@ type PersistentConfig struct {
 	DesignSave    *bool  `json:"design_save,omitempty"`
 	// PlanTot: when false, disables parallel Tree-of-Thoughts plan generation (default true when omitted).
 	PlanTot *bool `json:"plan_tot,omitempty"`
+	// PlanReflection: when false, disables structured-plan reflection after mutating tool batches (default true when omitted).
+	PlanReflection *bool `json:"plan_reflection,omitempty"`
+	// BuildSelfCritique: when false, disables the one-shot build-mode self-critique after file mutations (default true when omitted).
+	BuildSelfCritique *bool `json:"build_self_critique,omitempty"`
 
 	// Project
 	ProjectContext string `json:"project_context,omitempty"`
@@ -198,9 +202,9 @@ type PersistentConfig struct {
 // PersistentConfig values when the profile is active. Every field is a
 // pointer (or omitempty) so that nil/zero means "inherit from top-level".
 type ProfileOverride struct {
-	BaseURL              *string `json:"base_url,omitempty"`
-	APIKey               *string `json:"api_key,omitempty"`
-	Model                *string `json:"model,omitempty"`
+	BaseURL                         *string `json:"base_url,omitempty"`
+	APIKey                          *string `json:"api_key,omitempty"`
+	Model                           *string `json:"model,omitempty"`
 	LowReasoningModel               *string `json:"low_reasoning_model,omitempty"`
 	LowReasoningBaseURL             *string `json:"low_reasoning_base_url,omitempty"`
 	LowReasoningAPIKey              *string `json:"low_reasoning_api_key,omitempty"`
@@ -209,9 +213,9 @@ type ProfileOverride struct {
 	HighReasoningBaseURL            *string `json:"high_reasoning_base_url,omitempty"`
 	HighReasoningAPIKey             *string `json:"high_reasoning_api_key,omitempty"`
 	DisableIntentHeuristic          *bool   `json:"disable_intent_heuristic,omitempty"`
-	EmbeddingModel       *string `json:"embedding_model,omitempty"`
-	EmbeddingBaseURL     *string `json:"embedding_base_url,omitempty"`
-	EmbeddingAPIKey      *string `json:"embedding_api_key,omitempty"`
+	EmbeddingModel                  *string `json:"embedding_model,omitempty"`
+	EmbeddingBaseURL                *string `json:"embedding_base_url,omitempty"`
+	EmbeddingAPIKey                 *string `json:"embedding_api_key,omitempty"`
 
 	AutoCheckCmd             *string `json:"autocheck_cmd,omitempty"`
 	LintCmd                  *string `json:"lint_cmd,omitempty"`
@@ -240,8 +244,10 @@ type ProfileOverride struct {
 	GitAutoCommit        *bool   `json:"git_auto_commit,omitempty"`
 	GitProtectedBranches *string `json:"git_protected_branches,omitempty"`
 
-	PlanTot     *bool        `json:"plan_tot,omitempty"`
-	CostPerMTok *CostPerMTok `json:"cost_per_mtok,omitempty"`
+	PlanTot           *bool        `json:"plan_tot,omitempty"`
+	PlanReflection    *bool        `json:"plan_reflection,omitempty"`
+	BuildSelfCritique *bool        `json:"build_self_critique,omitempty"`
+	CostPerMTok       *CostPerMTok `json:"cost_per_mtok,omitempty"`
 
 	ContextWindow        *int  `json:"context_window,omitempty"`
 	ContextReserve       *int  `json:"context_reserve,omitempty"`
@@ -376,45 +382,45 @@ func SavePersistentConfig(pc *PersistentConfig) error {
 // ConfigToPersistent builds a PersistentConfig from the runtime Config for saving.
 func ConfigToPersistent(cfg *Config) *PersistentConfig {
 	pc := &PersistentConfig{
-		BaseURL:               cfg.BaseURL,
-		APIKey:                cfg.APIKey,
-		Model:                 cfg.Model,
-		Workspace:             cfg.Workspace,
-		MaxConcurrent:         cfg.MaxConcurrent,
-		ExecAllowlist:         strings.Join(cfg.ExecAllowlist, ","),
-		ExecEnvPassthrough:    strings.Join(cfg.ExecEnvPassthrough, ","),
-		ExecTimeoutSec:        cfg.ExecTimeoutSeconds,
-		ExecMaxOutBytes:       cfg.ExecMaxOutputBytes,
-		SandboxMode:           cfg.SandboxMode,
-		SandboxReadOnlyPaths:  strings.Join(cfg.SandboxReadOnlyPaths, ","),
-		SandboxContainerImage: cfg.SandboxContainerImage,
-		ContextWindow:         cfg.ContextWindowTokens,
-		ContextReserve:        cfg.ContextReserveTokens,
-		MaxLLMRetries:         cfg.MaxLLMRetries,
-		StreamWithTools:       cfg.StreamWithTools,
-		FetchAllowHosts:       strings.Join(cfg.FetchAllowHosts, ","),
-		FetchMaxBytes:         cfg.FetchMaxBytes,
-		FetchTimeoutSec:       cfg.FetchTimeoutSec,
-		FetchWebRatePerSec:    cfg.FetchWebRatePerSec,
-		FetchWebRateBurst:     cfg.FetchWebRateBurst,
-		SearchMaxResults:      cfg.SearchMaxResults,
-		AutoCompactPct:        cfg.AutoCompactPct,
-		AutoCheckCmd:           cfg.AutoCheckCmd,
-		LintCmd:               cfg.LintCmd,
-		TestCmd:               cfg.TestCmd,
-		AutoCheckFixMaxRetries: cfg.AutoCheckFixMaxRetries,
-		Plain:                 cfg.Plain,
-		Quiet:                 cfg.Quiet,
-		Verbose:               cfg.Verbose,
-		LogPath:               cfg.LogPath,
-		Progress:              cfg.Progress,
-		DesignSaveDir:         cfg.DesignSaveDir,
-		ProjectContext:        cfg.ProjectContext,
-		AstGrep:               cfg.AstGrep,
-		EmbeddingModel:        cfg.EmbeddingModel,
-		EmbeddingBaseURL:      cfg.EmbeddingBaseURL,
-		EmbeddingAPIKey:       cfg.EmbeddingAPIKey,
-		RepoMapTokens:         cfg.RepoMapTokens,
+		BaseURL:                         cfg.BaseURL,
+		APIKey:                          cfg.APIKey,
+		Model:                           cfg.Model,
+		Workspace:                       cfg.Workspace,
+		MaxConcurrent:                   cfg.MaxConcurrent,
+		ExecAllowlist:                   strings.Join(cfg.ExecAllowlist, ","),
+		ExecEnvPassthrough:              strings.Join(cfg.ExecEnvPassthrough, ","),
+		ExecTimeoutSec:                  cfg.ExecTimeoutSeconds,
+		ExecMaxOutBytes:                 cfg.ExecMaxOutputBytes,
+		SandboxMode:                     cfg.SandboxMode,
+		SandboxReadOnlyPaths:            strings.Join(cfg.SandboxReadOnlyPaths, ","),
+		SandboxContainerImage:           cfg.SandboxContainerImage,
+		ContextWindow:                   cfg.ContextWindowTokens,
+		ContextReserve:                  cfg.ContextReserveTokens,
+		MaxLLMRetries:                   cfg.MaxLLMRetries,
+		StreamWithTools:                 cfg.StreamWithTools,
+		FetchAllowHosts:                 strings.Join(cfg.FetchAllowHosts, ","),
+		FetchMaxBytes:                   cfg.FetchMaxBytes,
+		FetchTimeoutSec:                 cfg.FetchTimeoutSec,
+		FetchWebRatePerSec:              cfg.FetchWebRatePerSec,
+		FetchWebRateBurst:               cfg.FetchWebRateBurst,
+		SearchMaxResults:                cfg.SearchMaxResults,
+		AutoCompactPct:                  cfg.AutoCompactPct,
+		AutoCheckCmd:                    cfg.AutoCheckCmd,
+		LintCmd:                         cfg.LintCmd,
+		TestCmd:                         cfg.TestCmd,
+		AutoCheckFixMaxRetries:          cfg.AutoCheckFixMaxRetries,
+		Plain:                           cfg.Plain,
+		Quiet:                           cfg.Quiet,
+		Verbose:                         cfg.Verbose,
+		LogPath:                         cfg.LogPath,
+		Progress:                        cfg.Progress,
+		DesignSaveDir:                   cfg.DesignSaveDir,
+		ProjectContext:                  cfg.ProjectContext,
+		AstGrep:                         cfg.AstGrep,
+		EmbeddingModel:                  cfg.EmbeddingModel,
+		EmbeddingBaseURL:                cfg.EmbeddingBaseURL,
+		EmbeddingAPIKey:                 cfg.EmbeddingAPIKey,
+		RepoMapTokens:                   cfg.RepoMapTokens,
 		LowReasoningModel:               cfg.LowReasoning.Model,
 		LowReasoningBaseURL:             cfg.LowReasoning.BaseURL,
 		LowReasoningAPIKey:              cfg.LowReasoning.APIKey,
@@ -423,9 +429,9 @@ func ConfigToPersistent(cfg *Config) *PersistentConfig {
 		HighReasoningBaseURL:            cfg.HighReasoning.BaseURL,
 		HighReasoningAPIKey:             cfg.HighReasoning.APIKey,
 		DisableIntentHeuristic:          cfg.DisableIntentHeuristic,
-		MCPServers:            cfg.MCPServers,
-		LSPServers:            cfg.LSPServers,
-		GitProtectedBranches:  strings.Join(cfg.GitProtectedBranches, ","),
+		MCPServers:                      cfg.MCPServers,
+		LSPServers:                      cfg.LSPServers,
+		GitProtectedBranches:            strings.Join(cfg.GitProtectedBranches, ","),
 	}
 	if !cfg.GitAutoCommit {
 		f := false
@@ -454,6 +460,14 @@ func ConfigToPersistent(cfg *Config) *PersistentConfig {
 	if !cfg.PlanTot {
 		f := false
 		pc.PlanTot = &f
+	}
+	if !cfg.PlanReflection {
+		f := false
+		pc.PlanReflection = &f
+	}
+	if !cfg.BuildSelfCritique {
+		f := false
+		pc.BuildSelfCritique = &f
 	}
 	if !cfg.MouseEnabled {
 		f := false

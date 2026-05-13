@@ -61,6 +61,12 @@ func TestLoad_Defaults(t *testing.T) {
 	if !c.PlanTot {
 		t.Fatal("expected PlanTot true by default")
 	}
+	if !c.PlanReflection {
+		t.Fatal("expected PlanReflection true by default")
+	}
+	if !c.BuildSelfCritique {
+		t.Fatal("expected BuildSelfCritique true by default")
+	}
 	if !c.MouseEnabled {
 		t.Fatal("expected MouseEnabled true by default")
 	}
@@ -707,6 +713,8 @@ func TestConfigToPersistent_RoundTrip(t *testing.T) {
 		StreamReply:               false,
 		DesignSave:                false,
 		PlanTot:                   false,
+		PlanReflection:            false,
+		BuildSelfCritique:         false,
 		AcpPreloadModelOnSetModel: false,
 		FetchWebRatePerSec:        8,
 		FetchWebRateBurst:         3,
@@ -723,8 +731,8 @@ func TestConfigToPersistent_RoundTrip(t *testing.T) {
 	if c.BaseURL != "http://test/v1" || c.Model != "m" || c.MaxConcurrent != 5 {
 		t.Fatalf("round-trip failed: %+v", c)
 	}
-	if c.FetchPreapproved || c.StreamReply || c.DesignSave || c.PlanTot || c.AcpPreloadModelOnSetModel {
-		t.Fatalf("*bool round-trip failed: fetch=%v stream=%v design=%v planTot=%v acpPreload=%v", c.FetchPreapproved, c.StreamReply, c.DesignSave, c.PlanTot, c.AcpPreloadModelOnSetModel)
+	if c.FetchPreapproved || c.StreamReply || c.DesignSave || c.PlanTot || c.PlanReflection || c.BuildSelfCritique || c.AcpPreloadModelOnSetModel {
+		t.Fatalf("*bool round-trip failed: fetch=%v stream=%v design=%v planTot=%v planReflection=%v buildSelfCritique=%v acpPreload=%v", c.FetchPreapproved, c.StreamReply, c.DesignSave, c.PlanTot, c.PlanReflection, c.BuildSelfCritique, c.AcpPreloadModelOnSetModel)
 	}
 	if c.FetchWebRatePerSec != 8 || c.FetchWebRateBurst != 3 {
 		t.Fatalf("fetch web rate round-trip: got %d/%d", c.FetchWebRatePerSec, c.FetchWebRateBurst)
@@ -1004,4 +1012,3 @@ func TestConfigToPersistent_AutoCheckFixLoop_RoundTrip(t *testing.T) {
 		t.Fatal("expected AutoCheckFixStopOnNoProgress=false after explicit false")
 	}
 }
-

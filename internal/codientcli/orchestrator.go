@@ -48,7 +48,7 @@ func (s *session) orchestratedTurn(ctx context.Context, userMsg openai.ChatCompl
 	s.capturePlanReplyForHandoff(reply, userText)
 
 	// Plan turn finished. Decide whether to auto-continue into build.
-	if !s.shouldAutoBuildAfterPlan() {
+	if !s.shouldAutoBuildAfterPlan(ctx) {
 		s.printPlanPauseHint()
 		return reply, nil
 	}
@@ -87,6 +87,18 @@ func (s *session) applyOrchestratedMode(target prompt.Mode) {
 // error so callers still have something).
 func (s *session) runOrchestratedBuildPhase(ctx context.Context, planReply string) (string, error) {
 	s.markPlanApprovedForHandoff()
+	if s.currentPlan != nil && len(s.currentPlan.Steps) > 0 {
+		if !s.printMode {
+			fmt.Fprintln(os.Stderr, "codient: implementing approved structured plan…")
+		}
+		if err := s.executeFromPlan(ctx, s.currentPlan); err != nil {
+			return planReply, err
+		}
+		if strings.TrimSpace(s.lastReply) != "" {
+			return s.lastReply, nil
+		}
+		return planReply, nil
+	}
 	s.applyOrchestratedMode(prompt.ModeBuild)
 	s.lastTurnMode = prompt.ModeBuild
 
@@ -113,6 +125,9 @@ func (s *session) identifyIntent(ctx context.Context, userText string) intent.Id
 		Tracker:             s.tokenTracker,
 		MaxCompletionTokens: s.cfg.LowReasoning.MaxCompletionTokens,
 		DisableHeuristic:    s.cfg.DisableIntentHeuristic,
+		LastAssistantReply:  s.lastReply,
+		ActivePlanSummary:   summarizePlanForIntent(s.currentPlan, s.planPhase),
+		LastResolvedMode:    string(s.lastTurnMode),
 	})
 	if err != nil {
 		if s.errorLog != nil {
@@ -214,8 +229,16 @@ func (s *session) intentStatusWriter() io.Writer {
 // The function never returns true when the supervisor produced no actionable
 // plan signal (planHandoffApplies). That matches the contract of the removed
 // manual /build path.
-func (s *session) shouldAutoBuildAfterPlan() bool {
+func (s *session) shouldAutoBuildAfterPlan(ctx context.Context) bool {
 	if !planHandoffApplies(s.currentPlan, s.lastReply) {
+		return false
+	}
+	cli := openaiclient.NewForTier(s.cfg, config.TierLow)
+	ready := evaluatePlanReadiness(ctx, cli, s.tokenTracker, s.currentPlan, s.lastReply)
+	if !ready.Ready {
+		if out := s.intentStatusWriter(); out != nil {
+			fmt.Fprintf(out, "codient: plan not ready for build — %s\n", ready.Reason)
+		}
 		return false
 	}
 	if s.orchestratorForce {

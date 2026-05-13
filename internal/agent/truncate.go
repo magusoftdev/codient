@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/openai/openai-go/v3"
 
@@ -51,7 +52,18 @@ func truncateHistory(msgs []openai.ChatCompletionMessageParamUnion, sysOffset in
 		minKeep = len(msgs)
 	}
 	for len(msgs) > minKeep && estimateSlice(msgs) > budget {
-		msgs = append(msgs[:sysOffset], msgs[sysOffset+1:]...)
+		drop := -1
+		for i := sysOffset; i < len(msgs) && len(msgs) > minKeep; i++ {
+			if isSessionSummaryMessage(msgs[i]) {
+				continue
+			}
+			drop = i
+			break
+		}
+		if drop < 0 {
+			break
+		}
+		msgs = append(msgs[:drop], msgs[drop+1:]...)
 	}
 	return msgs
 }
@@ -81,4 +93,8 @@ func replaceToolContent(m openai.ChatCompletionMessageParamUnion, content string
 		return openai.ToolMessage(content, m.OfTool.ToolCallID)
 	}
 	return m
+}
+
+func isSessionSummaryMessage(m openai.ChatCompletionMessageParamUnion) bool {
+	return m.OfAssistant != nil && strings.Contains(messageText(m), "[Session summary]")
 }

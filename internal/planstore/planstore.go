@@ -62,6 +62,7 @@ type Step struct {
 	Description string     `json:"description"`
 	PhaseGroup  int        `json:"phase_group"`
 	Status      StepStatus `json:"status"`
+	Note        string     `json:"note,omitempty"`
 }
 
 // Approval records the user's decision on a plan.
@@ -295,6 +296,9 @@ func RenderMarkdown(plan *Plan) string {
 			fmt.Fprintf(&b, "%d. %s %s\n", i+1, status, s.Title)
 			if s.Description != "" {
 				fmt.Fprintf(&b, "   %s\n", s.Description)
+			}
+			if s.Note != "" {
+				fmt.Fprintf(&b, "   Note: %s\n", s.Note)
 			}
 		}
 		b.WriteString("\n")

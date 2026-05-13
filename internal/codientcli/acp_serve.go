@@ -916,7 +916,7 @@ func (s *acpServer) runACPTurn(ctx context.Context, sess *acpChatSession, userMs
 // implementation turn with that synthetic message. Notifications surface each
 // transition so Codient Unity can render the orchestrator activity.
 func (s *acpServer) orchestrateACPTurn(ctx context.Context, sess *acpChatSession, sessionID, userText string, userMsg openai.ChatCompletionMessageParamUnion, cw *acpChunkWriter) (string, error) {
-	id := s.classifyACPIntent(ctx, userText)
+	id := s.classifyACPIntent(ctx, sess, userText)
 	sess.lastIntent = &id
 	s.emitIntentNotification(sessionID, id)
 
@@ -932,6 +932,10 @@ func (s *acpServer) orchestrateACPTurn(ctx context.Context, sess *acpChatSession
 		return reply, nil
 	}
 	if !planHandoffApplies(sess.currentPlan, sess.lastPlanReply) {
+		return reply, nil
+	}
+	ready := evaluatePlanReadiness(ctx, openaiclient.NewForTier(s.cfg, config.TierLow), s.tokenTracker, sess.currentPlan, sess.lastPlanReply)
+	if !ready.Ready {
 		return reply, nil
 	}
 
@@ -976,12 +980,25 @@ func (s *acpServer) applyACPMode(sess *acpChatSession, target prompt.Mode) {
 
 // classifyACPIntent runs the supervisor on userText using the low-tier client.
 // Errors are folded into the returned Identification (fallback path = QUERY).
-func (s *acpServer) classifyACPIntent(ctx context.Context, userText string) intent.Identification {
+func (s *acpServer) classifyACPIntent(ctx context.Context, sess *acpChatSession, userText string) intent.Identification {
 	cli := openaiclient.NewForTier(s.cfg, config.TierLow)
+	var lastReply, planSummary, lastMode string
+	if sess != nil {
+		lastReply = sess.lastPlanReply
+		var phase planstore.Phase
+		if sess.currentPlan != nil {
+			phase = sess.currentPlan.Phase
+		}
+		planSummary = summarizePlanForIntent(sess.currentPlan, phase)
+		lastMode = string(sess.mode)
+	}
 	id, err := intent.IdentifyIntent(ctx, cli, userText, intent.Options{
 		Tracker:             s.tokenTracker,
 		MaxCompletionTokens: s.cfg.LowReasoning.MaxCompletionTokens,
 		DisableHeuristic:    s.cfg.DisableIntentHeuristic,
+		LastAssistantReply:  lastReply,
+		ActivePlanSummary:   planSummary,
+		LastResolvedMode:    lastMode,
 	})
 	if err != nil && s.errorLog != nil {
 		s.errorLog.LogError("acp:intent_identify", err)
@@ -1248,6 +1265,9 @@ func (s *acpServer) newACPRunnerLocked(sess *acpChatSession) *agent.Runner {
 		}
 		r.AutoCheckMaxFixes = s.cfg.AutoCheckFixMaxRetries
 		r.AutoCheckStopOnNoProgress = s.cfg.AutoCheckFixStopOnNoProgress
+		if s.cfg.BuildSelfCritique {
+			r.PostReplyCheck = makeBuildSelfCritique()
+		}
 	}
 	sid := sess.id
 	r.OnToolBefore = func(ctx context.Context, toolCallID, name string, args json.RawMessage) {

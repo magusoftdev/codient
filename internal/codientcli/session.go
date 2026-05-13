@@ -135,8 +135,10 @@ type session struct {
 	acpRegistryMu sync.RWMutex
 
 	// Plan lifecycle state (non-nil when a structured plan is active).
-	currentPlan *planstore.Plan
-	planPhase   planstore.Phase
+	currentPlan            *planstore.Plan
+	planPhase              planstore.Phase
+	planActiveGroup        int
+	planActiveGroupLimited bool
 
 	// Checkpoint tree: last created/restored snapshot id and logical branch label ("main", fork slugs).
 	currentCheckpointID string
@@ -336,6 +338,12 @@ func (s *session) newRunner() *agent.Runner {
 		}
 		r.AutoCheckMaxFixes = s.cfg.AutoCheckFixMaxRetries
 		r.AutoCheckStopOnNoProgress = s.cfg.AutoCheckFixStopOnNoProgress
+		if s.currentPlan != nil && s.planPhase == planstore.PhaseExecuting && s.cfg.PlanReflection {
+			r.PlanReflection = makePlanReflection(s)
+		}
+		if s.cfg.BuildSelfCritique {
+			r.PostReplyCheck = makeBuildSelfCritique()
+		}
 	}
 	return r
 }
@@ -2455,6 +2463,8 @@ func (s *session) printAllConfig() {
 	fmt.Fprintf(w, "  design_save_dir:       %s\n", s.cfg.DesignSaveDir)
 	fmt.Fprintf(w, "  design_save:           %v\n", s.cfg.DesignSave)
 	fmt.Fprintf(w, "  plan_tot:              %v\n", s.cfg.PlanTot)
+	fmt.Fprintf(w, "  plan_reflection:       %v\n", s.cfg.PlanReflection)
+	fmt.Fprintf(w, "  build_self_critique:   %v\n", s.cfg.BuildSelfCritique)
 	fmt.Fprintf(w, "\n  -- Project --\n")
 	fmt.Fprintf(w, "  project_context:       %s\n", s.cfg.ProjectContext)
 	fmt.Fprintf(w, "\n  -- Tools --\n")
@@ -2594,6 +2604,10 @@ func (s *session) getConfigValue(key string) (string, bool) {
 		return strconv.FormatBool(s.cfg.DesignSave), true
 	case "plan_tot":
 		return strconv.FormatBool(s.cfg.PlanTot), true
+	case "plan_reflection":
+		return strconv.FormatBool(s.cfg.PlanReflection), true
+	case "build_self_critique":
+		return strconv.FormatBool(s.cfg.BuildSelfCritique), true
 	case "project_context":
 		return s.cfg.ProjectContext, true
 	case "ast_grep":
@@ -2857,6 +2871,18 @@ func (s *session) setConfig(key, value string) error {
 			return fmt.Errorf("plan_tot must be true or false")
 		}
 		s.cfg.PlanTot = b
+	case "plan_reflection":
+		b, err := parseBool(value)
+		if err != nil {
+			return fmt.Errorf("plan_reflection must be true or false")
+		}
+		s.cfg.PlanReflection = b
+	case "build_self_critique":
+		b, err := parseBool(value)
+		if err != nil {
+			return fmt.Errorf("build_self_critique must be true or false")
+		}
+		s.cfg.BuildSelfCritique = b
 	case "project_context":
 		s.cfg.ProjectContext = value
 	case "ast_grep":

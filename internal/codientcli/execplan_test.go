@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"codient/internal/planstore"
+	"codient/internal/tools"
 )
 
 func TestBuildPlanExecutionMessage_IncludesSteps(t *testing.T) {
@@ -118,5 +119,51 @@ func TestMarkGroupDone(t *testing.T) {
 	}
 	if plan.Steps[2].Status != planstore.StepInProgress {
 		t.Error("other group step should be unchanged")
+	}
+}
+
+func TestApplyCompleteStepUpdatesPlan(t *testing.T) {
+	plan := &planstore.Plan{
+		Workspace: t.TempDir(),
+		SessionID: "steps",
+		Phase:     planstore.PhaseExecuting,
+		Steps: []planstore.Step{
+			{ID: "s1", Title: "Step A", PhaseGroup: 0, Status: planstore.StepInProgress},
+			{ID: "s2", Title: "Step B", PhaseGroup: 1, Status: planstore.StepPending},
+		},
+	}
+	s := &session{currentPlan: plan, planPhase: planstore.PhaseExecuting, planActiveGroup: 0, planActiveGroupLimited: true}
+	out, err := s.applyCompleteStep(tools.CompleteStepRequest{StepID: "s1", Outcome: "done", Note: "verified"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "1/2 steps complete") {
+		t.Fatalf("unexpected progress summary: %s", out)
+	}
+	if plan.Steps[0].Status != planstore.StepDone || plan.Steps[0].Note != "verified" {
+		t.Fatalf("step not updated: %+v", plan.Steps[0])
+	}
+	loaded, err := planstore.Load(plan.Workspace, plan.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded == nil || loaded.Steps[0].Status != planstore.StepDone {
+		t.Fatalf("expected persisted done status, got %+v", loaded)
+	}
+}
+
+func TestApplyCompleteStepRejectsInactiveGroup(t *testing.T) {
+	plan := &planstore.Plan{
+		Workspace: t.TempDir(),
+		SessionID: "steps",
+		Phase:     planstore.PhaseExecuting,
+		Steps: []planstore.Step{
+			{ID: "s1", Title: "Step A", PhaseGroup: 0, Status: planstore.StepPending},
+			{ID: "s2", Title: "Step B", PhaseGroup: 1, Status: planstore.StepPending},
+		},
+	}
+	s := &session{currentPlan: plan, planPhase: planstore.PhaseExecuting, planActiveGroup: 0, planActiveGroupLimited: true}
+	if _, err := s.applyCompleteStep(tools.CompleteStepRequest{StepID: "s2", Outcome: "done"}); err == nil {
+		t.Fatal("expected inactive group step to be rejected")
 	}
 }

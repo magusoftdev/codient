@@ -5,6 +5,7 @@ import (
 
 	"codient/internal/codeindex"
 	"codient/internal/config"
+	"codient/internal/planstore"
 	"codient/internal/prompt"
 	"codient/internal/repomap"
 	"codient/internal/sandbox"
@@ -130,6 +131,9 @@ func buildRegistry(cfg *config.Config, mode prompt.Mode, s *session, memOpts *to
 	if s != nil && s.acpCallClient != nil {
 		registerUnityACPToolsForMode(reg, mode, s.acpCallClient)
 	}
+	if s != nil && mode == prompt.ModeBuild && s.currentPlan != nil && len(s.currentPlan.Steps) > 0 && s.planPhase != planstore.PhaseDone {
+		tools.RegisterCompleteStep(reg, s.applyCompleteStep)
+	}
 	if s != nil {
 		tools.RegisterTodoWrite(reg, s.applyTodoWrite)
 	}
@@ -154,10 +158,10 @@ func buildAgentSystemPromptEx(cfg *config.Config, reg *tools.Registry, mode prom
 		RepoMap:                repoMapText,
 		Memory:                 memory,
 		SkillsCatalog:          skillsCatalog,
-		AutoCheckBuildResolved:  effectiveAutoCheckCmd(cfg),
-		AutoCheckLintResolved:   effectiveLintCmd(cfg),
-		AutoCheckTestResolved:   effectiveTestCmd(cfg),
-		AutoCheckFixMaxRetries:  cfg.AutoCheckFixMaxRetries,
+		AutoCheckBuildResolved: effectiveAutoCheckCmd(cfg),
+		AutoCheckLintResolved:  effectiveLintCmd(cfg),
+		AutoCheckTestResolved:  effectiveTestCmd(cfg),
+		AutoCheckFixMaxRetries: cfg.AutoCheckFixMaxRetries,
 		UnityACPEditor:         unityACPEditor,
 	})
 }

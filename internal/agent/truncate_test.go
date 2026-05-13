@@ -64,6 +64,31 @@ func TestTruncateHistory_DropsOldMessages(t *testing.T) {
 	}
 }
 
+func TestTruncateHistory_PreservesSessionSummary(t *testing.T) {
+	long := strings.Repeat("x", 8000)
+	msgs := []openai.ChatCompletionMessageParamUnion{
+		openai.SystemMessage("sys"),
+		openai.AssistantMessage("[Session summary]\n\nOriginal goal and plan state."),
+		openai.UserMessage(long),
+		openai.AssistantMessage(long),
+		openai.UserMessage(long),
+		openai.AssistantMessage(long),
+		openai.UserMessage("latest"),
+		openai.AssistantMessage("done"),
+	}
+	out := truncateHistory(msgs, 1, 300, 50, 0)
+	found := false
+	for _, m := range out {
+		if strings.Contains(messageText(m), "[Session summary]") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatal("session summary should survive emergency truncation")
+	}
+}
+
 func TestTruncateHistory_FitsWithinBudget(t *testing.T) {
 	msgs := []openai.ChatCompletionMessageParamUnion{
 		openai.SystemMessage("sys"),

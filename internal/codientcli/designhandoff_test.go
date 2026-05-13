@@ -112,8 +112,8 @@ func TestStripRelaunchLines(t *testing.T) {
 			mustKeep: []string{"Step 1", "Step 2"},
 		},
 		{
-			name: "switch to build mode prose",
-			input: "Plan summary.\n\nNow switch to build mode and continue.\n\nVerification: tests pass.\n",
+			name:     "switch to build mode prose",
+			input:    "Plan summary.\n\nNow switch to build mode and continue.\n\nVerification: tests pass.\n",
 			mustDrop: []string{"switch to build mode"},
 			mustKeep: []string{"Plan summary", "Verification"},
 		},
@@ -153,5 +153,40 @@ func TestPlanHandoffApplies(t *testing.T) {
 	}
 	if planHandoffApplies(&planstore.Plan{}, "") {
 		t.Error("expected no handoff when plan has no steps")
+	}
+}
+
+func TestDeterministicPlanReadiness(t *testing.T) {
+	readyPlan := &planstore.Plan{
+		Summary: "Add feature.",
+		Steps: []planstore.Step{
+			{ID: "step-1", Title: "Update command"},
+		},
+		Verification: []string{"go test ./..."},
+	}
+	if got := deterministicPlanReadiness(readyPlan, "## Ready to implement"); !got.Ready {
+		t.Fatalf("expected ready plan, got %+v", got)
+	}
+
+	blocked := deterministicPlanReadiness(readyPlan, "## Question\n\nA or B?\n\n**Waiting for your answer**")
+	if blocked.Ready {
+		t.Fatalf("expected blocking question to reject readiness")
+	}
+
+	fallback := &planstore.Plan{
+		Steps: []planstore.Step{{
+			ID:          "step-1",
+			Title:       "Implement plan",
+			Description: "Execute the full plan as described in the design document.",
+		}},
+		Verification: []string{"go test ./..."},
+	}
+	if got := deterministicPlanReadiness(fallback, "## Ready to implement"); got.Ready {
+		t.Fatalf("expected fallback-only plan to reject readiness")
+	}
+
+	noVerification := &planstore.Plan{Steps: []planstore.Step{{ID: "step-1", Title: "Do work"}}}
+	if got := deterministicPlanReadiness(noVerification, "## Ready to implement"); got.Ready {
+		t.Fatalf("expected missing verification to reject readiness")
 	}
 }

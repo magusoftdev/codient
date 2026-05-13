@@ -430,6 +430,69 @@ func TestIdentifyIntent_AppendsNoThinkDirective(t *testing.T) {
 	}
 }
 
+func TestIdentifyIntent_IncludesConversationContext(t *testing.T) {
+	stub := newStubServer(t, []stubReply{{
+		content:      `{"category":"SIMPLE_FIX","reasoning":"follow-up"}`,
+		finishReason: "stop",
+	}})
+	cli := testClient(t, stub.srv)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := IdentifyIntent(ctx, cli, "and fix the other file", Options{
+		DisableHeuristic:   true,
+		LastAssistantReply: "I changed foo.go and noted bar.go still needs the same edit.",
+		ActivePlanSummary:  "phase=executing; steps=1/2 done; next=step-2:Update bar.go",
+		LastResolvedMode:   "build",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stub.prompts) == 0 {
+		t.Fatal("server received no user prompts")
+	}
+	got := stub.prompts[0]
+	for _, want := range []string{
+		"and fix the other file",
+		"Conversation context for classification only",
+		"Previous assistant reply:",
+		"Active plan:",
+		"Last resolved mode: build",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("supervisor prompt missing %q:\n%s", want, got)
+		}
+	}
+	if !strings.HasSuffix(got, "/no_think") {
+		t.Fatalf("user message should end with /no_think, got %q", got)
+	}
+}
+
+func TestIdentifyIntent_ContextDependentFollowupBypassesHeuristic(t *testing.T) {
+	stub := newStubServer(t, []stubReply{{
+		content:      `{"category":"COMPLEX_TASK","reasoning":"continue plan"}`,
+		finishReason: "stop",
+	}})
+	cli := testClient(t, stub.srv)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	id, err := IdentifyIntent(ctx, cli, "go", Options{
+		LastAssistantReply: "## Ready to implement\n\n1. Edit two files.",
+		ActivePlanSummary:  "phase=draft; steps=0/2 done",
+		LastResolvedMode:   "plan",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := stub.requests.Load(); got != 1 {
+		t.Fatalf("context-dependent follow-up should consult supervisor, got %d requests", got)
+	}
+	if id.Category != CategoryComplexTask || id.Source != SourceSupervisor {
+		t.Fatalf("unexpected identification: %+v", id)
+	}
+}
+
 // TestIdentifyIntent_SalvagesFromReasoningContent: the server stuffs the JSON
 // answer into a `reasoning_content` field (mimicking LM Studio / vLLM with
 // thinking models). The supervisor must still recover the classification

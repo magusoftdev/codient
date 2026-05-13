@@ -25,6 +25,8 @@ func (s *session) executeFromPlan(ctx context.Context, plan *planstore.Plan) err
 	}
 
 	s.transitionToInternalMode(prompt.ModeBuild)
+	s.lastTurnMode = prompt.ModeBuild
+	s.installRegistry(buildRegistry(s.cfg, prompt.ModeBuild, s, s.memOpts))
 	s.history = nil
 
 	groups := planstore.StepsByPhaseGroup(plan)
@@ -38,6 +40,8 @@ func (s *session) executeFromPlan(ctx context.Context, plan *planstore.Plan) err
 		}
 
 		markGroupInProgress(plan, gi)
+		s.planActiveGroup = gi
+		s.planActiveGroupLimited = true
 		if err := planstore.Save(plan); err != nil {
 			fmt.Fprintf(os.Stderr, "codient: plan save: %v\n", err)
 		}
@@ -49,12 +53,26 @@ func (s *session) executeFromPlan(ctx context.Context, plan *planstore.Plan) err
 		s.turn++
 		reply, err := s.executeTurn(ctx, runner, openai.UserMessage(userMsg))
 		if err != nil {
+			s.planActiveGroupLimited = false
 			return err
 		}
 		s.pushUndoIfChanged(preModified, preUntracked, histLen, userMsg)
 		s.lastReply = assistout.PrepareAssistantText(reply, false)
 
-		markGroupDone(plan, gi)
+		s.planActiveGroupLimited = false
+		if plan.Phase != planstore.PhaseExecuting {
+			if err := planstore.Save(plan); err != nil {
+				fmt.Fprintf(os.Stderr, "codient: plan save: %v\n", err)
+			}
+			return nil
+		}
+		if !phaseGroupComplete(plan, gi) {
+			if err := planstore.Save(plan); err != nil {
+				fmt.Fprintf(os.Stderr, "codient: plan save: %v\n", err)
+			}
+			fmt.Fprintf(os.Stderr, "codient: phase group %d still has incomplete plan steps — use complete_step before continuing\n", gi+1)
+			return nil
+		}
 		if err := planstore.Save(plan); err != nil {
 			fmt.Fprintf(os.Stderr, "codient: plan save: %v\n", err)
 		}
@@ -105,6 +123,8 @@ func (s *session) executeAllSteps(ctx context.Context, plan *planstore.Plan) err
 			plan.Steps[i].Status = planstore.StepInProgress
 		}
 	}
+	s.planActiveGroup = 0
+	s.planActiveGroupLimited = false
 	if err := planstore.Save(plan); err != nil {
 		fmt.Fprintf(os.Stderr, "codient: plan save: %v\n", err)
 	}
@@ -116,15 +136,25 @@ func (s *session) executeAllSteps(ctx context.Context, plan *planstore.Plan) err
 	s.turn++
 	reply, err := s.executeTurn(ctx, runner, openai.UserMessage(userMsg))
 	if err != nil {
+		s.planActiveGroupLimited = false
 		return err
 	}
 	s.pushUndoIfChanged(preModified, preUntracked, histLen, userMsg)
 	s.lastReply = assistout.PrepareAssistantText(reply, false)
 
-	for i := range plan.Steps {
-		if plan.Steps[i].Status == planstore.StepInProgress {
-			plan.Steps[i].Status = planstore.StepDone
+	s.planActiveGroupLimited = false
+	if plan.Phase != planstore.PhaseExecuting {
+		if err := planstore.Save(plan); err != nil {
+			fmt.Fprintf(os.Stderr, "codient: plan save: %v\n", err)
 		}
+		return nil
+	}
+	if !planstore.AllStepsDone(plan) {
+		if err := planstore.Save(plan); err != nil {
+			fmt.Fprintf(os.Stderr, "codient: plan save: %v\n", err)
+		}
+		fmt.Fprintf(os.Stderr, "codient: plan still has incomplete steps — use complete_step before finishing\n")
+		return nil
 	}
 	if err := planstore.Save(plan); err != nil {
 		fmt.Fprintf(os.Stderr, "codient: plan save: %v\n", err)
@@ -224,7 +254,8 @@ func buildPhaseGroupMessage(plan *planstore.Plan, groupIdx int, toolNames []stri
 	fmt.Fprintf(&b, "Implement phase group %d of the approved plan. Do not ask for confirmation — start implementing now.\n\n", groupIdx+1)
 
 	b.WriteString("Before implementing each step, verify its premise using tools. ")
-	b.WriteString("If a step's premise is wrong, skip it and note why.\n\n")
+	b.WriteString("If a step's premise is wrong, skip it and note why. ")
+	b.WriteString("After each step is done or intentionally skipped, call complete_step with that step id; the host will not advance this phase group until every active step is completed or skipped.\n\n")
 
 	if plan.Summary != "" {
 		fmt.Fprintf(&b, "## Plan summary\n\n%s\n\n", plan.Summary)
@@ -277,7 +308,8 @@ func buildPlanExecutionMessage(plan *planstore.Plan, toolNames []string) string 
 	b.WriteString("The plan was produced by a language model in a read-only session. ")
 	b.WriteString("Before implementing each step, verify its premise using tools ")
 	b.WriteString("(e.g. read the files it references, run existing tests). ")
-	b.WriteString("If a step's premise is wrong, skip that step and briefly note why.\n\n")
+	b.WriteString("If a step's premise is wrong, skip that step and briefly note why. ")
+	b.WriteString("After each step is done or intentionally skipped, call complete_step with that step id; the host will not mark the plan complete until every step is completed or skipped.\n\n")
 
 	if plan.Summary != "" {
 		fmt.Fprintf(&b, "## Summary\n\n%s\n\n", plan.Summary)

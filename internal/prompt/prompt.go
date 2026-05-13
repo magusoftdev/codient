@@ -456,6 +456,9 @@ func sectionPerToolNotes(p Params) string {
 	if _, ok := set["delegate_task"]; ok {
 		b.WriteString("- **delegate_task**: Spawn a sub-agent with its own fresh context. The sub-agent runs to completion and returns its reply as the tool result. Multiple concurrent delegate_task calls run in parallel. See the **Task delegation** section above for guidelines.\n")
 	}
+	if _, ok := set["complete_step"]; ok {
+		b.WriteString("- **complete_step**: During structured plan execution, call this after each listed plan step is done or intentionally skipped. The host uses it as the source of truth for plan progress.\n")
+	}
 	if _, ok := set["unity_query_scene_hierarchy"]; ok {
 		b.WriteString("- **unity_query_scene_hierarchy**: Returns the hierarchy for the active scene or optional **scenePath** (must be loaded). Optional **rootGameObjectEntityId** / legacy **rootGameObjectInstanceId** and **maxDepth**.\n")
 	}

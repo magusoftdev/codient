@@ -155,7 +155,7 @@ func TestProfileSwapRebuilds(t *testing.T) {
 		Model:         "model-a",
 		Profiles: map[string]config.ProfileOverride{
 			"alt": {
-				Model:      strPtr("model-b"),
+				Model:        strPtr("model-b"),
 				AutoCheckCmd: strPtr("make check"),
 			},
 		},
@@ -207,13 +207,15 @@ func TestProfileSaveInvalidName(t *testing.T) {
 
 func TestBuildProfileDelta(t *testing.T) {
 	cfg := &config.Config{
-		BaseURL:       "http://custom/v1",
-		APIKey:        "custom-key",
-		Model:         "my-model",
-		SandboxMode:   "off",
-		GitAutoCommit: true,
-		PlanTot:       false,
-		Plain:         true,
+		BaseURL:           "http://custom/v1",
+		APIKey:            "custom-key",
+		Model:             "my-model",
+		SandboxMode:       "off",
+		GitAutoCommit:     true,
+		PlanTot:           false,
+		PlanReflection:    false,
+		BuildSelfCritique: false,
+		Plain:             true,
 	}
 	delta := buildProfileDelta(cfg)
 
@@ -237,6 +239,12 @@ func TestBuildProfileDelta(t *testing.T) {
 	// PlanTot == false differs from default true, should be in delta.
 	if delta.PlanTot == nil || *delta.PlanTot != false {
 		t.Fatalf("plan_tot=false should be in delta")
+	}
+	if delta.PlanReflection == nil || *delta.PlanReflection != false {
+		t.Fatalf("plan_reflection=false should be in delta")
+	}
+	if delta.BuildSelfCritique == nil || *delta.BuildSelfCritique != false {
+		t.Fatalf("build_self_critique=false should be in delta")
 	}
 	if delta.Plain == nil || *delta.Plain != true {
 		t.Fatalf("plain=true should be in delta")

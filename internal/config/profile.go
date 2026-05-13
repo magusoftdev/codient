@@ -176,6 +176,12 @@ func mergeProfileIntoPersistent(pc *PersistentConfig, prof *ProfileOverride) *Pe
 	if prof.PlanTot != nil {
 		out.PlanTot = prof.PlanTot
 	}
+	if prof.PlanReflection != nil {
+		out.PlanReflection = prof.PlanReflection
+	}
+	if prof.BuildSelfCritique != nil {
+		out.BuildSelfCritique = prof.BuildSelfCritique
+	}
 	if prof.CostPerMTok != nil {
 		out.CostPerMTok = prof.CostPerMTok
 	}
@@ -388,6 +394,14 @@ func buildConfigFromPersistent(pc *PersistentConfig, selectedProfile string) (*C
 	if pc.PlanTot != nil {
 		planTot = *pc.PlanTot
 	}
+	planReflection := true
+	if pc.PlanReflection != nil {
+		planReflection = *pc.PlanReflection
+	}
+	buildSelfCritique := true
+	if pc.BuildSelfCritique != nil {
+		buildSelfCritique = *pc.BuildSelfCritique
+	}
 	mouseEnabled := true
 	if pc.MouseEnabled != nil {
 		mouseEnabled = *pc.MouseEnabled
@@ -417,59 +431,61 @@ func buildConfigFromPersistent(pc *PersistentConfig, selectedProfile string) (*C
 	}
 
 	c := &Config{
-		BaseURL:                   baseURL,
-		APIKey:                    apiKey,
-		Model:                     model,
-		MaxConcurrent:             maxConcurrent,
-		Workspace:                 ws,
-		HooksEnabled:              pc.HooksEnabled,
-		DelegateGitWorktrees:      pc.DelegateGitWorktrees,
-		DelegateSandboxProfiles:   delegateProfiles,
-		DelegateSandboxDefault:    delegateDefault,
-		ExecAllowlist:             execAllowlist,
-		ExecEnvPassthrough:        execEnvPassthrough,
-		ExecTimeoutSeconds:        execTimeout,
-		ExecMaxOutputBytes:        execMaxOut,
-		SandboxMode:               sandboxMode,
-		SandboxReadOnlyPaths:      sandboxRO,
-		SandboxContainerImage:     sandboxImg,
-		ContextWindowTokens:       pc.ContextWindow,
-		ContextReserveTokens:      contextReserve,
-		MaxLLMRetries:             maxLLMRetries,
-		StreamWithTools:           pc.StreamWithTools,
-		FetchAllowHosts:           fetchHosts,
-		FetchPreapproved:          fetchPreapproved,
-		FetchMaxBytes:             fetchMax,
-		FetchTimeoutSec:           fetchTimeout,
-		MaxCompletionSeconds:      maxCompletion,
-		SearchMaxResults:          searchMaxResults,
-		FetchWebRatePerSec:        fetchWebRate,
-		FetchWebRateBurst:         fetchWebBurst,
-		AutoCompactPct:            autoCompactPct,
+		BaseURL:                      baseURL,
+		APIKey:                       apiKey,
+		Model:                        model,
+		MaxConcurrent:                maxConcurrent,
+		Workspace:                    ws,
+		HooksEnabled:                 pc.HooksEnabled,
+		DelegateGitWorktrees:         pc.DelegateGitWorktrees,
+		DelegateSandboxProfiles:      delegateProfiles,
+		DelegateSandboxDefault:       delegateDefault,
+		ExecAllowlist:                execAllowlist,
+		ExecEnvPassthrough:           execEnvPassthrough,
+		ExecTimeoutSeconds:           execTimeout,
+		ExecMaxOutputBytes:           execMaxOut,
+		SandboxMode:                  sandboxMode,
+		SandboxReadOnlyPaths:         sandboxRO,
+		SandboxContainerImage:        sandboxImg,
+		ContextWindowTokens:          pc.ContextWindow,
+		ContextReserveTokens:         contextReserve,
+		MaxLLMRetries:                maxLLMRetries,
+		StreamWithTools:              pc.StreamWithTools,
+		FetchAllowHosts:              fetchHosts,
+		FetchPreapproved:             fetchPreapproved,
+		FetchMaxBytes:                fetchMax,
+		FetchTimeoutSec:              fetchTimeout,
+		MaxCompletionSeconds:         maxCompletion,
+		SearchMaxResults:             searchMaxResults,
+		FetchWebRatePerSec:           fetchWebRate,
+		FetchWebRateBurst:            fetchWebBurst,
+		AutoCompactPct:               autoCompactPct,
 		AutoCheckCmd:                 strings.TrimSpace(pc.AutoCheckCmd),
-		LintCmd:                     strings.TrimSpace(pc.LintCmd),
-		TestCmd:                     strings.TrimSpace(pc.TestCmd),
-		AutoCheckFixMaxRetries:      pc.AutoCheckFixMaxRetries,
+		LintCmd:                      strings.TrimSpace(pc.LintCmd),
+		TestCmd:                      strings.TrimSpace(pc.TestCmd),
+		AutoCheckFixMaxRetries:       pc.AutoCheckFixMaxRetries,
 		AutoCheckFixStopOnNoProgress: pc.AutoCheckFixStopOnNoProgress == nil || *pc.AutoCheckFixStopOnNoProgress,
-		LegacyMode:                  strings.TrimSpace(pc.Mode),
-		Plain:                     pc.Plain,
-		Quiet:                     pc.Quiet,
-		Verbose:                   pc.Verbose,
-		MouseEnabled:              mouseEnabled,
-		LogPath:                   strings.TrimSpace(pc.LogPath),
-		StreamReply:               streamReply,
-		Progress:                  pc.Progress,
-		AcpPreloadModelOnSetModel: acpPreloadModelOnSetModel,
-		DesignSaveDir:             strings.TrimSpace(pc.DesignSaveDir),
-		DesignSave:                designSave,
-		PlanTot:                   planTot,
-		ProjectContext:            strings.TrimSpace(pc.ProjectContext),
-		AstGrep:                   strings.TrimSpace(pc.AstGrep),
-		EmbeddingModel:            strings.TrimSpace(pc.EmbeddingModel),
-		EmbeddingBaseURL:          strings.TrimRight(strings.TrimSpace(pc.EmbeddingBaseURL), "/"),
-		EmbeddingAPIKey:           strings.TrimSpace(pc.EmbeddingAPIKey),
-		RepoMapTokens:             pc.RepoMapTokens,
-		UpdateNotify:              updateNotify,
+		LegacyMode:                   strings.TrimSpace(pc.Mode),
+		Plain:                        pc.Plain,
+		Quiet:                        pc.Quiet,
+		Verbose:                      pc.Verbose,
+		MouseEnabled:                 mouseEnabled,
+		LogPath:                      strings.TrimSpace(pc.LogPath),
+		StreamReply:                  streamReply,
+		Progress:                     pc.Progress,
+		AcpPreloadModelOnSetModel:    acpPreloadModelOnSetModel,
+		DesignSaveDir:                strings.TrimSpace(pc.DesignSaveDir),
+		DesignSave:                   designSave,
+		PlanTot:                      planTot,
+		PlanReflection:               planReflection,
+		BuildSelfCritique:            buildSelfCritique,
+		ProjectContext:               strings.TrimSpace(pc.ProjectContext),
+		AstGrep:                      strings.TrimSpace(pc.AstGrep),
+		EmbeddingModel:               strings.TrimSpace(pc.EmbeddingModel),
+		EmbeddingBaseURL:             strings.TrimRight(strings.TrimSpace(pc.EmbeddingBaseURL), "/"),
+		EmbeddingAPIKey:              strings.TrimSpace(pc.EmbeddingAPIKey),
+		RepoMapTokens:                pc.RepoMapTokens,
+		UpdateNotify:                 updateNotify,
 		LowReasoning: ReasoningTier{
 			BaseURL:             strings.TrimSpace(pc.LowReasoningBaseURL),
 			APIKey:              strings.TrimSpace(pc.LowReasoningAPIKey),
@@ -483,13 +499,13 @@ func buildConfigFromPersistent(pc *PersistentConfig, selectedProfile string) (*C
 		},
 		DisableIntentHeuristic: pc.DisableIntentHeuristic,
 		MCPServers:             pc.MCPServers,
-		LSPServers:           pc.LSPServers,
-		GitProtectedBranches: protectedBranches,
-		GitAutoCommit:        gitAutoCommit,
-		CheckpointAuto:       checkpointAuto,
-		CostPerMTok:          pc.CostPerMTok,
-		ActiveProfile:        selectedProfile,
-		Profiles:             pc.Profiles,
+		LSPServers:             pc.LSPServers,
+		GitProtectedBranches:   protectedBranches,
+		GitAutoCommit:          gitAutoCommit,
+		CheckpointAuto:         checkpointAuto,
+		CostPerMTok:            pc.CostPerMTok,
+		ActiveProfile:          selectedProfile,
+		Profiles:               pc.Profiles,
 	}
 	if err := ValidateSandbox(c); err != nil {
 		return nil, err

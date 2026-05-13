@@ -69,9 +69,30 @@ func ToolIsMutating(name string) bool {
 
 // PostReplyCheckInfo is passed to PostReplyCheck after a text-only model reply.
 type PostReplyCheckInfo struct {
-	Reply     string
+	Reply              string
+	User               string
+	TurnTools          []string // tool names invoked this user turn, in order (may repeat)
+	Mutated            bool
+	AutoCheckExhausted bool
+}
+
+// ToolBatchResult is a compact per-tool result for reflection callbacks.
+type ToolBatchResult struct {
+	Name    string
+	Content string
+}
+
+// PlanReflectionInfo is passed after a successful mutating tool batch.
+type PlanReflectionInfo struct {
 	User      string
-	TurnTools []string // tool names invoked this user turn, in order (may repeat)
+	TurnTools []string
+	Results   []ToolBatchResult
+}
+
+// PlanReflectionOutcome can inject a follow-up user message into the loop.
+type PlanReflectionOutcome struct {
+	Inject   string
+	Progress string
 }
 
 // Runner executes multi-step tool use with bounded LLM concurrency (via the ChatClient implementation).
@@ -94,6 +115,10 @@ type Runner struct {
 	// a user message and the loop continues instead of returning. The field is nilled
 	// after firing once to prevent infinite loops.
 	PostReplyCheck func(ctx context.Context, info PostReplyCheckInfo) string
+	// PlanReflection, when non-nil, is called after successful mutating tool
+	// batches. If Inject is non-empty, it is appended as a user message before
+	// the next LLM call.
+	PlanReflection func(ctx context.Context, info PlanReflectionInfo) PlanReflectionOutcome
 	// ProgressPlain suppresses ANSI styling on progress lines (e.g. -plain).
 	ProgressPlain bool
 	// ProgressMode is build|ask|plan; colors the thinking/intent bullet to match the REPL mode.
@@ -131,6 +156,7 @@ type Runner struct {
 	autoCheckAttempts  int
 	autoCheckLastSig   string
 	autoCheckExhausted bool
+	turnMutated        bool
 }
 
 // Run carries out one user turn (no prior conversation history).
@@ -169,6 +195,7 @@ func (r *Runner) runConversationBody(ctx context.Context, system string, history
 	r.autoCheckAttempts = 0
 	r.autoCheckLastSig = ""
 	r.autoCheckExhausted = false
+	r.turnMutated = false
 	msgs := make([]openai.ChatCompletionMessageParamUnion, 0, len(history)+16)
 	sys := strings.TrimSpace(system)
 	sysOffset := 0
@@ -348,12 +375,22 @@ func (r *Runner) runConversationBody(ctx context.Context, system string, history
 					for i, res := range results {
 						acIn[i] = autoCheckInput{name: res.name, content: res.content}
 					}
+					if hasSuccessfulMutation(acIn) {
+						r.turnMutated = true
+					}
 					inject, prog := r.autoCheckAfterMutations(ctx, acIn)
 					if inject != "" {
 						fmt.Fprintf(&resultBuf, "\n%s\n", inject)
 					}
 					if prog != "" {
 						r.emitProgress(&TranscriptEvent{Kind: TranscriptAutoCheck, Text: prog})
+					}
+					reflInject, reflProg := r.reflectAfterMutations(ctx, acIn, userText, turnTools)
+					if reflInject != "" {
+						fmt.Fprintf(&resultBuf, "\n%s\n", reflInject)
+					}
+					if reflProg != "" {
+						r.emitProgress(&TranscriptEvent{Kind: TranscriptStatus, Text: reflProg})
 					}
 					msgs = append(msgs, openai.UserMessage(resultBuf.String()))
 					for _, res := range results {
@@ -414,9 +451,11 @@ func (r *Runner) runConversationBody(ctx context.Context, system string, history
 				}
 				if r.PostReplyCheck != nil {
 					if inject := r.PostReplyCheck(ctx, PostReplyCheckInfo{
-						Reply:     content,
-						User:      userText,
-						TurnTools: turnTools,
+						Reply:              content,
+						User:               userText,
+						TurnTools:          turnTools,
+						Mutated:            r.turnMutated,
+						AutoCheckExhausted: r.autoCheckExhausted,
 					}); inject != "" {
 						r.PostReplyCheck = nil
 						msgs = append(msgs, openai.AssistantMessage(content))
@@ -564,12 +603,22 @@ func (r *Runner) runConversationBody(ctx context.Context, system string, history
 		for i, res := range results {
 			acIn[i] = autoCheckInput{name: res.name, content: res.content}
 		}
+		if hasSuccessfulMutation(acIn) {
+			r.turnMutated = true
+		}
 		inject, prog := r.autoCheckAfterMutations(ctx, acIn)
 		if inject != "" {
 			msgs = append(msgs, openai.UserMessage(inject))
 		}
 		if prog != "" {
 			r.emitProgress(&TranscriptEvent{Kind: TranscriptAutoCheck, Text: prog})
+		}
+		reflInject, reflProg := r.reflectAfterMutations(ctx, acIn, userText, turnTools)
+		if reflInject != "" {
+			msgs = append(msgs, openai.UserMessage(reflInject))
+		}
+		if reflProg != "" {
+			r.emitProgress(&TranscriptEvent{Kind: TranscriptStatus, Text: reflProg})
 		}
 		for _, res := range results {
 			r.emitProgress(&TranscriptEvent{
@@ -673,14 +722,7 @@ func (r *Runner) autoCheckAfterMutations(ctx context.Context, results []autoChec
 	if r.AutoCheck == nil {
 		return "", ""
 	}
-	hasMutation := false
-	for _, res := range results {
-		if _, ok := mutatingTools[res.name]; ok && !strings.HasPrefix(res.content, "error: ") {
-			hasMutation = true
-			break
-		}
-	}
-	if !hasMutation {
+	if !hasSuccessfulMutation(results) {
 		return "", ""
 	}
 	out := r.AutoCheck(ctx)
@@ -728,6 +770,31 @@ func (r *Runner) autoCheckAfterMutations(ctx context.Context, results []autoChec
 	r.autoCheckLastSig = out.Signature
 	decorated := fmt.Sprintf("%s\n\n[auto-check fix attempt %d/%d]", out.Inject, r.autoCheckAttempts, maxFixes)
 	return decorated, out.Progress
+}
+
+func (r *Runner) reflectAfterMutations(ctx context.Context, results []autoCheckInput, user string, turnTools []string) (inject string, progress string) {
+	if r.PlanReflection == nil || !hasSuccessfulMutation(results) {
+		return "", ""
+	}
+	out := make([]ToolBatchResult, 0, len(results))
+	for _, res := range results {
+		out = append(out, ToolBatchResult{Name: res.name, Content: res.content})
+	}
+	refl := r.PlanReflection(ctx, PlanReflectionInfo{
+		User:      user,
+		TurnTools: append([]string(nil), turnTools...),
+		Results:   out,
+	})
+	return refl.Inject, refl.Progress
+}
+
+func hasSuccessfulMutation(results []autoCheckInput) bool {
+	for _, res := range results {
+		if _, ok := mutatingTools[res.name]; ok && !strings.HasPrefix(res.content, "error: ") {
+			return true
+		}
+	}
+	return false
 }
 
 func usageFromCompletionUsage(u openai.CompletionUsage) tokentracker.Usage {

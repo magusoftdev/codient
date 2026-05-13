@@ -46,8 +46,9 @@ func (s *session) compactHistory(ctx context.Context) error {
 	fmt.Fprintf(os.Stderr, "codient: compacting history (~%d tokens)...\n", beforeTokens)
 
 	systemMsg := "You are a helpful assistant. Summarize the following conversation concisely in 2-3 paragraphs. " +
-		"Preserve: key decisions made, specific file paths and function names mentioned, action items, " +
-		"and any constraints or requirements discussed. Do not add new information."
+		"Preserve: the original user goal, key decisions made, specific file paths and function names mentioned, action items, " +
+		"active assumptions or constraints, completed plan steps, skipped steps and reasons, and verification/build/test state. " +
+		"Do not add new information."
 
 	msgs := []openai.ChatCompletionMessageParamUnion{
 		openai.SystemMessage(systemMsg),

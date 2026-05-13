@@ -167,6 +167,12 @@ func printProfileOverrides(w *os.File, p *config.ProfileOverride) {
 	if p.PlanTot != nil {
 		fmt.Fprintf(w, "    plan_tot:              %v\n", *p.PlanTot)
 	}
+	if p.PlanReflection != nil {
+		fmt.Fprintf(w, "    plan_reflection:       %v\n", *p.PlanReflection)
+	}
+	if p.BuildSelfCritique != nil {
+		fmt.Fprintf(w, "    build_self_critique:   %v\n", *p.BuildSelfCritique)
+	}
 	if p.ContextWindow != nil {
 		fmt.Fprintf(w, "    context_window:        %d\n", *p.ContextWindow)
 	}
@@ -254,6 +260,8 @@ func diffProfileOverrides(cfg *config.Config, p *config.ProfileOverride) []profi
 	}
 	addBool("git_auto_commit", cfg.GitAutoCommit, p.GitAutoCommit)
 	addBool("plan_tot", cfg.PlanTot, p.PlanTot)
+	addBool("plan_reflection", cfg.PlanReflection, p.PlanReflection)
+	addBool("build_self_critique", cfg.BuildSelfCritique, p.BuildSelfCritique)
 	addInt("context_window", cfg.ContextWindowTokens, p.ContextWindow)
 	addBool("plain", cfg.Plain, p.Plain)
 	addBool("verbose", cfg.Verbose, p.Verbose)
@@ -399,6 +407,8 @@ func buildProfileDelta(cfg *config.Config) config.ProfileOverride {
 	setStr(&p.SandboxMode, cfg.SandboxMode, "off")
 	setBool(&p.GitAutoCommit, cfg.GitAutoCommit, true)
 	setBool(&p.PlanTot, cfg.PlanTot, true)
+	setBool(&p.PlanReflection, cfg.PlanReflection, true)
+	setBool(&p.BuildSelfCritique, cfg.BuildSelfCritique, true)
 	setInt(&p.ContextWindow, cfg.ContextWindowTokens, 0)
 	setBool(&p.Plain, cfg.Plain, false)
 	setBool(&p.Quiet, cfg.Quiet, false)

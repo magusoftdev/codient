@@ -1,6 +1,7 @@
 package codientcli
 
 import (
+	"context"
 	"testing"
 
 	"codient/internal/intent"
@@ -55,7 +56,7 @@ func TestPromptUserForBuildApproval_NoScannerReturnsFalse(t *testing.T) {
 
 func TestShouldAutoBuildAfterPlan_NoPlanFalse(t *testing.T) {
 	s := &session{}
-	if s.shouldAutoBuildAfterPlan() {
+	if s.shouldAutoBuildAfterPlan(context.Background()) {
 		t.Fatal("expected false when no plan handoff applies")
 	}
 }
