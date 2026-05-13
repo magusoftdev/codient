@@ -197,8 +197,8 @@ func TestMakeAutoCheckSequence_FailFastOnBuild(t *testing.T) {
 		okCmd = "exit 0"
 	}
 	seq := makeAutoCheckSequence(dir, []autoCheckStep{
-		{"build", failCmd},
-		{"lint", okCmd},
+		{label: "build", cmdLine: failCmd},
+		{label: "lint", cmdLine: okCmd},
 	}, 5*time.Second, 4096, nil)
 	out := seq(context.Background())
 	if out.Inject == "" {
@@ -221,8 +221,8 @@ func TestMakeAutoCheckSequence_TwoStepsPass(t *testing.T) {
 		okCmd = "exit 0"
 	}
 	seq := makeAutoCheckSequence(dir, []autoCheckStep{
-		{"build", okCmd},
-		{"lint", okCmd},
+		{label: "build", cmdLine: okCmd},
+		{label: "lint", cmdLine: okCmd},
 	}, 5*time.Second, 4096, nil)
 	out := seq(context.Background())
 	if out.Inject != "" {
@@ -295,7 +295,7 @@ func TestDetectAutoCheckCmd_Unity_SingleSln(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "Game.sln"), []byte("Microsoft Visual Studio Solution File\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	want := `dotnet build "Game.sln" -v minimal`
+	want := `dotnet build Game.sln -v minimal`
 	if got := detectAutoCheckCmd(root); got != want {
 		t.Fatalf("got %q want %q", got, want)
 	}
@@ -318,7 +318,7 @@ func TestDetectAutoCheckCmd_Unity_MultiSlnLexFirst(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "Alpha.sln"), []byte(""), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	want := `dotnet build "Alpha.sln" -v minimal`
+	want := `dotnet build Alpha.sln -v minimal`
 	if got := detectAutoCheckCmd(root); got != want {
 		t.Fatalf("got %q want %q", got, want)
 	}
@@ -342,8 +342,33 @@ func TestDetectAutoCheckCmd_Unity_MultiSlnPrefersDirBase(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "MyGame.sln"), []byte(""), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	want := `dotnet build "MyGame.sln" -v minimal`
+	want := `dotnet build MyGame.sln -v minimal`
 	if got := detectAutoCheckCmd(root); got != want {
 		t.Fatalf("got %q want %q", got, want)
+	}
+}
+
+func TestDetectAutoCheckCmd_Unity_QuotesSlnWithSpaces(t *testing.T) {
+	parent := t.TempDir()
+	root := filepath.Join(parent, "My Game")
+	if err := os.MkdirAll(filepath.Join(root, "ProjectSettings"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "ProjectSettings", "ProjectVersion.txt"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "Assets"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "My Game.sln"), []byte(""), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	want := `dotnet build "My Game.sln" -v minimal`
+	if got := detectAutoCheckCmd(root); got != want {
+		t.Fatalf("got %q want %q", got, want)
+	}
+	argv := detectUnityAutoCheckArgv(root)
+	if len(argv) != 5 || argv[2] != "My Game.sln" {
+		t.Fatalf("argv should preserve solution filename as one arg, got %#v", argv)
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestEcho(t *testing.T) {
@@ -17,6 +18,55 @@ func TestEcho(t *testing.T) {
 	}
 	if out != "hi" {
 		t.Fatalf("got %q", out)
+	}
+}
+
+func TestRegistryLockPathsDedupesAndOrders(t *testing.T) {
+	r := NewRegistry()
+	dir := t.TempDir()
+	a := filepath.Join(dir, "a.txt")
+	b := filepath.Join(dir, "b.txt")
+
+	firstLocked := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	firstDone := make(chan struct{})
+	go func() {
+		unlock := r.LockPaths(b, a, a)
+		close(firstLocked)
+		<-releaseFirst
+		unlock()
+		close(firstDone)
+	}()
+
+	select {
+	case <-firstLocked:
+	case <-time.After(time.Second):
+		t.Fatal("first lock acquisition timed out")
+	}
+
+	secondDone := make(chan struct{})
+	go func() {
+		unlock := r.LockPaths(a, b)
+		unlock()
+		close(secondDone)
+	}()
+
+	select {
+	case <-secondDone:
+		t.Fatal("second lock should wait while first holds both paths")
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	close(releaseFirst)
+	select {
+	case <-firstDone:
+	case <-time.After(time.Second):
+		t.Fatal("first unlock timed out")
+	}
+	select {
+	case <-secondDone:
+	case <-time.After(time.Second):
+		t.Fatal("ordered multi-path lock appears deadlocked")
 	}
 }
 

@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -31,11 +33,50 @@ type Registry struct {
 	mu    sync.RWMutex
 	order []string
 	by    map[string]Tool
+
+	fileLocks sync.Map // map[string]*sync.Mutex
 }
 
 // NewRegistry returns an empty registry.
 func NewRegistry() *Registry {
 	return &Registry{by: make(map[string]Tool)}
+}
+
+// LockPath acquires a mutex for the absolute file path and returns an unlock function.
+func (r *Registry) LockPath(abs string) func() {
+	return r.LockPaths(abs)
+}
+
+// LockPaths acquires path locks in deterministic order and returns an unlock function.
+func (r *Registry) LockPaths(paths ...string) func() {
+	seen := make(map[string]struct{}, len(paths))
+	ordered := make([]string, 0, len(paths))
+	for _, abs := range paths {
+		abs = strings.TrimSpace(abs)
+		if abs == "" {
+			continue
+		}
+		abs = filepath.Clean(abs)
+		if _, ok := seen[abs]; ok {
+			continue
+		}
+		seen[abs] = struct{}{}
+		ordered = append(ordered, abs)
+	}
+	sort.Strings(ordered)
+
+	unlocks := make([]func(), 0, len(ordered))
+	for _, abs := range ordered {
+		mu, _ := r.fileLocks.LoadOrStore(abs, &sync.Mutex{})
+		m := mu.(*sync.Mutex)
+		m.Lock()
+		unlocks = append(unlocks, m.Unlock)
+	}
+	return func() {
+		for i := len(unlocks) - 1; i >= 0; i-- {
+			unlocks[i]()
+		}
+	}
 }
 
 // Register adds a tool. It panics if name is duplicated (programmer error).
@@ -557,6 +598,11 @@ func registerWorkspaceMutatingTools(r *Registry, root string, exec *ExecOptions)
 			if mode == "" {
 				mode = "overwrite"
 			}
+
+			if abs, err := absUnderRoot(root, p.Path); err == nil {
+				defer r.LockPath(abs)()
+			}
+
 			if err := writeFileWorkspace(root, p.Path, p.Content, mode); err != nil {
 				return "", err
 			}
@@ -585,6 +631,9 @@ func registerWorkspaceMutatingTools(r *Registry, root string, exec *ExecOptions)
 			}
 			if err := json.Unmarshal(args, &p); err != nil {
 				return "", fmt.Errorf("invalid arguments: %w", err)
+			}
+			if abs, err := absUnderRoot(root, p.Path); err == nil {
+				defer r.LockPath(abs)()
 			}
 			if err := ensureDirWorkspace(root, p.Path); err != nil {
 				return "", err
@@ -632,6 +681,9 @@ func registerWorkspaceMutatingTools(r *Registry, root string, exec *ExecOptions)
 			if err := json.Unmarshal(args, &p); err != nil {
 				return "", fmt.Errorf("invalid arguments: %w", err)
 			}
+			if abs, err := absUnderRoot(root, p.Path); err == nil {
+				defer r.LockPath(abs)()
+			}
 			return insertLinesWorkspace(root, p.Path, p.Content, p.Position, p.AfterLine)
 		},
 	})
@@ -675,6 +727,9 @@ func registerWorkspaceMutatingTools(r *Registry, root string, exec *ExecOptions)
 			if err := json.Unmarshal(args, &p); err != nil {
 				return "", fmt.Errorf("invalid arguments: %w", err)
 			}
+			if abs, err := absUnderRoot(root, p.Path); err == nil {
+				defer r.LockPath(abs)()
+			}
 			return strReplaceWorkspace(root, p.Path, p.OldString, p.NewString, p.ReplaceAll)
 		},
 	})
@@ -710,6 +765,9 @@ func registerWorkspaceMutatingTools(r *Registry, root string, exec *ExecOptions)
 			if err := json.Unmarshal(args, &p); err != nil {
 				return "", fmt.Errorf("invalid arguments: %w", err)
 			}
+			if abs, err := absUnderRoot(root, p.Path); err == nil {
+				defer r.LockPath(abs)()
+			}
 			return patchFileWorkspace(root, p.Path, p.Diff)
 		},
 	})
@@ -735,6 +793,9 @@ func registerWorkspaceMutatingTools(r *Registry, root string, exec *ExecOptions)
 			}
 			if err := json.Unmarshal(args, &p); err != nil {
 				return "", fmt.Errorf("invalid arguments: %w", err)
+			}
+			if abs, err := absUnderRoot(root, p.Path); err == nil {
+				defer r.LockPath(abs)()
 			}
 			if err := removePathWorkspace(root, p.Path); err != nil {
 				return "", err
@@ -770,6 +831,14 @@ func registerWorkspaceMutatingTools(r *Registry, root string, exec *ExecOptions)
 			if err := json.Unmarshal(args, &p); err != nil {
 				return "", fmt.Errorf("invalid arguments: %w", err)
 			}
+			var lockPaths []string
+			if absFrom, err := absUnderRoot(root, p.From); err == nil {
+				lockPaths = append(lockPaths, absFrom)
+			}
+			if absTo, err := absUnderRoot(root, p.To); err == nil {
+				lockPaths = append(lockPaths, absTo)
+			}
+			defer r.LockPaths(lockPaths...)()
 			if err := movePathWorkspace(root, p.From, p.To); err != nil {
 				return "", err
 			}
@@ -804,6 +873,14 @@ func registerWorkspaceMutatingTools(r *Registry, root string, exec *ExecOptions)
 			if err := json.Unmarshal(args, &p); err != nil {
 				return "", fmt.Errorf("invalid arguments: %w", err)
 			}
+			var lockPaths []string
+			if absFrom, err := absUnderRoot(root, p.From); err == nil {
+				lockPaths = append(lockPaths, absFrom)
+			}
+			if absTo, err := absUnderRoot(root, p.To); err == nil {
+				lockPaths = append(lockPaths, absTo)
+			}
+			defer r.LockPaths(lockPaths...)()
 			if err := copyPathWorkspace(root, p.From, p.To); err != nil {
 				return "", err
 			}

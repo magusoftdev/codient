@@ -52,18 +52,26 @@ func truncateHistory(msgs []openai.ChatCompletionMessageParamUnion, sysOffset in
 		minKeep = len(msgs)
 	}
 	for len(msgs) > minKeep && estimateSlice(msgs) > budget {
-		drop := -1
-		for i := sysOffset; i < len(msgs) && len(msgs) > minKeep; i++ {
+		dropStart := -1
+		for i := sysOffset; i < len(msgs); i++ {
 			if isSessionSummaryMessage(msgs[i]) {
 				continue
 			}
-			drop = i
+			dropStart = i
 			break
 		}
-		if drop < 0 {
+		if dropStart < 0 || dropStart >= len(msgs) {
 			break
 		}
-		msgs = append(msgs[:drop], msgs[drop+1:]...)
+
+		dropEnd := dropStart + 1
+		if isAssistantWithToolCalls(msgs[dropStart]) {
+			for dropEnd < len(msgs) && isToolMessage(msgs[dropEnd]) {
+				dropEnd++
+			}
+		}
+
+		msgs = append(msgs[:dropStart], msgs[dropEnd:]...)
 	}
 	return msgs
 }
@@ -86,6 +94,10 @@ func messageText(m openai.ChatCompletionMessageParamUnion) string {
 
 func isToolMessage(m openai.ChatCompletionMessageParamUnion) bool {
 	return m.OfTool != nil
+}
+
+func isAssistantWithToolCalls(m openai.ChatCompletionMessageParamUnion) bool {
+	return m.OfAssistant != nil && strings.Contains(messageText(m), `"tool_calls"`)
 }
 
 func replaceToolContent(m openai.ChatCompletionMessageParamUnion, content string) openai.ChatCompletionMessageParamUnion {

@@ -150,7 +150,7 @@ func registerLSPReferences(r *Registry, root string, client LSPClient, lspCfg ma
 
 func registerLSPHover(r *Registry, root string, client LSPClient, lspCfg map[string]config.LSPServerConfig) {
 	r.Register(Tool{
-		Name: "lsp_hover",
+		Name:        "lsp_hover",
 		Description: "Get hover information (type, documentation) for a symbol at a position using a language server.",
 		Parameters: shared.FunctionParameters{
 			"type":                 "object",
@@ -220,7 +220,7 @@ func registerLSPTypeDefinition(r *Registry, root string, client LSPClient, lspCf
 
 func registerLSPImplementation(r *Registry, root string, client LSPClient, lspCfg map[string]config.LSPServerConfig) {
 	r.Register(Tool{
-		Name: "lsp_implementation",
+		Name:        "lsp_implementation",
 		Description: "Find implementations of an interface or abstract method at a position using a language server.",
 		Parameters: shared.FunctionParameters{
 			"type":                 "object",
@@ -253,7 +253,7 @@ func registerLSPImplementation(r *Registry, root string, client LSPClient, lspCf
 
 func registerLSPDocumentSymbols(r *Registry, root string, client LSPClient, lspCfg map[string]config.LSPServerConfig) {
 	r.Register(Tool{
-		Name: "lsp_document_symbols",
+		Name:        "lsp_document_symbols",
 		Description: "List all symbols (functions, types, variables) in a file using a language server.",
 		Parameters: shared.FunctionParameters{
 			"type": "object",
@@ -383,17 +383,31 @@ func registerLSPRename(r *Registry, root string, client LSPClient, lspCfg map[st
 			if err != nil {
 				return "", err
 			}
-			edit, err := client.Rename(ctx, sc, absPath, p.Line-1, p.Character-1, p.NewName)
+
+			edit, err := func() (*lspclient.WorkspaceEdit, error) {
+				unlock := r.LockPath(absPath)
+				defer unlock()
+				return client.Rename(ctx, sc, absPath, p.Line-1, p.Character-1, p.NewName)
+			}()
 			if err != nil {
 				return "", err
 			}
-		if edit == nil {
-			return "No changes returned by the language server.", nil
-		}
-		edit.NormalizeChanges()
-		if len(edit.Changes) == 0 {
-			return "No changes returned by the language server.", nil
-		}
+			if edit == nil {
+				return "No changes returned by the language server.", nil
+			}
+			edit.NormalizeChanges()
+			if len(edit.Changes) == 0 {
+				return "No changes returned by the language server.", nil
+			}
+
+			var lockPaths []string
+			for uri := range edit.Changes {
+				if fsPath, err := lspclient.ParseFileURI(uri); err == nil {
+					lockPaths = append(lockPaths, fsPath)
+				}
+			}
+			defer r.LockPaths(lockPaths...)()
+
 			return applyWorkspaceEdit(root, edit)
 		},
 	})

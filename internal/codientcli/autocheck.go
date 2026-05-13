@@ -60,6 +60,7 @@ func effectiveTestCmd(cfg *config.Config) string {
 type autoCheckStep struct {
 	label   string
 	cmdLine string
+	argv    []string
 }
 
 type autoCheckExec struct {
@@ -73,13 +74,19 @@ type autoCheckExec struct {
 func buildAutoCheckSteps(cfg *config.Config) []autoCheckStep {
 	var out []autoCheckStep
 	if b := effectiveAutoCheckCmd(cfg); b != "" {
-		out = append(out, autoCheckStep{"build", b})
+		step := autoCheckStep{label: "build", cmdLine: b}
+		if cfg.AutoCheckCmd == "" {
+			if argv := detectUnityAutoCheckArgv(cfg.EffectiveWorkspace()); len(argv) > 0 {
+				step.argv = argv
+			}
+		}
+		out = append(out, step)
 	}
 	if l := effectiveLintCmd(cfg); l != "" {
-		out = append(out, autoCheckStep{"lint", l})
+		out = append(out, autoCheckStep{label: "lint", cmdLine: l})
 	}
 	if t := effectiveTestCmd(cfg); t != "" {
-		out = append(out, autoCheckStep{"test", t})
+		out = append(out, autoCheckStep{label: "test", cmdLine: t})
 	}
 	return out
 }
@@ -130,15 +137,42 @@ func detectAutoCheckCmd(workspaceRoot string) string {
 
 // detectUnityAutoCheckCmd returns a dotnet build line for Unity layouts with a root .sln, or "".
 func detectUnityAutoCheckCmd(root string) string {
-	if !fileExists(filepath.Join(root, "ProjectSettings", "ProjectVersion.txt")) {
+	argv := detectUnityAutoCheckArgv(root)
+	if len(argv) == 0 {
 		return ""
 	}
+	return shellJoin(argv)
+}
+
+func shellJoin(argv []string) string {
+	parts := make([]string, 0, len(argv))
+	for _, arg := range argv {
+		parts = append(parts, shellQuoteArg(arg))
+	}
+	return strings.Join(parts, " ")
+}
+
+func shellQuoteArg(arg string) string {
+	if arg == "" {
+		return `""`
+	}
+	if !strings.ContainsAny(arg, " \t\r\n\"'$`\\;&|()<>*?[]{}!#~") {
+		return arg
+	}
+	replacer := strings.NewReplacer(`\`, `\\`, `"`, `\"`, "$", `\$`, "`", "\\`")
+	return `"` + replacer.Replace(arg) + `"`
+}
+
+func detectUnityAutoCheckArgv(root string) []string {
+	if !fileExists(filepath.Join(root, "ProjectSettings", "ProjectVersion.txt")) {
+		return nil
+	}
 	if !dirExists(filepath.Join(root, "Assets")) {
-		return ""
+		return nil
 	}
 	entries, err := os.ReadDir(root)
 	if err != nil {
-		return ""
+		return nil
 	}
 	var slns []string
 	for _, e := range entries {
@@ -151,7 +185,7 @@ func detectUnityAutoCheckCmd(root string) string {
 		}
 	}
 	if len(slns) == 0 {
-		return ""
+		return nil
 	}
 	sort.Strings(slns)
 	chosen := slns[0]
@@ -164,7 +198,7 @@ func detectUnityAutoCheckCmd(root string) string {
 			}
 		}
 	}
-	return fmt.Sprintf(`dotnet build "%s" -v minimal`, chosen)
+	return []string{"dotnet", "build", chosen, "-v", "minimal"}
 }
 
 // detectLintCmd returns a lint command for the workspace, or "" if unknown / unavailable.
@@ -270,7 +304,7 @@ func makeAutoCheck(workspace, cmdLine string, timeout time.Duration, maxOut int,
 	if cmdLine == "" {
 		return func(context.Context) agent.AutoCheckOutcome { return agent.AutoCheckOutcome{} }
 	}
-	return makeAutoCheckSequence(workspace, []autoCheckStep{{"build", cmdLine}}, timeout, maxOut, progress)
+	return makeAutoCheckSequence(workspace, []autoCheckStep{{label: "build", cmdLine: cmdLine}}, timeout, maxOut, progress)
 }
 
 // makeAutoCheckSequence runs build → lint → test in order (fail-fast). Progress aggregates successful steps.
@@ -286,11 +320,10 @@ func makeAutoCheckSequenceWithConfig(cfg *config.Config, workspace string, steps
 		}
 		var progLines []string
 		for _, st := range steps {
-			cmdLine := strings.TrimSpace(st.cmdLine)
-			if cmdLine == "" {
+			if strings.TrimSpace(st.cmdLine) == "" && len(st.argv) == 0 {
 				continue
 			}
-			out := execOneAutoCheck(ctx, execCfg, st.label, cmdLine, timeout, maxOut, progress)
+			out := execOneAutoCheckStep(ctx, execCfg, st, timeout, maxOut, progress)
 			if out.Progress != "" {
 				progLines = append(progLines, out.Progress)
 			}
@@ -327,15 +360,31 @@ func buildAutoCheckExec(cfg *config.Config, workspace string) autoCheckExec {
 }
 
 func execOneAutoCheck(ctx context.Context, execCfg autoCheckExec, label, cmdLine string, timeout time.Duration, maxOut int, progress io.Writer) agent.AutoCheckOutcome {
-	cmdLine = strings.TrimSpace(cmdLine)
-	if cmdLine == "" {
+	return execOneAutoCheckStep(ctx, execCfg, autoCheckStep{label: label, cmdLine: cmdLine}, timeout, maxOut, progress)
+}
+
+func execOneAutoCheckStep(ctx context.Context, execCfg autoCheckExec, step autoCheckStep, timeout time.Duration, maxOut int, progress io.Writer) agent.AutoCheckOutcome {
+	label := step.label
+	cmdLine := strings.TrimSpace(step.cmdLine)
+	if cmdLine == "" && len(step.argv) == 0 {
 		return agent.AutoCheckOutcome{}
 	}
 	t0 := time.Now()
-	argv, err := tools.ShellArgv(cmdLine)
-	if err != nil {
-		return agent.AutoCheckOutcome{}
+
+	var argv []string
+	var err error
+	if len(step.argv) > 0 {
+		argv = step.argv
+		if cmdLine == "" {
+			cmdLine = strings.Join(argv, " ")
+		}
+	} else {
+		argv, err = tools.ShellArgv(cmdLine)
+		if err != nil {
+			return agent.AutoCheckOutcome{}
+		}
 	}
+
 	if execCfg.runner == nil {
 		execCfg.runner = sandbox.NoopRunner{}
 	}

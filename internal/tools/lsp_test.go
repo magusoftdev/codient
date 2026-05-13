@@ -3,8 +3,12 @@ package tools_test
 import (
 	"context"
 	"encoding/json"
+	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"codient/internal/config"
 	"codient/internal/lspclient"
@@ -183,5 +187,59 @@ func TestLSPRename_PresentInDefault(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected lsp_rename in Default registry: %v", reg.Names())
+	}
+}
+
+func TestLSPRename_LocksOriginalFileOnlyOnce(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "main.go")
+	if err := os.WriteFile(path, []byte("func Foo() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	uri := (&url.URL{Scheme: "file", Path: filepath.ToSlash(path)}).String()
+	fake := &fakeLSPClient{
+		renameResult: &lspclient.WorkspaceEdit{
+			Changes: map[string][]lspclient.TextEdit{
+				uri: {{
+					Range: lspclient.Range{
+						Start: lspclient.Position{Line: 0, Character: 5},
+						End:   lspclient.Position{Line: 0, Character: 8},
+					},
+					NewText: "Bar",
+				}},
+			},
+		},
+	}
+	reg := tools.NewRegistry()
+	tools.RegisterLSPMutatingTools(reg, root, fake, testLSPCfg)
+
+	type result struct {
+		out string
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		out, err := reg.Run(context.Background(), "lsp_rename", json.RawMessage(`{"file":"main.go","line":1,"character":6,"new_name":"Bar"}`))
+		done <- result{out: out, err: err}
+	}()
+
+	select {
+	case res := <-done:
+		if res.err != nil {
+			t.Fatalf("Run: %v", res.err)
+		}
+		if !strings.Contains(res.out, "Renamed across 1 file") {
+			t.Fatalf("unexpected output: %s", res.out)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("lsp_rename deadlocked while locking original file")
+	}
+
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := string(b); got != "func Bar() {}\n" {
+		t.Fatalf("renamed content = %q", got)
 	}
 }

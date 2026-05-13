@@ -59,6 +59,7 @@ type AutoCheckOutcome struct {
 var mutatingTools = map[string]struct{}{
 	"write_file": {}, "str_replace": {}, "patch_file": {}, "insert_lines": {},
 	"remove_path": {}, "move_path": {}, "copy_path": {}, "lsp_rename": {},
+	"ensure_dir": {},
 }
 
 // ToolIsMutating reports whether the named tool may modify files on disk.
