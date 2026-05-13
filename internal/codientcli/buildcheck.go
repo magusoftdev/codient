@@ -2,7 +2,6 @@ package codientcli
 
 import (
 	"context"
-	"strings"
 
 	"codient/internal/agent"
 )
@@ -23,13 +22,4 @@ func makeBuildSelfCritique() func(context.Context, agent.PostReplyCheckInfo) str
 		}
 		return ""
 	}
-}
-
-func turnUsedMutatingTool(names []string) bool {
-	for _, name := range names {
-		if agent.ToolIsMutating(strings.TrimSpace(name)) {
-			return true
-		}
-	}
-	return false
 }

@@ -349,7 +349,7 @@ func TestIntegration_AgentMultiTurn(t *testing.T) {
 		t.Fatal(err)
 	}
 	client := openaiclient.New(cfg)
-	reg := tools.Default("", "", nil, nil, nil, "", nil, nil, nil)
+	reg := tools.Default("", "", nil, nil, nil, "", nil, nil, nil, nil, nil)
 	ar := &agent.Runner{LLM: client, Cfg: cfg, Tools: reg}
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
 	defer cancel()
@@ -397,7 +397,7 @@ func TestIntegration_AgentAutoCheck(t *testing.T) {
 	wsRoot, _ := filepath.Abs(dir)
 	cfg.Workspace = wsRoot
 	client := openaiclient.New(cfg)
-	reg := tools.Default(wsRoot, "", nil, nil, nil, "", nil, nil, nil)
+	reg := tools.Default(wsRoot, "", nil, nil, nil, "", nil, nil, nil, nil, nil)
 
 	autoCheckCalled := false
 	ar := &agent.Runner{
@@ -440,7 +440,7 @@ func TestIntegration_AgentPostReplyCheck(t *testing.T) {
 		t.Fatal(err)
 	}
 	client := openaiclient.New(cfg)
-	reg := tools.Default("", "", nil, nil, nil, "", nil, nil, nil)
+	reg := tools.Default("", "", nil, nil, nil, "", nil, nil, nil, nil, nil)
 
 	checkFired := false
 	ar := &agent.Runner{
@@ -491,7 +491,7 @@ func TestIntegration_AgentReadOnlyMode(t *testing.T) {
 	wsRoot, _ := filepath.Abs(dir)
 	cfg.Workspace = wsRoot
 	client := openaiclient.New(cfg)
-	reg := tools.DefaultReadOnly(wsRoot, "", nil, nil, "", nil, nil)
+	reg := tools.DefaultReadOnly(wsRoot, "", nil, nil, "", nil, nil, nil, nil)
 
 	ar := &agent.Runner{LLM: client, Cfg: cfg, Tools: reg}
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
@@ -536,7 +536,7 @@ func TestIntegration_AgentPlanModeNoEcho(t *testing.T) {
 	wsRoot, _ := filepath.Abs(dir)
 	cfg.Workspace = wsRoot
 	client := openaiclient.New(cfg)
-	reg := tools.DefaultReadOnlyPlan(wsRoot, "", nil, nil, "", nil, nil)
+	reg := tools.DefaultReadOnlyPlan(wsRoot, "", nil, nil, "", nil, nil, nil, nil)
 
 	if registryHas(reg, "echo") {
 		t.Fatal("plan mode registry should NOT have echo")
@@ -588,7 +588,7 @@ func TestIntegration_AgentDelegateTask(t *testing.T) {
 
 	const marker = "SUB_AGENT_RESULT_abc123"
 	client := openaiclient.New(cfg)
-	reg := tools.Default(wsRoot, "", nil, nil, nil, "", nil, nil, nil)
+	reg := tools.Default(wsRoot, "", nil, nil, nil, "", nil, nil, nil, nil, nil)
 	tools.RegisterDelegateTask(reg, "build", nil, func(ctx context.Context, mode, task, extraContext, _ string) (string, error) {
 		return marker, nil
 	})
@@ -642,7 +642,7 @@ func TestIntegration_SubAgentEndToEnd(t *testing.T) {
 	cfg.Workspace = wsRoot
 
 	client := openaiclient.New(cfg)
-	reg := tools.Default(wsRoot, "", nil, nil, nil, "", nil, nil, nil)
+	reg := tools.Default(wsRoot, "", nil, nil, nil, "", nil, nil, nil, nil, nil)
 	tools.RegisterDelegateTask(reg, "build", nil, func(ctx context.Context, mode, taskDesc, extraContext, _ string) (string, error) {
 		m, mErr := prompt.ParseMode(mode)
 		if mErr != nil {
@@ -716,7 +716,7 @@ func newLiveRunnerWithFetch(t *testing.T, workspace string) (*agent.Runner, cont
 		IncludePreapproved: false,
 		TimeoutSec:         30,
 	}
-	reg := tools.Default(wsRoot, "", nil, fetch, nil, "", nil, nil, nil)
+	reg := tools.Default(wsRoot, "", nil, fetch, nil, "", nil, nil, nil, nil, nil)
 	ar := &agent.Runner{LLM: client, Cfg: cfg, Tools: reg}
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
 	return ar, ctx, cancel
@@ -741,7 +741,7 @@ func TestIntegration_AgentAutoCheckFixLoop(t *testing.T) {
 	wsRoot, _ := filepath.Abs(dir)
 	cfg.Workspace = wsRoot
 	client := openaiclient.New(cfg)
-	reg := tools.Default(wsRoot, "", nil, nil, nil, "", nil, nil, nil)
+	reg := tools.Default(wsRoot, "", nil, nil, nil, "", nil, nil, nil, nil, nil)
 
 	var attempts int
 	ar := &agent.Runner{

@@ -359,10 +359,6 @@ func buildAutoCheckExec(cfg *config.Config, workspace string) autoCheckExec {
 	return autoCheckExec{runner: runner, policy: policy, env: env, workDir: workspace}
 }
 
-func execOneAutoCheck(ctx context.Context, execCfg autoCheckExec, label, cmdLine string, timeout time.Duration, maxOut int, progress io.Writer) agent.AutoCheckOutcome {
-	return execOneAutoCheckStep(ctx, execCfg, autoCheckStep{label: label, cmdLine: cmdLine}, timeout, maxOut, progress)
-}
-
 func execOneAutoCheckStep(ctx context.Context, execCfg autoCheckExec, step autoCheckStep, timeout time.Duration, maxOut int, progress io.Writer) agent.AutoCheckOutcome {
 	label := step.label
 	cmdLine := strings.TrimSpace(step.cmdLine)

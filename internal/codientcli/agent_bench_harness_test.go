@@ -1,3 +1,5 @@
+//go:build integration
+
 package codientcli_test
 
 import (
@@ -501,7 +503,7 @@ func agentBenchScenarioPromptText(sc agentBenchScenario) string {
 	for i, p := range sc.Prompts {
 		if i > 0 {
 			b.WriteString("\n\n--- turn ")
-			b.WriteString(fmt.Sprint(i + 1))
+			fmt.Fprint(&b, i+1)
 			b.WriteString(" ---\n")
 		}
 		b.WriteString(p)

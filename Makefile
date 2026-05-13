@@ -27,7 +27,7 @@ help:
 	@echo "  make install        copy $(BIN) to $(INSTALL_DIR) (same as install scripts; CODIENT_INSTALL_DIR overrides)"
 	@echo "  make run ARGS='…'   go run ./cmd/codient -- …"
 	@echo "  make terminal-bench-codient ARGS='…'  Terminal-Bench full suite with codient (Unix; needs tb + Docker; see docs/terminal-bench.md)"
-	@echo "  make test           full suite: unit + live integration (needs model + API; see test-unit for CI)"
+	@echo "  make test           unit tests only (go test ./...; no live LLM)"
 	@echo "  make test-unit      unit tests only (go test ./...; no live LLM)"
 	@echo "  make test-short     go test -short ./..."
 	@echo "  make test-race      go test -race ./..."
@@ -62,12 +62,8 @@ endif
 clean:
 	$(RM) -r $(BIN_DIR)
 
-# Full test run: integration-tagged tests + env for strict tools and run_command (requires configured model and server).
-test: export CODIENT_INTEGRATION = 1
-test: export CODIENT_INTEGRATION_STRICT_TOOLS = 1
-test: export CODIENT_INTEGRATION_RUN_COMMAND = 1
 test:
-	$(GO) test -tags=integration -count=1 -timeout 90m ./...
+	$(GO) test ./...
 
 test-unit:
 	$(GO) test ./...
